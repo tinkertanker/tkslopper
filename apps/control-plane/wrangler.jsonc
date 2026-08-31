@@ -1,0 +1,20 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "tkslop-control-plane",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-08-30",
+  "workers_dev": false,
+  "vars": {
+    "DEPLOYMENT_ENV": "development",
+    "TOKEN_ISSUER": "https://control.local.tkslop.invalid",
+    "ENABLE_DEV_ISSUER": "false",
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "tkslop",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "../../db/migrations",
+    },
+  ],
+}

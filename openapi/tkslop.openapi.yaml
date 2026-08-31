@@ -1,0 +1,470 @@
+openapi: 3.1.0
+info:
+  title: tkslop API
+  version: 0.1.0
+  license:
+    name: MIT
+    identifier: MIT
+  description: >-
+    Narrow, non-streaming OpenAI-compatible inference surface plus entitlement
+    exchange endpoints. The model field is a versioned capability alias, not a
+    provider model. This specification does not claim full OpenAI compatibility.
+servers:
+  - url: https://gateway.example.invalid
+    description: Placeholder gateway; no production domain is committed
+tags:
+  - name: Inference
+    description: Non-streaming, capability-scoped managed inference
+  - name: Grants
+    description: Service credential exchange and direct-client activation
+paths:
+  /v1/chat/completions:
+    post:
+      tags: [Inference]
+      operationId: createChatCompletion
+      summary: Create one non-streaming chat completion
+      security:
+        - shortGrant: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+            examples:
+              vibbit:
+                value:
+                  model: text.chat.v1
+                  messages:
+                    - role: user
+                      content: Explain why the synthetic fixture is useful.
+                  max_completion_tokens: 256
+                  stream: false
+      responses:
+        "200":
+          description: Complete buffered result; model is the requested alias
+          headers:
+            x-tkslop-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                required: [id, object, model, choices]
+                properties:
+                  id: { type: string }
+                  object: { const: chat.completion }
+                  model: { $ref: "#/components/schemas/CapabilityAlias" }
+                  choices: { type: array, minItems: 1, items: { type: object } }
+                  usage: { $ref: "#/components/schemas/ChatUsage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "402": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+        "504": { $ref: "#/components/responses/Error" }
+  /v1/responses:
+    post:
+      tags: [Inference]
+      operationId: createResponse
+      summary: Create one non-streaming Responses result
+      security:
+        - shortGrant: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResponsesRequest"
+            examples:
+              strictJson:
+                value:
+                  model: json.strict.v1
+                  input: Return a synthetic color label.
+                  text:
+                    format:
+                      type: json_schema
+                      name: color_result
+                      strict: true
+                      schema:
+                        type: object
+                        additionalProperties: false
+                        required: [label]
+                        properties:
+                          label: { type: string }
+                  stream: false
+      responses:
+        "200":
+          description: Complete buffered response; model is the requested alias
+          headers:
+            x-tkslop-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                required: [id, object, model, output]
+                properties:
+                  id: { type: string }
+                  object: { const: response }
+                  model: { $ref: "#/components/schemas/CapabilityAlias" }
+                  output: { type: array, items: { type: object } }
+                  usage: { $ref: "#/components/schemas/ResponsesUsage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "402": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+        "504": { $ref: "#/components/responses/Error" }
+  /v1/token:
+    servers:
+      - url: https://control.example.invalid
+        description: Placeholder control plane
+    post:
+      tags: [Grants]
+      operationId: exchangeServiceCredential
+      summary: Exchange a service credential for a short-lived grant
+      security:
+        - serviceCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TokenExchangeRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Grant"
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /v1/activations:
+    servers:
+      - url: https://control.example.invalid
+        description: Placeholder control plane
+    post:
+      tags: [Grants]
+      operationId: activateAccessCode
+      summary: Bootstrap a pseudonymous device activation and short-lived grant
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ActivationRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Grant"
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+components:
+  securitySchemes:
+    shortGrant:
+      type: http
+      scheme: bearer
+      bearerFormat: tkslop+jwt
+      description: Short-lived audience/product/environment/capability-scoped grant
+    serviceCredential:
+      type: http
+      scheme: bearer
+      description: High-entropy tksvc credential used only at the control plane
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >-
+        8-128 visible ASCII characters. Retained as a hash for 24 hours. Reuse is
+        rejected with 409; response bodies are not stored or replayed.
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+  headers:
+    RequestId:
+      description: Pseudorandom request identifier safe to use for metadata lookup
+      schema: { type: string }
+  responses:
+    Error:
+      description: Sanitized error; no upstream body or request payload is included
+      headers:
+        x-tkslop-request-id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Grant:
+      description: Short-lived gateway grant
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required:
+              [grant_id, access_token, token_type, expires_in, capabilities]
+            properties:
+              grant_id:
+                type: string
+                description: Non-secret identifier accepted by the admin revocation workflow
+              access_token: { type: string, writeOnly: true }
+              token_type: { const: Bearer }
+              expires_in: { type: integer, minimum: 1, maximum: 3600 }
+              capabilities:
+                type: array
+                minItems: 1
+                items: { $ref: "#/components/schemas/CapabilityAlias" }
+  schemas:
+    CapabilityAlias:
+      type: string
+      pattern: "^[a-z][a-z0-9._:-]{1,99}$"
+      examples: [text.chat.v1]
+    JsonSchemaName:
+      type: string
+      minLength: 2
+      maxLength: 100
+      pattern: "^[a-zA-Z0-9][a-zA-Z0-9._:-]*$"
+    ChatRequest:
+      type: object
+      additionalProperties: false
+      required: [model, messages]
+      not:
+        properties:
+          max_tokens: { type: integer }
+          max_completion_tokens: { type: integer }
+        required: [max_tokens, max_completion_tokens]
+      properties:
+        model: { $ref: "#/components/schemas/CapabilityAlias" }
+        messages:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            $ref: "#/components/schemas/ChatMessage"
+        stream: { const: false, default: false }
+        temperature: { type: number, minimum: 0, maximum: 2 }
+        top_p: { type: number, minimum: 0, maximum: 1 }
+        max_tokens: { type: integer, minimum: 1, maximum: 200000 }
+        max_completion_tokens: { type: integer, minimum: 1, maximum: 200000 }
+        response_format:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [type]
+              properties: { type: { const: json_object } }
+            - $ref: "#/components/schemas/ChatJsonSchemaFormat"
+        reasoning_effort: { enum: [low, medium, high] }
+        stop:
+          oneOf:
+            - { type: string, maxLength: 500 }
+            - type: array
+              maxItems: 20
+              items: { type: string, maxLength: 500 }
+        seed: { type: integer }
+    ChatMessage:
+      type: object
+      additionalProperties: false
+      required: [role, content]
+      properties:
+        role: { enum: [system, developer, user, assistant] }
+        content:
+          oneOf:
+            - { type: string, maxLength: 2000000 }
+            - type: array
+              minItems: 1
+              maxItems: 100
+              items:
+                oneOf:
+                  - type: object
+                    additionalProperties: false
+                    required: [type, text]
+                    properties:
+                      type: { const: text }
+                      text: { type: string, maxLength: 2000000 }
+                  - type: object
+                    additionalProperties: false
+                    required: [type, image_url]
+                    properties:
+                      type: { const: image_url }
+                      image_url:
+                        type: object
+                        additionalProperties: false
+                        required: [url]
+                        properties:
+                          url:
+                            type: string
+                            maxLength: 8000000
+                            pattern: "^(https://|data:image/)"
+                          detail: { enum: [auto, low, high] }
+    ChatJsonSchemaFormat:
+      type: object
+      additionalProperties: false
+      required: [type, json_schema]
+      properties:
+        type: { const: json_schema }
+        json_schema:
+          type: object
+          additionalProperties: false
+          required: [name, schema]
+          properties:
+            name: { $ref: "#/components/schemas/JsonSchemaName" }
+            description: { type: string, maxLength: 1000 }
+            strict: { type: boolean }
+            schema: { type: object }
+    ResponsesRequest:
+      type: object
+      additionalProperties: false
+      required: [model, input]
+      properties:
+        model: { $ref: "#/components/schemas/CapabilityAlias" }
+        input:
+          oneOf:
+            - { type: string, maxLength: 2000000 }
+            - type: array
+              minItems: 1
+              maxItems: 1000
+              items:
+                $ref: "#/components/schemas/ResponseInputItem"
+        instructions: { type: string, maxLength: 2000000 }
+        stream: { const: false, default: false }
+        temperature: { type: number, minimum: 0, maximum: 2 }
+        top_p: { type: number, minimum: 0, maximum: 1 }
+        max_output_tokens: { type: integer, minimum: 1, maximum: 200000 }
+        reasoning:
+          type: object
+          additionalProperties: false
+          required: [effort]
+          properties: { effort: { enum: [low, medium, high] } }
+        text:
+          type: object
+          additionalProperties: false
+          required: [format]
+          properties:
+            format:
+              oneOf:
+                - type: object
+                  additionalProperties: false
+                  required: [type]
+                  properties: { type: { const: text } }
+                - type: object
+                  additionalProperties: false
+                  required: [type, name, schema]
+                  properties:
+                    type: { const: json_schema }
+                    name: { $ref: "#/components/schemas/JsonSchemaName" }
+                    description: { type: string, maxLength: 1000 }
+                    strict: { type: boolean }
+                    schema: { type: object }
+    ResponseInputItem:
+      type: object
+      additionalProperties: false
+      required: [role, content]
+      properties:
+        role: { enum: [system, developer, user, assistant] }
+        content:
+          oneOf:
+            - { type: string, maxLength: 2000000 }
+            - type: array
+              minItems: 1
+              maxItems: 100
+              items:
+                oneOf:
+                  - type: object
+                    additionalProperties: false
+                    required: [type, text]
+                    properties:
+                      type: { const: input_text }
+                      text: { type: string, maxLength: 2000000 }
+                  - type: object
+                    additionalProperties: false
+                    required: [type, image_url]
+                    properties:
+                      type: { const: input_image }
+                      image_url:
+                        type: string
+                        maxLength: 8000000
+                        pattern: "^(https://|data:image/)"
+                      detail: { enum: [auto, low, high] }
+    TokenExchangeRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        capabilities:
+          type: array
+          minItems: 1
+          maxItems: 50
+          uniqueItems: true
+          items: { $ref: "#/components/schemas/CapabilityAlias" }
+        ttl_seconds: { type: integer, minimum: 60, maximum: 3600 }
+    ActivationRequest:
+      type: object
+      additionalProperties: false
+      required: [access_code, device_id]
+      properties:
+        access_code:
+          { type: string, minLength: 20, maxLength: 256, writeOnly: true }
+        device_id:
+          type: string
+          minLength: 8
+          maxLength: 500
+          writeOnly: true
+          description: Locally generated installation identifier; only a keyed pseudonym is stored
+        capabilities:
+          type: array
+          minItems: 1
+          maxItems: 50
+          uniqueItems: true
+          items: { $ref: "#/components/schemas/CapabilityAlias" }
+        ttl_seconds: { type: integer, minimum: 60, maximum: 3600 }
+    ChatUsage:
+      type: object
+      additionalProperties: true
+      properties:
+        prompt_tokens: { type: integer, minimum: 0 }
+        completion_tokens: { type: integer, minimum: 0 }
+        total_tokens: { type: integer, minimum: 0 }
+    ResponsesUsage:
+      type: object
+      additionalProperties: true
+      properties:
+        input_tokens: { type: integer, minimum: 0 }
+        output_tokens: { type: integer, minimum: 0 }
+        total_tokens: { type: integer, minimum: 0 }
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [message, type, code]
+          properties:
+            message: { type: string }
+            type: { type: string }
+            code: { type: string }
+        request_id: { type: [string, "null"] }

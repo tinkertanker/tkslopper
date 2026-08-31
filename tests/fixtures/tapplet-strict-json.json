@@ -1,0 +1,22 @@
+{
+  "model": "json.strict.v1",
+  "input": "Classify a synthetic color swatch.",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "color_classification",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "confidence"],
+        "properties": {
+          "label": { "type": "string" },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      }
+    }
+  },
+  "max_output_tokens": 128,
+  "stream": false
+}

@@ -1,0 +1,21 @@
+{
+  "model": "vision.classify.v1",
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "Classify this public-safe one-pixel fixture."
+        },
+        {
+          "type": "input_image",
+          "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB",
+          "detail": "low"
+        }
+      ]
+    }
+  ],
+  "max_output_tokens": 128,
+  "stream": false
+}

@@ -1,0 +1,7 @@
+{
+  "model": "long-context.chat.v1",
+  "context_segment": "Synthetic public-safe context segment with no user or classroom data. ",
+  "repetitions": 20000,
+  "max_completion_tokens": 512,
+  "stream": false
+}

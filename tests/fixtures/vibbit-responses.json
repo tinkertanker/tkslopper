@@ -1,0 +1,7 @@
+{
+  "model": "text.response.v1",
+  "instructions": "Synthetic fixture instruction.",
+  "input": "Return one complete fixture response.",
+  "max_output_tokens": 256,
+  "stream": false
+}
