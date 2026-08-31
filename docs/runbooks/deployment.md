@@ -10,6 +10,15 @@ This runbook is documentation, not deployment authorization.
 4. Select Cloudflare accounts, D1 database, Worker names/routes, Durable Object jurisdiction, provider projects, retention, owner, and rollback contacts outside this public repository.
 5. Replace placeholder database IDs and non-secret route configuration in private deployment configuration. Do not commit account IDs or private values here.
 
+The initial migration includes product/environment and grant/entitlement identity constraints because this public scaffold has no deployed D1. If an operator discovers a database created from an earlier copy, do not silently rewrite ownership or reapply an edited migration. First run the read-only preflight against the private deployment configuration:
+
+```bash
+pnpm wrangler d1 execute <database-name> --remote --config <private-config> \
+  --file db/preflight/identity_integrity.sql
+```
+
+An empty result is required; any reported violation/count blocks migration and requires an owner-reviewed forward migration. Running that remote preflight, like every remote operation in this runbook, requires separate authorization.
+
 ## Secrets
 
 Generate independent values. Never reuse an admin token as a signing key or pepper.

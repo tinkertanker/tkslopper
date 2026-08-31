@@ -53,6 +53,10 @@ type GrantPolicyRow = {
   entitlement_status: string | null;
   entitlement_source: string | null;
   entitlement_expires_at: number | null;
+  entitlement_product_id: string | null;
+  entitlement_environment_id: string | null;
+  entitlement_tenant_id: string | null;
+  entitlement_principal_id: string | null;
   access_code_disabled: number | null;
   access_code_expires_at: number | null;
   activation_id: string | null;
@@ -179,7 +183,9 @@ async function authenticate(
     `SELECT g.id AS grant_id, g.product_id, g.environment_id, g.tenant_id, g.principal_id, g.audience,
             g.capabilities_json, g.expires_at AS grant_expires_at, g.revoked_at,
             n.status AS entitlement_status, n.source AS entitlement_source,
-            n.expires_at AS entitlement_expires_at,
+            n.expires_at AS entitlement_expires_at, n.product_id AS entitlement_product_id,
+            n.environment_id AS entitlement_environment_id, n.tenant_id AS entitlement_tenant_id,
+            n.principal_id AS entitlement_principal_id,
             c.disabled AS access_code_disabled, c.expires_at AS access_code_expires_at,
             a.id AS activation_id, a.revoked_at AS activation_revoked_at,
             p.enabled AS product_enabled, p.kill_switch AS product_kill_switch,
@@ -214,7 +220,11 @@ async function authenticate(
     policy.product_enabled !== 1 ||
     policy.product_kill_switch === 1 ||
     policy.environment_enabled !== 1 ||
-    policy.environment_kill_switch === 1
+    policy.environment_kill_switch === 1 ||
+    policy.entitlement_product_id !== policy.product_id ||
+    policy.entitlement_environment_id !== policy.environment_id ||
+    policy.entitlement_tenant_id !== policy.tenant_id ||
+    policy.entitlement_principal_id !== policy.principal_id
   ) {
     throw new HttpError(403, "authorization_failed", "grant is not active");
   }

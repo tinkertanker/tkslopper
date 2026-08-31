@@ -7,7 +7,11 @@ import {
   signGrant,
   type GrantClaims,
 } from "@tkslopper/shared";
-import { costMicrocents } from "../apps/gateway/src";
+import {
+  costMicrocents,
+  handleGateway,
+  type GatewayEnv,
+} from "../apps/gateway/src";
 
 const now = (): number => Math.floor(Date.now() / 1000);
 
@@ -249,11 +253,11 @@ describe("gateway integration and isolation", () => {
     const malformed = `${segments[0]}.${segments[1]}.invalid`;
     expect((await SELF.fetch(chatRequest(malformed))).status).toBe(401);
     await env.DB.prepare(
-      "UPDATE token_grants SET principal_id = 'other_fixture_principal'",
+      "UPDATE token_grants SET audience = 'other:test'",
     ).run();
     expect((await SELF.fetch(chatRequest(token))).status).toBe(401);
     await env.DB.prepare(
-      "UPDATE token_grants SET principal_id = 'principal_fixture'",
+      "UPDATE token_grants SET audience = 'vibbit:test'",
     ).run();
     await env.DB.prepare("UPDATE entitlements SET status = 'revoked'").run();
     expect((await SELF.fetch(chatRequest(token))).status).toBe(403);
@@ -262,6 +266,89 @@ describe("gateway integration and isolation", () => {
       "UPDATE environments SET kill_switch = 1 WHERE id = 'env_vibbit'",
     ).run();
     expect((await SELF.fetch(chatRequest(token))).status).toBe(403);
+  });
+
+  it("fails closed at authentication when the linked entitlement tuple disagrees", async () => {
+    const timestamp = now();
+    const jti = randomId("grant");
+    const claims: GrantClaims = {
+      iss: env.TOKEN_ISSUER,
+      aud: "vibbit:test",
+      sub: "principal_fixture",
+      iat: timestamp,
+      exp: timestamp + 600,
+      jti,
+      tks: {
+        productId: "prod_vibbit",
+        environmentId: "env_vibbit",
+        tenantId: "tenant_fixture",
+        principalId: "principal_fixture",
+        capabilities: ["text.chat.v1"],
+        tokenType: "dev",
+      },
+    };
+    const token = await signGrant(claims, env.TOKEN_SIGNING_SECRET);
+    let prepareCalls = 0;
+    const authStatement = {
+      bind() {
+        return this;
+      },
+      first() {
+        return {
+          grant_id: "tgrant_fixture",
+          product_id: "prod_vibbit",
+          environment_id: "env_vibbit",
+          tenant_id: "tenant_fixture",
+          principal_id: "principal_fixture",
+          audience: "vibbit:test",
+          capabilities_json: '["text.chat.v1"]',
+          grant_expires_at: timestamp + 600,
+          revoked_at: null,
+          entitlement_status: "active",
+          entitlement_source: "dev",
+          entitlement_expires_at: timestamp + 600,
+          entitlement_product_id: "prod_tapplet",
+          entitlement_environment_id: "env_tapplet",
+          entitlement_tenant_id: "tenant_fixture",
+          entitlement_principal_id: "principal_fixture",
+          access_code_disabled: null,
+          access_code_expires_at: null,
+          activation_id: null,
+          activation_revoked_at: null,
+          product_enabled: 1,
+          product_kill_switch: 0,
+          environment_enabled: 1,
+          environment_kill_switch: 0,
+          environment_policy_version: 1,
+          rpm_limit: 20,
+          tpm_limit: 1_000_000,
+          concurrency_limit: 2,
+          daily_budget_microcents: 1_000_000,
+          max_request_bytes: 8_388_608,
+        };
+      },
+    };
+    const malformedDb = {
+      prepare(query: string) {
+        prepareCalls += 1;
+        if (!query.includes("FROM token_grants")) {
+          throw new Error(
+            "gateway continued after malformed entitlement identity",
+          );
+        }
+        return authStatement;
+      },
+    } as unknown as D1Database;
+    const response = await handleGateway(chatRequest(token), {
+      ...(env as unknown as GatewayEnv),
+      DB: malformedDb,
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "authorization_failed" },
+    });
+    expect(prepareCalls).toBe(1);
   });
 
   it("prevents idempotency replay without storing the response payload", async () => {

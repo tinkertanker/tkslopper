@@ -214,19 +214,45 @@ async function audit(
     .run();
 }
 
+async function requireProductEnvironment(
+  env: ControlPlaneEnv,
+  productId: string,
+  environmentId: string,
+): Promise<void> {
+  const row = await env.DB.prepare(
+    "SELECT 1 AS found FROM environments WHERE product_id = ? AND id = ?",
+  )
+    .bind(productId, environmentId)
+    .first<{ found: number }>();
+  if (!row)
+    throw new HttpError(404, "not_found", "product environment not found");
+}
+
 async function findActiveEntitlement(
   env: ControlPlaneEnv,
-  identity: { environmentId: string; tenantId: string; principalId: string },
+  identity: {
+    productId: string;
+    environmentId: string;
+    tenantId: string;
+    principalId: string;
+  },
   now: number,
 ): Promise<EntitlementRow | null> {
   return env.DB.prepare(
     `SELECT id, capabilities_json, expires_at
        FROM entitlements
-      WHERE environment_id = ? AND tenant_id = ? AND principal_id = ? AND status = 'active'
+      WHERE product_id = ? AND environment_id = ? AND tenant_id = ? AND principal_id = ?
+        AND status = 'active'
         AND (expires_at IS NULL OR expires_at > ?)
       ORDER BY created_at DESC LIMIT 1`,
   )
-    .bind(identity.environmentId, identity.tenantId, identity.principalId, now)
+    .bind(
+      identity.productId,
+      identity.environmentId,
+      identity.tenantId,
+      identity.principalId,
+      now,
+    )
     .first<EntitlementRow>();
 }
 
@@ -355,6 +381,7 @@ async function exchangeServiceCredential(
   const entitlement = await findActiveEntitlement(
     env,
     {
+      productId: row.product_id,
       environmentId: row.environment_id,
       tenantId: row.tenant_id,
       principalId: row.principal_id,
@@ -530,9 +557,16 @@ async function activateAccessCode(
   const entitlement = await env.DB.prepare(
     `SELECT id, capabilities_json, status, expires_at
        FROM entitlements
-      WHERE source = 'access_code' AND source_ref = ? AND principal_id = ?`,
+      WHERE source = 'access_code' AND source_ref = ? AND product_id = ? AND environment_id = ?
+        AND tenant_id = ? AND principal_id = ?`,
   )
-    .bind(row.id, activation.principal_id)
+    .bind(
+      row.id,
+      row.product_id,
+      row.environment_id,
+      row.tenant_id,
+      activation.principal_id,
+    )
     .first<AccessEntitlementRow>();
   if (
     !entitlement ||
@@ -620,6 +654,7 @@ async function adminUpsertAlias(
   actorHash: string,
 ): Promise<Response> {
   const body = await parseBody(request, aliasUpsertSchema);
+  await requireProductEnvironment(env, body.product_id, body.environment_id);
   const id = randomId("alias");
   const now = nowSeconds();
   await env.DB.prepare(
@@ -675,6 +710,7 @@ async function adminCreateEntitlement(
   actorHash: string,
 ): Promise<Response> {
   const body = await parseBody(request, entitlementCreateSchema);
+  await requireProductEnvironment(env, body.product_id, body.environment_id);
   const id = randomId("ent");
   const now = nowSeconds();
   await env.DB.prepare(
@@ -706,6 +742,7 @@ async function adminCreateServiceCredential(
   actorHash: string,
 ): Promise<Response> {
   const body = await parseBody(request, serviceCredentialCreateSchema);
+  await requireProductEnvironment(env, body.product_id, body.environment_id);
   const credential = createOpaqueCredential("service");
   const salt = randomSecret(16);
   const now = nowSeconds();
@@ -764,6 +801,7 @@ async function adminCreateAccessCode(
   actorHash: string,
 ): Promise<Response> {
   const body = await parseBody(request, accessCodeCreateSchema);
+  await requireProductEnvironment(env, body.product_id, body.environment_id);
   const credential = createOpaqueCredential("access_code");
   const salt = randomSecret(16);
   const now = nowSeconds();

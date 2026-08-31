@@ -25,6 +25,7 @@ CREATE TABLE environments (
   max_request_bytes INTEGER NOT NULL DEFAULT 1048576 CHECK (max_request_bytes BETWEEN 1024 AND 10485760),
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
+  UNIQUE (id, product_id),
   UNIQUE (product_id, name)
 );
 
@@ -48,7 +49,9 @@ CREATE TABLE aliases (
   policy_version INTEGER NOT NULL DEFAULT 1 CHECK (policy_version > 0),
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  UNIQUE (environment_id, alias, endpoint)
+  UNIQUE (environment_id, alias, endpoint),
+  FOREIGN KEY (environment_id, product_id)
+    REFERENCES environments(id, product_id) ON DELETE CASCADE
 );
 
 CREATE TABLE entitlements (
@@ -63,7 +66,9 @@ CREATE TABLE entitlements (
   status TEXT NOT NULL CHECK (status IN ('active', 'revoked', 'expired')),
   expires_at INTEGER,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (environment_id, product_id)
+    REFERENCES environments(id, product_id) ON DELETE CASCADE
 );
 
 CREATE INDEX entitlements_principal_idx
@@ -87,7 +92,9 @@ CREATE TABLE service_credentials (
   disabled INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1)),
   expires_at INTEGER,
   created_at INTEGER NOT NULL,
-  last_used_at INTEGER
+  last_used_at INTEGER,
+  FOREIGN KEY (environment_id, product_id)
+    REFERENCES environments(id, product_id) ON DELETE CASCADE
 );
 
 CREATE TABLE access_codes (
@@ -105,7 +112,9 @@ CREATE TABLE access_codes (
   failed_attempts INTEGER NOT NULL DEFAULT 0 CHECK (failed_attempts >= 0),
   disabled INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1)),
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (environment_id, product_id)
+    REFERENCES environments(id, product_id) ON DELETE CASCADE
 );
 
 CREATE TABLE activations (
@@ -131,8 +140,59 @@ CREATE TABLE token_grants (
   capabilities_json TEXT NOT NULL,
   expires_at INTEGER NOT NULL,
   revoked_at INTEGER,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (environment_id, product_id)
+    REFERENCES environments(id, product_id) ON DELETE CASCADE
 );
+
+CREATE TRIGGER token_grants_entitlement_identity_insert
+BEFORE INSERT ON token_grants
+WHEN NEW.entitlement_id IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1
+      FROM entitlements
+     WHERE id = NEW.entitlement_id
+       AND product_id = NEW.product_id
+       AND environment_id = NEW.environment_id
+       AND tenant_id = NEW.tenant_id
+       AND principal_id = NEW.principal_id
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'token grant entitlement identity mismatch');
+END;
+
+CREATE TRIGGER token_grants_entitlement_identity_update
+BEFORE UPDATE OF entitlement_id, product_id, environment_id, tenant_id, principal_id ON token_grants
+WHEN NEW.entitlement_id IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1
+      FROM entitlements
+     WHERE id = NEW.entitlement_id
+       AND product_id = NEW.product_id
+       AND environment_id = NEW.environment_id
+       AND tenant_id = NEW.tenant_id
+       AND principal_id = NEW.principal_id
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'token grant entitlement identity mismatch');
+END;
+
+CREATE TRIGGER entitlements_grant_identity_update
+BEFORE UPDATE OF product_id, environment_id, tenant_id, principal_id ON entitlements
+WHEN EXISTS (
+  SELECT 1
+    FROM token_grants
+   WHERE entitlement_id = OLD.id
+     AND (
+       product_id <> NEW.product_id
+       OR environment_id <> NEW.environment_id
+       OR tenant_id <> NEW.tenant_id
+       OR principal_id <> NEW.principal_id
+     )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'token grant entitlement identity mismatch');
+END;
 
 CREATE INDEX token_grants_active_idx ON token_grants(jti_hash, expires_at, revoked_at);
 

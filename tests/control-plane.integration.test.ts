@@ -214,3 +214,180 @@ describe("control-plane credential workflows", () => {
     ).toBe(401);
   });
 });
+
+describe("product environment integrity", () => {
+  async function addOtherProduct(): Promise<void> {
+    const timestamp = now();
+    await env.DB.prepare(
+      `INSERT INTO products (id, slug, display_name, created_at, updated_at)
+       VALUES ('prod_other', 'other-fixture', 'Other fixture', ?, ?)`,
+    )
+      .bind(timestamp, timestamp)
+      .run();
+  }
+
+  it("rejects mismatched product and environment pairs at the database boundary", async () => {
+    await addOtherProduct();
+    const timestamp = now();
+    const malformedWrites = [
+      env.DB.prepare(
+        `INSERT INTO aliases
+           (id, product_id, environment_id, alias, endpoint, route_id, max_input_tokens,
+            max_output_tokens, created_at, updated_at)
+           VALUES ('alias_mismatch', 'prod_other', 'env_control', 'text.chat.v1', 'chat',
+                   'fixture-text-v1', 1000, 100, ?, ?)`,
+      ).bind(timestamp, timestamp),
+      env.DB.prepare(
+        `INSERT INTO entitlements
+           (id, product_id, environment_id, tenant_id, principal_id, source, capabilities_json,
+            status, created_at, updated_at)
+           VALUES ('ent_mismatch', 'prod_other', 'env_control', 'tenant_fixture',
+                   'principal_fixture', 'dev', '["text.chat.v1"]', 'active', ?, ?)`,
+      ).bind(timestamp, timestamp),
+      env.DB.prepare(
+        `INSERT INTO service_credentials
+           (id, product_id, environment_id, tenant_id, principal_id, secret_salt, secret_hash,
+            capabilities_json, created_at)
+           VALUES ('service_mismatch', 'prod_other', 'env_control', 'tenant_fixture',
+                   'principal_fixture', 'salt', 'hash', '["text.chat.v1"]', ?)`,
+      ).bind(timestamp),
+      env.DB.prepare(
+        `INSERT INTO access_codes
+           (id, product_id, environment_id, tenant_id, secret_salt, secret_hash,
+            capabilities_json, expires_at, max_activations, created_at, updated_at)
+           VALUES ('code_mismatch', 'prod_other', 'env_control', 'tenant_fixture', 'salt',
+                   'hash', '["text.chat.v1"]', ?, 1, ?, ?)`,
+      ).bind(timestamp + 3600, timestamp, timestamp),
+      env.DB.prepare(
+        `INSERT INTO token_grants
+           (id, jti_hash, product_id, environment_id, tenant_id, principal_id, audience,
+            capabilities_json, expires_at, created_at)
+           VALUES ('grant_mismatch', 'jti_mismatch', 'prod_other', 'env_control',
+                   'tenant_fixture', 'principal_fixture', 'control:test', '["text.chat.v1"]',
+                   ?, ?)`,
+      ).bind(timestamp + 300, timestamp),
+    ];
+
+    for (const write of malformedWrites) {
+      await expect(write.run()).rejects.toThrow(/foreign key constraint/i);
+    }
+  });
+
+  it("rejects grant and entitlement tuple disagreement at the database boundary", async () => {
+    const timestamp = now();
+    await env.DB.prepare(
+      `INSERT INTO entitlements
+       (id, product_id, environment_id, tenant_id, principal_id, source, capabilities_json,
+        status, created_at, updated_at)
+       VALUES ('ent_tuple', 'prod_control', 'env_control', 'tenant_fixture',
+               'principal_fixture', 'dev', '["text.chat.v1"]', 'active', ?, ?)`,
+    )
+      .bind(timestamp, timestamp)
+      .run();
+
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO token_grants
+           (id, jti_hash, entitlement_id, product_id, environment_id, tenant_id, principal_id,
+            audience, capabilities_json, expires_at, created_at)
+           VALUES ('grant_bad_tuple', 'jti_bad_tuple', 'ent_tuple', 'prod_control',
+                   'env_control', 'tenant_fixture', 'other_principal', 'control:test',
+                   '["text.chat.v1"]', ?, ?)`,
+      )
+        .bind(timestamp + 300, timestamp)
+        .run(),
+    ).rejects.toThrow(/grant entitlement identity mismatch/i);
+
+    await env.DB.prepare(
+      `INSERT INTO token_grants
+       (id, jti_hash, entitlement_id, product_id, environment_id, tenant_id, principal_id,
+        audience, capabilities_json, expires_at, created_at)
+       VALUES ('grant_tuple', 'jti_tuple', 'ent_tuple', 'prod_control', 'env_control',
+               'tenant_fixture', 'principal_fixture', 'control:test', '["text.chat.v1"]', ?, ?)`,
+    )
+      .bind(timestamp + 300, timestamp)
+      .run();
+    await expect(
+      env.DB.prepare(
+        "UPDATE entitlements SET principal_id = 'other_principal' WHERE id = 'ent_tuple'",
+      ).run(),
+    ).rejects.toThrow(/grant entitlement identity mismatch/i);
+  });
+
+  it("returns a stable 4xx and leaves no partial admin writes for a mismatched pair", async () => {
+    await addOtherProduct();
+    const mismatchedRequests: Array<[string, Record<string, unknown>]> = [
+      [
+        "/admin/v1/aliases",
+        {
+          product_id: "prod_other",
+          environment_id: "env_control",
+          alias: "text.chat.v1",
+          endpoint: "chat",
+          route_id: "fixture-text-v1",
+          max_input_tokens: 1000,
+          max_output_tokens: 100,
+        },
+      ],
+      [
+        "/admin/v1/entitlements",
+        {
+          product_id: "prod_other",
+          environment_id: "env_control",
+          tenant_id: "tenant_fixture",
+          principal_id: "principal_fixture",
+          source: "dev",
+          capabilities: ["text.chat.v1"],
+          expires_at: null,
+        },
+      ],
+      [
+        "/admin/v1/service-credentials",
+        {
+          product_id: "prod_other",
+          environment_id: "env_control",
+          tenant_id: "tenant_fixture",
+          principal_id: "principal_fixture",
+          capabilities: ["text.chat.v1"],
+          expires_at: null,
+        },
+      ],
+      [
+        "/admin/v1/access-codes",
+        {
+          product_id: "prod_other",
+          environment_id: "env_control",
+          tenant_id: "tenant_fixture",
+          capabilities: ["text.chat.v1"],
+          expires_at: now() + 3600,
+          max_activations: 1,
+          max_failed_attempts: 3,
+        },
+      ],
+    ];
+
+    for (const [path, body] of mismatchedRequests) {
+      const response = await admin(path, body);
+      expect(response.status).toBe(404);
+      await expect(response.json()).resolves.toMatchObject({
+        error: {
+          code: "not_found",
+          message: "product environment not found",
+        },
+      });
+    }
+
+    for (const table of [
+      "aliases",
+      "entitlements",
+      "service_credentials",
+      "access_codes",
+      "admin_audit",
+    ]) {
+      const row = await env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM ${table}`,
+      ).first<{ count: number }>();
+      expect(row?.count).toBe(0);
+    }
+  });
+});
