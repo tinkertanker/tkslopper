@@ -119,12 +119,90 @@ describe("provider contract", () => {
     const init = fetcher.mock.calls[0]?.[1];
     if (typeof init?.body !== "string")
       throw new Error("provider body was not JSON text");
+    expect(init.redirect).toBe("manual");
     expect(JSON.parse(init.body)).toMatchObject({
       model: "physical-model-v1",
       stream: false,
     });
     expect(result.usage).toEqual({ inputTokens: 11, outputTokens: 7 });
     expect(JSON.stringify(result.body)).not.toContain(upstreamSecret);
+  });
+
+  it("preserves the supported Responses subset and projects normalized output", async () => {
+    const responsesRequest: ParsedGatewayRequest = {
+      endpoint: "responses",
+      body: {
+        model: "json.strict.v1",
+        instructions: "Return one synthetic JSON object.",
+        input: "Synthetic input.",
+        text: { format: { type: "json_object" } },
+        reasoning: { effort: "high" },
+        max_output_tokens: 500,
+      },
+    };
+    const route = parseProviderRoutes(
+      JSON.stringify({
+        route: {
+          id: "route",
+          provider: "openai-compatible",
+          model: "physical-responses-model-v1",
+          baseUrl: "https://provider.example.invalid",
+          credentialBinding: "UPSTREAM_KEY",
+          endpoints: ["responses"],
+          supportsImages: false,
+          supportsReasoning: true,
+          supportsStructuredJson: true,
+          timeoutMs: 5000,
+        },
+      }),
+    ).get("route")!;
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({
+        id: "resp_fixture",
+        object: "response",
+        model: "physical-responses-model-v1",
+        status: "completed",
+        output: [
+          {
+            id: "msg_fixture",
+            type: "message",
+            role: "assistant",
+            status: "completed",
+            content: [
+              {
+                type: "output_text",
+                text: '{"synthetic":true}',
+                annotations: [],
+                provider_extension: "removed",
+              },
+            ],
+          },
+        ],
+        usage: { input_tokens: 12, output_tokens: 5, provider_detail: 99 },
+        provider_extension: "removed",
+      }),
+    );
+    const result = await callProvider({
+      request: responsesRequest,
+      route,
+      deploymentEnvironment: "test",
+      maxResponseBytes: 10_000,
+      signal: new AbortController().signal,
+      getSecret: () => "public-fixture-upstream-value",
+      fetcher,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    const init = fetcher.mock.calls[0]?.[1];
+    if (typeof init?.body !== "string")
+      throw new Error("provider body was not JSON text");
+    expect(JSON.parse(init.body)).toMatchObject({
+      model: "physical-responses-model-v1",
+      stream: false,
+      text: { format: { type: "json_object" } },
+      reasoning: { effort: "high" },
+    });
+    expect(result.usage).toEqual({ inputTokens: 12, outputTokens: 5 });
+    expect(JSON.stringify(result.body)).not.toContain("provider_extension");
   });
 
   it("normalizes upstream rejection without retaining its body", async () => {

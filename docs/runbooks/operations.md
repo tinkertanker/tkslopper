@@ -1,5 +1,9 @@
 # Operations runbook
 
+## Readiness gate
+
+Before any canary, verify the exact reviewed application/configuration versions, named on-call and rollback owners, health checks, D1 migration/preflight result, provider deadline below the product's outer timeout, route/body/context/output limits, budget, metadata-only dashboards/alerts, retention decision, kill-switch access, compatible rollback target, and backend-only direct-provider path. Keep traffic killed if any owner or value is unknown.
+
 ## Signals
 
 Alert from metadata aggregates only: status/error-class rates, latency, per-route token/cost deltas, quota denials, missing attempt writes, and Durable Object/D1/provider availability. Do not sample payloads for debugging.
@@ -44,6 +48,12 @@ ORDER BY stale_after;
 For every row, stop the narrowest affected environment if the failure is ongoing, use the request ID for internal metadata correlation, compare its route/model/time window against provider-side usage and aggregate Durable Object spend, and never replay it. The request ID is not currently sent upstream, so treat an outcome that cannot be matched as the reserved token/cost maximum. A confirmed no-call or completed-call outcome may be terminalized only through separately authorized, audited reconciliation tooling; the public scaffold does not guess or silently mutate that evidence. Keep the row and incident open until provider and quota accounting agree.
 
 Compare aggregate provider usage to terminal `provider_attempts` and Durable Object spend after incidents. If a durable export consumer is selected, add Queue with an explicit at-least-once/idempotent delivery contract rather than mutating the hot path ad hoc.
+
+Treat `provider_attempts.error_class = 'attempt_started'` older than the route deadline plus reservation grace as a reconciliation alert. Do not infer whether the provider completed: correlate request ID with provider-side metadata, conservatively retain the reservation/spend assumption, and never automatically replay. Automated stale-attempt detection and tested remediation are required by [#5](https://github.com/tinkertanker/tkslopper/issues/5) before Stage 1.
+
+## Metadata retention and deletion
+
+The scaffold stores no inference payloads, but expired grants, idempotency hashes/status, attempt metadata, activations/entitlements, and admin audit metadata need separately approved retention periods. Until those periods and deletion/export procedures are owned, production is blocked. Any cleanup job must be idempotent, preserve active authorization/accounting rows, emit counts only, and be exercised in local/isolated state before enablement.
 
 ## Worker version rollback
 

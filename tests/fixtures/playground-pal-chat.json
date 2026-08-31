@@ -1,0 +1,12 @@
+{
+  "model": "long-context.chat.v1",
+  "messages": [
+    { "role": "system", "content": "Synthetic system instruction." },
+    { "role": "user", "content": "Synthetic earlier question." },
+    { "role": "assistant", "content": "Synthetic earlier answer." },
+    { "role": "user", "content": "Synthetic current request." }
+  ],
+  "max_completion_tokens": 4096,
+  "reasoning_effort": "high",
+  "stream": false
+}

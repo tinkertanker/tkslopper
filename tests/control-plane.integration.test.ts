@@ -674,3 +674,13 @@ describe("product environment integrity", () => {
     }
   });
 });
+
+describe("control-plane configuration", () => {
+  it("fails closed on an unknown deployment environment", async () => {
+    const response = await handleControlPlane(
+      new Request("https://control.example.invalid/healthz"),
+      { ...controlEnv, DEPLOYMENT_ENV: "prodution" },
+    );
+    expect(response.status).toBe(500);
+  });
+});

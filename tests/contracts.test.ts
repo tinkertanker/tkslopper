@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  capabilitySchema,
   chatRequestSchema,
   createOpaqueCredential,
   hashCredential,
@@ -14,9 +15,14 @@ import {
 } from "@tkslopper/shared";
 
 import playgroundPalLongContext from "./fixtures/playground-pal-long-context.json";
+import playgroundPalChat from "./fixtures/playground-pal-chat.json";
+import playgroundPalResponses from "./fixtures/playground-pal-responses.json";
+import tappletChat from "./fixtures/tapplet-chat.json";
 import tappletImage from "./fixtures/tapplet-image.json";
+import tappletModeration from "./fixtures/tapplet-moderation.json";
 import tappletStrictJson from "./fixtures/tapplet-strict-json.json";
 import vibbitChat from "./fixtures/vibbit-chat.json";
+import vibbitChatRepair from "./fixtures/vibbit-chat-repair.json";
 import vibbitResponses from "./fixtures/vibbit-responses.json";
 
 describe("credentials and grants", () => {
@@ -98,30 +104,54 @@ describe("credentials and grants", () => {
 });
 
 describe("golden product request contracts", () => {
-  it("accepts Vibbit Chat and Responses non-streaming shapes", () => {
+  it("requires an explicit positive integer version on every capability alias", () => {
+    expect(capabilitySchema.safeParse("text.chat.v1").success).toBe(true);
+    expect(capabilitySchema.safeParse("text.chat").success).toBe(false);
+    expect(capabilitySchema.safeParse("text.chat.v0").success).toBe(false);
+    expect(capabilitySchema.safeParse("provider-model-name").success).toBe(
+      false,
+    );
+  });
+
+  it("accepts Vibbit Chat, Responses, and ordered semantic-repair transcripts", () => {
     expect(chatRequestSchema.safeParse(vibbitChat).success).toBe(true);
     expect(responsesRequestSchema.safeParse(vibbitResponses).success).toBe(
       true,
     );
+    const repair = chatRequestSchema.parse(vibbitChatRepair);
+    expect(repair.messages.map(({ role }) => role)).toEqual([
+      "system",
+      "user",
+      "assistant",
+      "user",
+    ]);
   });
 
-  it("accepts Tapplet strict JSON and image Responses shapes", () => {
-    expect(responsesRequestSchema.safeParse(tappletStrictJson).success).toBe(
-      true,
-    );
+  it("accepts Tapplet Chat, Responses, moderation, and image shapes", () => {
+    const chat = chatRequestSchema.parse(tappletChat);
     expect(
-      inspectGatewayRequest({
-        endpoint: "responses",
-        body: responsesRequestSchema.parse(tappletStrictJson),
-      }).hasStructuredJson,
-    ).toBe(true);
+      inspectGatewayRequest({ endpoint: "chat", body: chat }),
+    ).toMatchObject({ hasStructuredJson: true, reasoningEffort: "high" });
+    for (const fixture of [tappletStrictJson, tappletModeration]) {
+      const response = responsesRequestSchema.parse(fixture);
+      expect(
+        inspectGatewayRequest({ endpoint: "responses", body: response }),
+      ).toMatchObject({ hasStructuredJson: true });
+    }
     const image = responsesRequestSchema.parse(tappletImage);
     expect(
-      inspectGatewayRequest({ endpoint: "responses", body: image }).hasImages,
+      inspectGatewayRequest({ endpoint: "responses", body: image }),
+    ).toMatchObject({ hasImages: true, reasoningEffort: undefined });
+  });
+
+  it("accepts normalized Playground Pal Chat and Responses shapes", () => {
+    expect(chatRequestSchema.safeParse(playgroundPalChat).success).toBe(true);
+    expect(
+      responsesRequestSchema.safeParse(playgroundPalResponses).success,
     ).toBe(true);
   });
 
-  it("materializes and admits Playground Pal long-context chat semantics", () => {
+  it("materializes and admits Playground Pal large-context chat semantics", () => {
     const template = playgroundPalLongContext;
     const parsed = chatRequestSchema.parse({
       model: template.model,
@@ -138,6 +168,35 @@ describe("golden product request contracts", () => {
       inspectGatewayRequest({ endpoint: "chat", body: parsed })
         .estimatedInputTokens,
     ).toBeGreaterThan(250_000);
+  });
+
+  it("rejects provider-specific fields that product adapters must translate", () => {
+    expect(
+      chatRequestSchema.safeParse({
+        ...playgroundPalChat,
+        thinking: { type: "enabled" },
+      }).success,
+    ).toBe(false);
+    expect(
+      responsesRequestSchema.safeParse({
+        ...playgroundPalResponses,
+        prompt_cache_key: "product-owned-cache-key",
+        prompt_cache_retention: "24h",
+      }).success,
+    ).toBe(false);
+    expect(
+      chatRequestSchema.safeParse({
+        ...tappletChat,
+        reasoning_effort: "max",
+        thinking: { type: "enabled" },
+      }).success,
+    ).toBe(false);
+    expect(
+      responsesRequestSchema.safeParse({
+        ...tappletStrictJson,
+        reasoning: { effort: "xhigh" },
+      }).success,
+    ).toBe(false);
   });
 
   it("rejects unsupported streaming, tools, and arbitrary provider parameters", () => {

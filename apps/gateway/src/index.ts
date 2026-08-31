@@ -113,9 +113,14 @@ function nowSeconds(): number {
 }
 
 function isConfigured(env: GatewayEnv): boolean {
+  const maxBodyBytes = Number(env.MAX_BODY_BYTES);
   if (
     typeof env.TOKEN_SIGNING_SECRET !== "string" ||
-    env.TOKEN_SIGNING_SECRET.length < 32
+    env.TOKEN_SIGNING_SECRET.length < 32 ||
+    !["development", "test", "production"].includes(env.DEPLOYMENT_ENV) ||
+    !Number.isSafeInteger(maxBodyBytes) ||
+    maxBodyBytes < 1024 ||
+    maxBodyBytes > 10_485_760
   )
     return false;
   try {

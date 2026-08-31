@@ -8,6 +8,8 @@ Start with a development/test fixture adapter and one transparent OpenAI-compati
 
 Make exactly one physical attempt. Retries and fallback are off, and provider errors are normalized without leaking bodies. Never retry after response bytes are emitted (v1 buffers the complete non-streaming response).
 
+Do not follow upstream redirects. The configured HTTPS route is the only approved destination. Provider-specific dialect transforms must be explicit trusted route policy with golden tests; the transparent adapter does not silently reinterpret unsupported fields.
+
 ## Consequences
 
 Successful upstream bodies are schema-validated and projected onto the supported response contract; arbitrary fields and error bodies are never forwarded. Exact credential-reflection rejection is defense-in-depth against accidents, not a claim that arbitrary provider text can be made safe when the provider itself is malicious.

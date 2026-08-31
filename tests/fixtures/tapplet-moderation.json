@@ -1,0 +1,9 @@
+{
+  "model": "json.strict.v1",
+  "instructions": "Review synthetic student-facing HTML and return exactly one JSON object.",
+  "input": "<!doctype html><html><body><p>Choose one half.</p></body></html>",
+  "text": { "format": { "type": "json_object" } },
+  "max_output_tokens": 500,
+  "reasoning": { "effort": "low" },
+  "stream": false
+}

@@ -1,0 +1,18 @@
+{
+  "model": "json.strict.v1",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Return exactly one JSON object containing html and an optional designCard."
+    },
+    {
+      "role": "user",
+      "content": "Create a synthetic fraction-choice activity for fictional learners."
+    }
+  ],
+  "response_format": { "type": "json_object" },
+  "max_tokens": 32000,
+  "temperature": 0.2,
+  "reasoning_effort": "high",
+  "stream": false
+}

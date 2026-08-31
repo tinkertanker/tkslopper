@@ -683,6 +683,31 @@ describe("Stage 0 failure-path accounting", () => {
   });
 });
 
+describe("gateway configuration", () => {
+  const gatewayEnv = env as unknown as GatewayEnv;
+
+  it("fails closed on unknown environments and invalid global body limits", async () => {
+    const healthRequest = () =>
+      new Request("https://gateway.example.invalid/healthz");
+    expect(
+      (
+        await handleGateway(healthRequest(), {
+          ...gatewayEnv,
+          DEPLOYMENT_ENV: "prodution",
+        })
+      ).status,
+    ).toBe(500);
+    expect(
+      (
+        await handleGateway(healthRequest(), {
+          ...gatewayEnv,
+          MAX_BODY_BYTES: "not-a-number",
+        })
+      ).status,
+    ).toBe(500);
+  });
+});
+
 describe("exact quota reservations", () => {
   it("calculates maximum configured rates without floating-point loss", () => {
     expect(costMicrocents(10_000_000, 1_000_000_000_000)).toBe(

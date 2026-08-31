@@ -116,6 +116,8 @@ function ensureConfiguration(env: ControlPlaneEnv): void {
     env.DASHBOARD_TOKEN === env.ADMIN_TOKEN ||
     env.DASHBOARD_TOKEN === env.TOKEN_SIGNING_SECRET ||
     env.DASHBOARD_TOKEN === env.CREDENTIAL_PEPPER ||
+    !["development", "test", "production"].includes(env.DEPLOYMENT_ENV) ||
+    !["true", "false"].includes(env.ENABLE_DEV_ISSUER) ||
     !issuerIsValid ||
     (env.DEPLOYMENT_ENV === "production" && env.ENABLE_DEV_ISSUER === "true")
   ) {

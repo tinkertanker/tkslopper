@@ -8,7 +8,7 @@
     "DEPLOYMENT_ENV": "development",
     "TOKEN_ISSUER": "https://control.local.tkslopper.invalid",
     "MAX_BODY_BYTES": "8388608",
-    "PROVIDER_ROUTES_JSON": "{\"fixture-text-v1\":{\"id\":\"fixture-text-v1\",\"provider\":\"fixture\",\"model\":\"fixture-chat-v1\",\"endpoints\":[\"chat\",\"responses\"],\"supportsImages\":false,\"supportsReasoning\":false,\"supportsStructuredJson\":true,\"timeoutMs\":10000},\"fixture-vision-v1\":{\"id\":\"fixture-vision-v1\",\"provider\":\"fixture\",\"model\":\"fixture-vision-v1\",\"endpoints\":[\"responses\"],\"supportsImages\":true,\"supportsReasoning\":false,\"supportsStructuredJson\":true,\"timeoutMs\":10000}}",
+    "PROVIDER_ROUTES_JSON": "{\"fixture-text-v1\":{\"id\":\"fixture-text-v1\",\"provider\":\"fixture\",\"model\":\"fixture-chat-v1\",\"endpoints\":[\"chat\",\"responses\"],\"supportsImages\":false,\"supportsReasoning\":true,\"supportsStructuredJson\":true,\"timeoutMs\":10000},\"fixture-vision-v1\":{\"id\":\"fixture-vision-v1\",\"provider\":\"fixture\",\"model\":\"fixture-vision-v1\",\"endpoints\":[\"responses\"],\"supportsImages\":true,\"supportsReasoning\":false,\"supportsStructuredJson\":true,\"timeoutMs\":10000}}",
   },
   "d1_databases": [
     {

@@ -418,6 +418,7 @@ export async function callProvider(options: {
       `${route.baseUrl.replace(/\/$/u, "")}${path}`,
       {
         method: "POST",
+        redirect: "manual",
         headers: {
           authorization: `Bearer ${secret}`,
           "content-type": "application/json",
