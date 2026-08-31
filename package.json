@@ -1,0 +1,44 @@
+{
+  "name": "tkslopper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared entitlement control plane and managed inference gateway for Tinkertanker products",
+  "license": "MIT",
+  "packageManager": "pnpm@10.15.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm build:control-plane && pnpm build:gateway",
+    "build:control-plane": "wrangler deploy --dry-run --config apps/control-plane/wrangler.jsonc --outdir dist/control-plane",
+    "build:gateway": "wrangler deploy --dry-run --config apps/gateway/wrangler.jsonc --outdir dist/gateway",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm migration:check && pnpm openapi:check && pnpm build && pnpm hygiene:check",
+    "dev:control-plane": "wrangler dev --config apps/control-plane/wrangler.jsonc --port 8787",
+    "dev:gateway": "wrangler dev --config apps/gateway/wrangler.jsonc --port 8788",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "hygiene:check": "tsx tools/check-public-hygiene.ts",
+    "lint": "eslint .",
+    "migration:check": "tsx tools/check-migrations.ts",
+    "openapi:check": "redocly lint openapi/tkslopper.openapi.yaml",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "admin": "tsx tools/admin.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20260828.1",
+    "@eslint/js": "^9.34.0",
+    "@redocly/cli": "^2.49.0",
+    "eslint": "^9.34.0",
+    "globals": "^16.3.0",
+    "prettier": "^3.6.2",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.41.0",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.33.1"
+  }
+}

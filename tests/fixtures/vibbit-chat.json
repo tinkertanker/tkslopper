@@ -1,0 +1,13 @@
+{
+  "model": "text.chat.v1",
+  "messages": [
+    { "role": "system", "content": "Synthetic fixture instruction." },
+    {
+      "role": "user",
+      "content": "Return one complete, non-streaming fixture result."
+    }
+  ],
+  "max_completion_tokens": 256,
+  "temperature": 0.2,
+  "stream": false
+}

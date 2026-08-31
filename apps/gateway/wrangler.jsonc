@@ -1,0 +1,25 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "tkslopper-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-08-30",
+  "workers_dev": false,
+  "vars": {
+    "DEPLOYMENT_ENV": "development",
+    "TOKEN_ISSUER": "https://control.local.tkslopper.invalid",
+    "MAX_BODY_BYTES": "8388608",
+    "PROVIDER_ROUTES_JSON": "{\"fixture-text-v1\":{\"id\":\"fixture-text-v1\",\"provider\":\"fixture\",\"model\":\"fixture-chat-v1\",\"endpoints\":[\"chat\",\"responses\"],\"supportsImages\":false,\"supportsReasoning\":false,\"supportsStructuredJson\":true,\"timeoutMs\":10000},\"fixture-vision-v1\":{\"id\":\"fixture-vision-v1\",\"provider\":\"fixture\",\"model\":\"fixture-vision-v1\",\"endpoints\":[\"responses\"],\"supportsImages\":true,\"supportsReasoning\":false,\"supportsStructuredJson\":true,\"timeoutMs\":10000}}",
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "tkslopper",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "../../db/migrations",
+    },
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "QUOTA", "class_name": "QuotaCoordinator" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["QuotaCoordinator"] }],
+}

@@ -1,0 +1,9 @@
+{
+  "name": "@tkslopper/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@tkslopper/shared": "workspace:*"
+  }
+}
