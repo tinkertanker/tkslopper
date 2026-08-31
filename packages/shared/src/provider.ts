@@ -182,6 +182,7 @@ export class ProviderError extends Error {
   constructor(
     readonly errorClass:
       | "provider_timeout"
+      | "provider_cancelled"
       | "provider_unavailable"
       | "provider_rejected"
       | "provider_protocol",
@@ -190,6 +191,15 @@ export class ProviderError extends Error {
   ) {
     super(errorClass);
   }
+}
+
+function abortedProviderError(signal: AbortSignal, latencyMs: number) {
+  const clientCancelled = signal.reason === "client_disconnected";
+  return new ProviderError(
+    clientCancelled ? "provider_cancelled" : "provider_timeout",
+    clientCancelled ? 499 : 504,
+    latencyMs,
+  );
 }
 
 function numericUsage(value: unknown): number {
@@ -378,6 +388,8 @@ export async function callProvider(options: {
   if (!route.endpoints.includes(request.endpoint)) {
     throw new ProviderError("provider_protocol", 500, Date.now() - startedAt);
   }
+  if (options.signal.aborted)
+    throw abortedProviderError(options.signal, Date.now() - startedAt);
   if (route.provider === "fixture") {
     if (!["development", "test"].includes(options.deploymentEnvironment)) {
       throw new ProviderError(
@@ -449,12 +461,11 @@ export async function callProvider(options: {
     };
   } catch (error) {
     if (error instanceof ProviderError) throw error;
-    const errorClass = options.signal.aborted
-      ? "provider_timeout"
-      : "provider_unavailable";
+    if (options.signal.aborted)
+      throw abortedProviderError(options.signal, Date.now() - startedAt);
     throw new ProviderError(
-      errorClass,
-      errorClass === "provider_timeout" ? 504 : 503,
+      "provider_unavailable",
+      503,
       Date.now() - startedAt,
     );
   }

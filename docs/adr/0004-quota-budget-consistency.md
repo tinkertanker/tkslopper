@@ -10,7 +10,11 @@ Persist an attempt intent in D1 before every physical provider call, then finali
 
 ## Failure behavior
 
-Admission or accounting uncertainty fails closed. Reservations have bounded expiries to recover from Worker termination. Minute token reservations adjust to actual usage on completion; daily spend never decreases on a completed physical attempt. A stale `attempt_started` row is an explicit reconciliation signal after termination between intent and finalization.
+Admission or accounting uncertainty fails closed. Reservations have bounded expiries to recover concurrency after Worker termination. An expired reservation conservatively converts reserved cost to spent cost and retains its estimated minute tokens; it never silently releases possibly incurred spend. Minute token reservations adjust to actual usage on explicit completion. Daily spend never decreases on a completed or ambiguous physical attempt.
+
+The gateway distinguishes its provider deadline (`504`, `provider_timeout`) from a client disconnect (`499`, `provider_cancelled`). Both abort the same one-call provider signal, conservatively complete the reservation because the provider outcome may be ambiguous, finalize attempt provenance, and retain failed idempotency state for 24 hours.
+
+Every attempt intent stores `stale_after` as its route deadline plus reservation grace. D1 attempt finalization occurs only after Durable Object completion, so a row exposed by `stale_provider_attempts` is an explicit reconciliation signal for termination or accounting failure between intent and finalization.
 
 ## Consequences
 

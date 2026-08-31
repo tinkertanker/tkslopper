@@ -30,7 +30,20 @@ The v1 verifier supports one HS256 key. Rotation therefore requires a coordinate
 
 ## Reservation reconciliation
 
-Expired reservations release automatically. Compare aggregate provider usage to `provider_attempts` and Durable Object spend after incidents. If a durable export consumer is selected, add Queue with an explicit at-least-once/idempotent delivery contract rather than mutating the hot path ad hoc.
+Explicit completion replaces a reservation with normalized actual usage. If completion cannot be confirmed, its bounded expiry releases concurrency but conservatively converts reserved cost to spend and retains estimated minute tokens until the minute resets.
+
+Detect overdue attempt intents with the metadata-only view:
+
+```sql
+SELECT request_id, product_id, environment_id, route_id, provider, resolved_model,
+       endpoint, input_tokens, output_tokens, cost_microcents, created_at, stale_after
+FROM stale_provider_attempts
+ORDER BY stale_after;
+```
+
+For every row, stop the narrowest affected environment if the failure is ongoing, use the request ID for internal metadata correlation, compare its route/model/time window against provider-side usage and aggregate Durable Object spend, and never replay it. The request ID is not currently sent upstream, so treat an outcome that cannot be matched as the reserved token/cost maximum. A confirmed no-call or completed-call outcome may be terminalized only through separately authorized, audited reconciliation tooling; the public scaffold does not guess or silently mutate that evidence. Keep the row and incident open until provider and quota accounting agree.
+
+Compare aggregate provider usage to terminal `provider_attempts` and Durable Object spend after incidents. If a durable export consumer is selected, add Queue with an explicit at-least-once/idempotent delivery contract rather than mutating the hot path ad hoc.
 
 ## Worker version rollback
 

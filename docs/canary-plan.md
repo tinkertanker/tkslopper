@@ -6,6 +6,8 @@ No stage authorizes production deployment.
 
 Exercise service exchange, access-code activation bounds, revocation, kill switches, all golden request fixtures, cross-product alias denial, idempotency conflict, quota/concurrency/budget denial, deadlines, one-attempt accounting, and payload-leakage assertions.
 
+`pnpm check` executes the named Stage 0 failure gates: provider deadline abort, client-cancellation abort, one physical call, conservative timeout/cancellation accounting, attempt-finalization fault, quota-completion fault with one bounded retry, stale-attempt detection, 24-hour idempotency bounds, and conservative reservation expiry. No remote provider is used.
+
 **Accept:** all gates pass at the reviewed SHA; no Critical/Required review findings.
 
 **Kill:** any identity override, cross-product access, payload in logs/storage, unbounded attempt, or accounting race.

@@ -228,11 +228,21 @@ CREATE TABLE provider_attempts (
   output_tokens INTEGER NOT NULL DEFAULT 0,
   cost_microcents INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
+  stale_after INTEGER NOT NULL CHECK (stale_after >= created_at),
   UNIQUE (request_id, attempt_number)
 );
 
 CREATE INDEX provider_attempts_product_time_idx
   ON provider_attempts(product_id, environment_id, created_at);
+
+CREATE INDEX provider_attempts_stale_idx
+  ON provider_attempts(error_class, stale_after);
+
+CREATE VIEW stale_provider_attempts AS
+SELECT request_id, product_id, environment_id, route_id, provider, resolved_model, endpoint,
+       input_tokens, output_tokens, cost_microcents, created_at, stale_after
+FROM provider_attempts
+WHERE error_class = 'attempt_started' AND stale_after <= unixepoch();
 
 CREATE TABLE admin_audit (
   id TEXT PRIMARY KEY,

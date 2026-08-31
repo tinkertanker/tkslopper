@@ -1,4 +1,4 @@
-import { SELF, env } from "cloudflare:test";
+import { SELF, env, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -17,6 +17,14 @@ const now = (): number => Math.floor(Date.now() / 1000);
 
 beforeEach(async () => {
   const timestamp = now();
+  const quota = env.QUOTA.get(
+    env.QUOTA.idFromName(
+      "prod_vibbit:env_vibbit:tenant_fixture:principal_fixture",
+    ),
+  );
+  await runInDurableObject(quota, async (_instance, durableState) => {
+    await durableState.storage.deleteAll();
+  });
   await env.DB.batch([
     env.DB.prepare("DELETE FROM provider_attempts"),
     env.DB.prepare("DELETE FROM idempotency_keys"),
@@ -139,6 +147,7 @@ function chatRequest(
     max_completion_tokens: 100,
     stream: false,
   },
+  signal?: AbortSignal,
 ): Request {
   return new Request("https://gateway.example.invalid/v1/chat/completions", {
     method: "POST",
@@ -148,6 +157,64 @@ function chatRequest(
       ...overrides,
     },
     body: JSON.stringify(body),
+    ...(signal ? { signal } : {}),
+  });
+}
+
+function upstreamEnv(timeoutMs: number): GatewayEnv {
+  return {
+    ...(env as unknown as GatewayEnv),
+    PROVIDER_ROUTES_JSON: JSON.stringify({
+      "fixture-text-v1": {
+        id: "fixture-text-v1",
+        provider: "openai-compatible",
+        model: "physical-fixture-v1",
+        baseUrl: "https://provider.example.invalid",
+        credentialBinding: "UPSTREAM_KEY",
+        endpoints: ["chat"],
+        supportsImages: false,
+        supportsReasoning: false,
+        supportsStructuredJson: false,
+        timeoutMs,
+      },
+    }),
+    UPSTREAM_KEY: "public-fixture-upstream-value",
+  };
+}
+
+async function quotaState(): Promise<{
+  spentTodayMicrocents: number;
+  reservedTodayMicrocents: number;
+  reservations: Record<string, unknown>;
+}> {
+  const stub = env.QUOTA.get(
+    env.QUOTA.idFromName(
+      "prod_vibbit:env_vibbit:tenant_fixture:principal_fixture",
+    ),
+  );
+  const state = await runInDurableObject(
+    stub,
+    async (_instance, durableState) =>
+      durableState.storage.get<{
+        spentTodayMicrocents: number;
+        reservedTodayMicrocents: number;
+        reservations: Record<string, unknown>;
+      }>("quota"),
+  );
+  if (!state) throw new Error("quota state was not persisted");
+  return state;
+}
+
+function abortableProviderFetch(onStart?: () => void) {
+  return vi.fn<typeof fetch>().mockImplementation((_input, init) => {
+    onStart?.();
+    const signal = init?.signal;
+    return new Promise<Response>((_resolve, reject) => {
+      const abort = (): void =>
+        reject(new Error("synthetic provider fetch aborted"));
+      if (signal?.aborted) abort();
+      else signal?.addEventListener("abort", abort, { once: true });
+    });
   });
 }
 
@@ -383,6 +450,239 @@ describe("gateway integration and isolation", () => {
   });
 });
 
+describe("Stage 0 failure-path accounting", () => {
+  it("aborts one provider call at its deadline and finalizes conservative accounting", async () => {
+    const token = await grant();
+    const providerFetch = abortableProviderFetch();
+    vi.stubGlobal("fetch", providerFetch);
+    try {
+      const response = await handleGateway(
+        chatRequest(token, { "idempotency-key": "deadline-fixture-0001" }),
+        upstreamEnv(1000),
+      );
+      expect(response.status).toBe(504);
+      expect(providerFetch).toHaveBeenCalledTimes(1);
+      expect(providerFetch.mock.calls[0]?.[1]?.signal?.reason).toBe("deadline");
+
+      const attempt = await env.DB.prepare(
+        `SELECT status_code, error_class, cost_microcents, created_at, stale_after
+           FROM provider_attempts`,
+      ).first<{
+        status_code: number;
+        error_class: string;
+        cost_microcents: number;
+        created_at: number;
+        stale_after: number;
+      }>();
+      expect(attempt).toMatchObject({
+        status_code: 504,
+        error_class: "provider_timeout",
+      });
+      expect(attempt!.stale_after - attempt!.created_at).toBe(31);
+      const quota = await quotaState();
+      expect(quota.reservations).toEqual({});
+      expect(quota.reservedTodayMicrocents).toBe(0);
+      expect(quota.spentTodayMicrocents).toBe(attempt!.cost_microcents);
+      const idempotency = await env.DB.prepare(
+        "SELECT status, created_at, expires_at FROM idempotency_keys",
+      ).first<{ status: string; created_at: number; expires_at: number }>();
+      expect(idempotency?.status).toBe("failed");
+      expect(idempotency!.expires_at - idempotency!.created_at).toBe(86_400);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("distinguishes client cancellation, aborts the provider, and accounts conservatively", async () => {
+    const token = await grant();
+    const requestController = new AbortController();
+    let providerStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      providerStarted = resolve;
+    });
+    const providerFetch = abortableProviderFetch(providerStarted);
+    vi.stubGlobal("fetch", providerFetch);
+    try {
+      const responsePromise = handleGateway(
+        chatRequest(
+          token,
+          { "idempotency-key": "cancel-fixture-0001" },
+          undefined,
+          requestController.signal,
+        ),
+        upstreamEnv(5000),
+      );
+      await started;
+      requestController.abort("synthetic_client_disconnect");
+      const response = await responsePromise;
+      expect(response.status).toBe(499);
+      expect(providerFetch).toHaveBeenCalledTimes(1);
+      expect(providerFetch.mock.calls[0]?.[1]?.signal?.reason).toBe(
+        "client_disconnected",
+      );
+      const attempt = await env.DB.prepare(
+        "SELECT status_code, error_class, cost_microcents FROM provider_attempts",
+      ).first<{
+        status_code: number;
+        error_class: string;
+        cost_microcents: number;
+      }>();
+      expect(attempt).toMatchObject({
+        status_code: 499,
+        error_class: "provider_cancelled",
+      });
+      const quota = await quotaState();
+      expect(quota.reservations).toEqual({});
+      expect(quota.spentTodayMicrocents).toBe(attempt!.cost_microcents);
+      expect(
+        (
+          await env.DB.prepare("SELECT status FROM idempotency_keys").first<{
+            status: string;
+          }>()
+        )?.status,
+      ).toBe("failed");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("leaves bounded stale provenance when attempt finalization fails", async () => {
+    await env.DB.prepare(
+      `CREATE TRIGGER fail_attempt_finalization
+       BEFORE UPDATE ON provider_attempts
+       BEGIN SELECT RAISE(ABORT, 'synthetic attempt finalization failure'); END`,
+    ).run();
+    try {
+      const token = await grant();
+      const response = await SELF.fetch(
+        chatRequest(token, { "idempotency-key": "finalize-fixture-0001" }),
+      );
+      expect(response.status).toBe(500);
+      const attempt = await env.DB.prepare(
+        `SELECT status_code, error_class, cost_microcents, created_at, stale_after
+           FROM provider_attempts`,
+      ).first<{
+        status_code: number;
+        error_class: string;
+        cost_microcents: number;
+        created_at: number;
+        stale_after: number;
+      }>();
+      expect(attempt).toMatchObject({
+        status_code: 0,
+        error_class: "attempt_started",
+      });
+      expect(attempt!.stale_after - attempt!.created_at).toBe(40);
+      const quota = await quotaState();
+      expect(quota.reservations).toEqual({});
+      expect(quota.spentTodayMicrocents).toBe(attempt!.cost_microcents);
+      expect(
+        (
+          await env.DB.prepare("SELECT status FROM idempotency_keys").first<{
+            status: string;
+          }>()
+        )?.status,
+      ).toBe("failed");
+    } finally {
+      await env.DB.prepare("DROP TRIGGER fail_attempt_finalization").run();
+    }
+  });
+
+  it("retries quota completion once and leaves a bounded stale signal if it still fails", async () => {
+    const operations: Array<Record<string, unknown>> = [];
+    const quotaStub = {
+      fetch(_url: string, init?: RequestInit): Promise<Response> {
+        if (typeof init?.body !== "string")
+          throw new Error("synthetic quota request body was not a string");
+        const parsed: unknown = JSON.parse(init.body);
+        if (typeof parsed !== "object" || parsed === null)
+          throw new Error("synthetic quota request body was not an object");
+        const operation = parsed as Record<string, unknown>;
+        operations.push(operation);
+        return Promise.resolve(
+          operation.operation === "acquire"
+            ? Response.json({ acquired: true })
+            : Response.json({ completed: false }, { status: 503 }),
+        );
+      },
+    };
+    const quotaNamespace = {
+      idFromName: () => ({ synthetic: true }),
+      get: () => quotaStub,
+    } as unknown as DurableObjectNamespace;
+    const token = await grant();
+    const response = await handleGateway(
+      chatRequest(token, { "idempotency-key": "quota-failure-fixture-0001" }),
+      { ...(env as unknown as GatewayEnv), QUOTA: quotaNamespace },
+    );
+    expect(response.status).toBe(503);
+    expect(operations.map(({ operation }) => operation)).toEqual([
+      "acquire",
+      "complete",
+      "complete",
+    ]);
+    expect(operations[0]?.reservationTtlSeconds).toBe(40);
+    const attempt = await env.DB.prepare(
+      `SELECT status_code, error_class, created_at, stale_after
+         FROM provider_attempts`,
+    ).first<{
+      status_code: number;
+      error_class: string;
+      created_at: number;
+      stale_after: number;
+    }>();
+    expect(attempt).toMatchObject({
+      status_code: 0,
+      error_class: "attempt_started",
+    });
+    expect(attempt!.stale_after - attempt!.created_at).toBe(40);
+    expect(
+      (
+        await env.DB.prepare("SELECT status FROM idempotency_keys").first<{
+          status: string;
+        }>()
+      )?.status,
+    ).toBe("failed");
+
+    await env.DB.prepare(
+      "UPDATE provider_attempts SET stale_after = unixepoch()",
+    ).run();
+    const stale = await env.DB.prepare(
+      "SELECT * FROM stale_provider_attempts",
+    ).first<Record<string, unknown>>();
+    expect(stale?.request_id).toMatch(/^req_/u);
+    expect(stale).toMatchObject({
+      product_id: "prod_vibbit",
+      environment_id: "env_vibbit",
+      route_id: "fixture-text-v1",
+      provider: "fixture",
+      resolved_model: "fixture-chat-v1",
+      endpoint: "chat",
+      output_tokens: 100,
+    });
+    expect(typeof stale?.input_tokens).toBe("number");
+    expect(typeof stale?.cost_microcents).toBe("number");
+    expect(typeof stale?.created_at).toBe("number");
+    expect(typeof stale?.stale_after).toBe("number");
+    expect(Object.keys(stale ?? {}).sort()).toEqual(
+      [
+        "request_id",
+        "product_id",
+        "environment_id",
+        "route_id",
+        "provider",
+        "resolved_model",
+        "endpoint",
+        "input_tokens",
+        "output_tokens",
+        "cost_microcents",
+        "created_at",
+        "stale_after",
+      ].sort(),
+    );
+  });
+});
+
 describe("exact quota reservations", () => {
   it("calculates maximum configured rates without floating-point loss", () => {
     expect(costMicrocents(10_000_000, 1_000_000_000_000)).toBe(
@@ -501,6 +801,55 @@ describe("exact quota reservations", () => {
       expect((await reserve("new-day", 60)).status).toBe(200);
       vi.setSystemTime(new Date("2026-01-02T00:00:11.000Z"));
       expect((await reserve("new-day-over-budget", 50)).status).toBe(402);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("releases expired concurrency but conservatively charges reserved spend", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T12:00:00.000Z"));
+      const stub = env.QUOTA.get(
+        env.QUOTA.idFromName("quota-expiry-recovery-fixture"),
+      );
+      const reserve = (requestId: string, reservedCostMicrocents: number) =>
+        stub.fetch("https://quota.internal/", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            operation: "acquire",
+            requestId,
+            reservationTtlSeconds: 5,
+            estimatedTokens: 10,
+            reservedCostMicrocents,
+            limits: {
+              rpm: 10,
+              tpm: 1000,
+              concurrency: 1,
+              dailyBudgetMicrocents: 100,
+            },
+          }),
+        });
+
+      expect((await reserve("expired-unknown", 60)).status).toBe(200);
+      vi.setSystemTime(new Date("2026-01-01T12:00:06.000Z"));
+      expect((await reserve("after-expiry", 0)).status).toBe(200);
+      expect(
+        (
+          await stub.fetch("https://quota.internal/", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              operation: "complete",
+              requestId: "after-expiry",
+              actualTokens: 1,
+              actualCostMicrocents: 0,
+            }),
+          })
+        ).status,
+      ).toBe(200);
+      expect((await reserve("over-conservative-budget", 50)).status).toBe(402);
     } finally {
       vi.useRealTimers();
     }

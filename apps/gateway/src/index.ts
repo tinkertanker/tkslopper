@@ -394,12 +394,13 @@ async function recordAttemptStart(
   ) {
     throw new HttpError(500, "internal_error", "request context is incomplete");
   }
+  const createdAt = nowSeconds();
   await env.DB.prepare(
     `INSERT INTO provider_attempts
       (id, request_id, attempt_number, product_id, environment_id, tenant_hash, principal_hash,
        alias, policy_version, route_id, provider, resolved_model, endpoint, status_code, error_class,
-       latency_ms, input_tokens, output_tokens, cost_microcents, created_at)
-     VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       latency_ms, input_tokens, output_tokens, cost_microcents, created_at, stale_after)
+     VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       randomId("attempt"),
@@ -420,7 +421,8 @@ async function recordAttemptStart(
       values.inputTokens,
       values.outputTokens,
       values.costMicrocents,
-      nowSeconds(),
+      createdAt,
+      createdAt + Math.ceil(route.timeoutMs / 1000) + 30,
     )
     .run();
 }
@@ -674,6 +676,7 @@ async function handleInference(
     );
     const abortFromClient = (): void => controller.abort("client_disconnected");
     request.signal.addEventListener("abort", abortFromClient, { once: true });
+    if (request.signal.aborted) abortFromClient();
     try {
       context.providerAttempted = true;
       const result = await callProvider({
@@ -703,14 +706,6 @@ async function handleInference(
           outputTokens,
           aliasPolicy.output_cost_microcents_per_million,
         );
-      await recordAttempt(env, context, {
-        statusCode: result.status,
-        errorClass: null,
-        latencyMs: result.latencyMs,
-        inputTokens,
-        outputTokens,
-        costMicrocents: actualCost,
-      });
       const completion = await quotaCall(env, policy, {
         operation: "complete",
         requestId: context.requestId,
@@ -724,6 +719,14 @@ async function handleInference(
           "quota accounting completion failed",
         );
       quotaAcquired = false;
+      await recordAttempt(env, context, {
+        statusCode: result.status,
+        errorClass: null,
+        latencyMs: result.latencyMs,
+        inputTokens,
+        outputTokens,
+        costMicrocents: actualCost,
+      });
       await finishIdempotency(request, env, context, "completed");
       logSafeEvent(
         safeEvent(context, {
@@ -739,6 +742,19 @@ async function handleInference(
       });
     } catch (error) {
       if (!(error instanceof ProviderError)) throw error;
+      const completion = await quotaCall(env, policy, {
+        operation: "complete",
+        requestId: context.requestId,
+        actualTokens: reservedTokens,
+        actualCostMicrocents: reservedCost,
+      });
+      if (!completion.ok)
+        throw new HttpError(
+          503,
+          "internal_error",
+          "quota accounting completion failed",
+        );
+      quotaAcquired = false;
       await recordAttempt(env, context, {
         statusCode: error.status,
         errorClass: error.errorClass,
@@ -747,15 +763,13 @@ async function handleInference(
         outputTokens: inspection.maxOutputTokens,
         costMicrocents: reservedCost,
       });
-      const completion = await quotaCall(env, policy, {
-        operation: "complete",
-        requestId: context.requestId,
-        actualTokens: reservedTokens,
-        actualCostMicrocents: reservedCost,
-      });
-      quotaAcquired = !completion.ok;
       await finishIdempotency(request, env, context, "failed");
-      const status = error.errorClass === "provider_timeout" ? 504 : 502;
+      const status =
+        error.errorClass === "provider_timeout"
+          ? 504
+          : error.errorClass === "provider_cancelled"
+            ? 499
+            : 502;
       logSafeEvent(
         safeEvent(context, {
           status,

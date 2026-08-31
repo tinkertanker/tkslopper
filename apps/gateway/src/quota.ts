@@ -72,17 +72,12 @@ function normalizeState(state: QuotaState, now: number): void {
   }
   for (const [requestId, reservation] of Object.entries(state.reservations)) {
     if (reservation.expiresAt > now) continue;
-    if (reservation.minuteKey === state.minuteKey) {
-      state.tokensThisMinute = Math.max(
-        0,
-        state.tokensThisMinute - reservation.estimatedTokens,
-      );
-    }
     if (reservation.dayKey === state.dayKey) {
       state.reservedTodayMicrocents = Math.max(
         0,
         state.reservedTodayMicrocents - reservation.reservedCostMicrocents,
       );
+      state.spentTodayMicrocents += reservation.reservedCostMicrocents;
     }
     delete state.reservations[requestId];
   }
