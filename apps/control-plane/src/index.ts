@@ -26,7 +26,7 @@ import {
   verifyCredential,
   zodMessage,
   type GrantClaims,
-} from "@tkslop/shared";
+} from "@tkslopper/shared";
 import type { ZodType } from "zod";
 
 export type ControlPlaneEnv = {

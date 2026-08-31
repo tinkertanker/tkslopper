@@ -13,7 +13,7 @@ const routes: Record<string, string> = {
 };
 
 function usage(): never {
-  console.error(`tkslop admin CLI
+  console.error(`tkslopper admin CLI
 
 Usage:
   pnpm admin -- <resource> <action> (--json '<object>' | --file path.json)
@@ -27,8 +27,8 @@ Commands:
   dev issue
 
 Environment:
-  TKSLOP_CONTROL_PLANE_URL  Control Worker base URL
-  TKSLOP_ADMIN_TOKEN        Admin bearer token (never pass it as an argument)
+  TKSLOPPER_CONTROL_PLANE_URL  Control Worker base URL
+  TKSLOPPER_ADMIN_TOKEN        Admin bearer token (never pass it as an argument)
 
 The response can contain a one-time credential or access code. Handle stdout as a secret.`);
   process.exit(2);
@@ -40,7 +40,7 @@ function validatedBaseUrl(value: string): string {
   try {
     url = new URL(value);
   } catch {
-    throw new Error("TKSLOP_CONTROL_PLANE_URL is not a valid URL");
+    throw new Error("TKSLOPPER_CONTROL_PLANE_URL is not a valid URL");
   }
   const loopbackHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
   const secure = url.protocol === "https:";
@@ -54,7 +54,7 @@ function validatedBaseUrl(value: string): string {
     (url.pathname !== "/" && url.pathname !== "")
   ) {
     throw new Error(
-      "TKSLOP_CONTROL_PLANE_URL must be HTTPS (or HTTP loopback) without credentials, path, query, or fragment",
+      "TKSLOPPER_CONTROL_PLANE_URL must be HTTPS (or HTTP loopback) without credentials, path, query, or fragment",
     );
   }
   return url.origin;
@@ -95,11 +95,11 @@ async function main(): Promise<void> {
     throw new Error("request body must be a JSON object");
   }
 
-  const configuredBaseUrl = process.env.TKSLOP_CONTROL_PLANE_URL;
-  const adminToken = process.env.TKSLOP_ADMIN_TOKEN;
+  const configuredBaseUrl = process.env.TKSLOPPER_CONTROL_PLANE_URL;
+  const adminToken = process.env.TKSLOPPER_ADMIN_TOKEN;
   if (!configuredBaseUrl || !adminToken)
     throw new Error(
-      "TKSLOP_CONTROL_PLANE_URL and TKSLOP_ADMIN_TOKEN are required",
+      "TKSLOPPER_CONTROL_PLANE_URL and TKSLOPPER_ADMIN_TOKEN are required",
     );
   const baseUrl = validatedBaseUrl(configuredBaseUrl);
   const response = await fetch(`${baseUrl}${route}`, {

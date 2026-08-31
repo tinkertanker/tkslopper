@@ -1,7 +1,12 @@
 import { SELF, env } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { randomId, sha256, signGrant, type GrantClaims } from "@tkslop/shared";
+import {
+  randomId,
+  sha256,
+  signGrant,
+  type GrantClaims,
+} from "@tkslopper/shared";
 import { costMicrocents } from "../apps/gateway/src";
 
 const now = (): number => Math.floor(Date.now() / 1000);
@@ -149,7 +154,7 @@ describe("gateway integration and isolation", () => {
       chatRequest(token, { "idempotency-key": "fixture-request-0001" }),
     );
     expect(response.status).toBe(200);
-    expect(response.headers.get("x-tkslop-request-id")).toMatch(/^req_/u);
+    expect(response.headers.get("x-tkslopper-request-id")).toMatch(/^req_/u);
     await expect(response.json()).resolves.toMatchObject({
       model: "text.chat.v1",
       object: "chat.completion",
@@ -179,7 +184,7 @@ describe("gateway integration and isolation", () => {
     expect(
       (
         await SELF.fetch(
-          chatRequest(token, { "x-tkslop-product": "prod_tapplet" }),
+          chatRequest(token, { "x-tkslopper-product": "prod_tapplet" }),
         )
       ).status,
     ).toBe(400);

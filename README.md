@@ -1,6 +1,6 @@
-# tkslop
+# tkslopper
 
-`tkslop` is Tinkertanker's shared managed-inference boundary. It has two bounded components:
+`tkslopper` is Tinkertanker's shared managed-inference boundary. It has two bounded components:
 
 - a **control plane** for products, environments, entitlements, activation codes, service credentials, short-lived grants, revocation, and kill switches;
 - a **data plane** that resolves capability aliases, enforces policy and exact per-principal reservations, invokes one configured provider route, normalizes usage/errors, and records metadata-only attempt provenance.
@@ -35,7 +35,7 @@ See [the architecture overview](docs/architecture.md) and [decision records](doc
 - selected text, image-input, strict JSON, token-limit, temperature, and explicitly enabled reasoning-effort fields
 - no tools, audio, files, fine-tuning, assistants, batches, arbitrary provider/model selection, retry, fallback, or cache API
 
-This is intentionally a narrow, versioned OpenAI-compatible shape. It is not advertised as full OpenAI API compatibility. See [the OpenAPI specification](openapi/tkslop.openapi.yaml).
+This is intentionally a narrow, versioned OpenAI-compatible shape. It is not advertised as full OpenAI API compatibility. See [the OpenAPI specification](openapi/tkslopper.openapi.yaml).
 
 Example capability aliases (policy data, not hard-coded product behavior):
 
@@ -67,7 +67,7 @@ pnpm dev:gateway
 Apply migrations to Wrangler's local D1 state before exercising the Workers:
 
 ```bash
-pnpm wrangler d1 migrations apply tkslop --local --config apps/control-plane/wrangler.jsonc
+pnpm wrangler d1 migrations apply tkslopper --local --config apps/control-plane/wrangler.jsonc
 ```
 
 The checked-in fixture provider works only when `DEPLOYMENT_ENV` is `development` or `test`; it cannot run in production. Set `ENABLE_DEV_ISSUER=true` only in a local control-plane `.dev.vars` when using the admin-only test issuer.
@@ -75,8 +75,8 @@ The checked-in fixture provider works only when `DEPLOYMENT_ENV` is `development
 Use the admin CLI against a local control Worker:
 
 ```bash
-export TKSLOP_CONTROL_PLANE_URL=http://127.0.0.1:8787
-export TKSLOP_ADMIN_TOKEN='your local ADMIN_TOKEN'
+export TKSLOPPER_CONTROL_PLANE_URL=http://127.0.0.1:8787
+export TKSLOPPER_ADMIN_TOKEN='your local ADMIN_TOKEN'
 pnpm admin -- help
 ```
 

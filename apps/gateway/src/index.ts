@@ -20,7 +20,7 @@ import {
   type ParsedGatewayRequest,
   type ProviderRoute,
   type SafeRequestEvent,
-} from "@tkslop/shared";
+} from "@tkslopper/shared";
 
 import {
   QuotaCoordinator,
@@ -95,13 +95,13 @@ type RequestContext = {
 };
 
 const forbiddenAttributionHeaders = [
-  "x-tkslop-product",
-  "x-tkslop-environment",
-  "x-tkslop-tenant",
-  "x-tkslop-principal",
-  "x-tkslop-provider",
-  "x-tkslop-model",
-  "x-tkslop-cost-tier",
+  "x-tkslopper-product",
+  "x-tkslopper-environment",
+  "x-tkslopper-tenant",
+  "x-tkslopper-principal",
+  "x-tkslopper-provider",
+  "x-tkslopper-model",
+  "x-tkslopper-cost-tier",
 ] as const;
 
 function nowSeconds(): number {
@@ -725,7 +725,7 @@ async function handleInference(
         }),
       );
       return jsonResponse({ ...result.body, model: inspection.alias }, 200, {
-        "x-tkslop-request-id": context.requestId,
+        "x-tkslopper-request-id": context.requestId,
       });
     } catch (error) {
       if (!(error instanceof ProviderError)) throw error;

@@ -1,11 +1,11 @@
 export {};
 
-const controlPlaneUrl = process.env.TKSLOP_CONTROL_PLANE_URL;
-const gatewayUrl = process.env.TKSLOP_GATEWAY_URL;
-const serviceCredential = process.env.TKSLOP_SERVICE_CREDENTIAL;
+const controlPlaneUrl = process.env.TKSLOPPER_CONTROL_PLANE_URL;
+const gatewayUrl = process.env.TKSLOPPER_GATEWAY_URL;
+const serviceCredential = process.env.TKSLOPPER_SERVICE_CREDENTIAL;
 
 if (!controlPlaneUrl || !gatewayUrl || !serviceCredential)
-  throw new Error("required tkslop environment is missing");
+  throw new Error("required tkslopper environment is missing");
 
 const exchange = await fetch(`${controlPlaneUrl}/v1/token`, {
   method: "POST",

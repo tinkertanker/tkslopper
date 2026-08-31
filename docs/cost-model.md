@@ -15,6 +15,6 @@ Before canary, record privately for every route:
 - provider rounding/minimums and currency/tax treatment;
 - expected request volume, input/output distributions, image frequency, and context percentiles by product;
 - Worker, D1 read/write, Durable Object request/storage, logging, and optional AI Gateway costs;
-- budget headroom, alert thresholds, expected usage-report delay, and provider-vs-tkslop reconciliation tolerance.
+- budget headroom, alert thresholds, expected usage-report delay, and provider-vs-tkslopper reconciliation tolerance.
 
 The v1 formula covers token rates only. Do not enable a route with image/request/time-based pricing until the reservation formula explicitly models that price dimension.

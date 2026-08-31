@@ -1,5 +1,5 @@
 {
-  "name": "tkslop",
+  "name": "tkslopper",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -21,7 +21,7 @@
     "hygiene:check": "tsx tools/check-public-hygiene.ts",
     "lint": "eslint .",
     "migration:check": "tsx tools/check-migrations.ts",
-    "openapi:check": "redocly lint openapi/tkslop.openapi.yaml",
+    "openapi:check": "redocly lint openapi/tkslopper.openapi.yaml",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",

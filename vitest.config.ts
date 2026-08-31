@@ -32,7 +32,7 @@ export default defineConfig(async () => {
     ],
     resolve: {
       alias: {
-        "@tkslop/shared": fileURLToPath(
+        "@tkslopper/shared": fileURLToPath(
           new URL("./packages/shared/src/index.ts", import.meta.url).href,
         ),
       },

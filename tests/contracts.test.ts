@@ -11,7 +11,7 @@ import {
   verifyCredential,
   verifyGrant,
   type GrantClaims,
-} from "@tkslop/shared";
+} from "@tkslopper/shared";
 
 import playgroundPalLongContext from "./fixtures/playground-pal-long-context.json";
 import tappletImage from "./fixtures/tapplet-image.json";

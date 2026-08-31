@@ -6,13 +6,13 @@ The control plane owns durable authorization facts. The gateway owns one physica
 
 ```diagram
 ┌─────────────────────────────┐          ┌──────────────────────────────┐
-│ Product systems             │          │ tkslop control plane         │
+│ Product systems             │          │ tkslopper control plane      │
 │ prompts/workflows/tools/RAG │─────────▶│ entitlement + grant minting  │
 └──────────────┬──────────────┘          └──────────────┬───────────────┘
                │ short scoped grant                     │ D1 writes
                ▼                                        ▼
 ┌─────────────────────────────┐          ┌──────────────────────────────┐
-│ tkslop gateway              │◀────────▶│ D1 policy + attempt metadata │
+│ tkslopper gateway           │◀────────▶│ D1 policy + attempt metadata │
 │ validate → reserve → invoke │          └──────────────────────────────┘
 └──────────────┬──────────────┘
                │ exact principal serialization

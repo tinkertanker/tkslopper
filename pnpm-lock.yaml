@@ -47,7 +47,7 @@ importers:
 
   apps/control-plane:
     dependencies:
-      '@tkslop/shared':
+      '@tkslopper/shared':
         specifier: workspace:*
         version: link:../../packages/shared
       zod:
@@ -56,7 +56,7 @@ importers:
 
   apps/gateway:
     dependencies:
-      '@tkslop/shared':
+      '@tkslopper/shared':
         specifier: workspace:*
         version: link:../../packages/shared
 

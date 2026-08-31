@@ -6,7 +6,7 @@ import {
   parseProviderRoutes,
   type ParsedGatewayRequest,
   type ProviderError,
-} from "@tkslop/shared";
+} from "@tkslopper/shared";
 
 const request: ParsedGatewayRequest = {
   endpoint: "chat",

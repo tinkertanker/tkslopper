@@ -1,6 +1,6 @@
 # Contributing
 
-1. Keep changes inside tkslop's documented ownership boundary.
+1. Keep changes inside tkslopper's documented ownership boundary.
 2. Never commit secrets, production values, user/customer/student data, prompts, responses, images, filenames, raw IPs, or generated local state.
 3. Add or update an executable contract for behavior changes.
 4. Run `pnpm check` and `pnpm audit --audit-level=high`.

@@ -160,7 +160,7 @@ export async function signGrant(
   secret: string,
 ): Promise<string> {
   const header = bytesToBase64Url(
-    encoder.encode(JSON.stringify({ alg: "HS256", typ: "tkslop+jwt" })),
+    encoder.encode(JSON.stringify({ alg: "HS256", typ: "tkslopper+jwt" })),
   );
   const payload = bytesToBase64Url(encoder.encode(JSON.stringify(claims)));
   const signature = bytesToBase64Url(
@@ -195,7 +195,7 @@ export async function verifyGrant(
       !("alg" in header) ||
       header.alg !== "HS256" ||
       !("typ" in header) ||
-      header.typ !== "tkslop+jwt"
+      header.typ !== "tkslopper+jwt"
     ) {
       return undefined;
     }

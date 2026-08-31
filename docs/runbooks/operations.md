@@ -22,9 +22,9 @@ The v1 verifier supports one HS256 key. Rotation therefore requires a coordinate
 ## Credential/provider-key incident
 
 1. Turn on the smallest applicable environment/product kill switch.
-2. Revoke affected tkslop credentials/entitlements and rotate provider keys in the provider system.
+2. Revoke affected tkslopper credentials/entitlements and rotate provider keys in the provider system.
 3. Rotate Worker secrets through `wrangler secret put`; never paste values into diagnostics.
-4. Query metadata by request ID, route, time, and pseudonymous principal. Do not retrieve payloads—tkslop has none.
+4. Query metadata by request ID, route, time, and pseudonymous principal. Do not retrieve payloads—tkslopper has none.
 5. Reconcile provider-side physical usage with D1 attempt metadata and Durable Object aggregate spend.
 6. Restore via canary only after the cause and exposure window are understood.
 

@@ -15,4 +15,4 @@ Queue is deferred because there is no selected external usage sink yet; adding a
 
 ## Consequences
 
-Provider breadth is intentionally small. The provider contract remains gateway-neutral so LiteLLM can replace only the physical data plane later. Rollback is Worker version rollback plus product kill switches; no product prompts or state migrate through tkslop.
+Provider breadth is intentionally small. The provider contract remains gateway-neutral so LiteLLM can replace only the physical data plane later. Rollback is Worker version rollback plus product kill switches; no product prompts or state migrate through tkslopper.

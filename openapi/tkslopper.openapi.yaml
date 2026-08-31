@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: tkslop API
+  title: tkslopper API
   version: 0.1.0
   license:
     name: MIT
@@ -46,7 +46,7 @@ paths:
         "200":
           description: Complete buffered result; model is the requested alias
           headers:
-            x-tkslop-request-id:
+            x-tkslopper-request-id:
               $ref: "#/components/headers/RequestId"
           content:
             application/json:
@@ -108,7 +108,7 @@ paths:
         "200":
           description: Complete buffered response; model is the requested alias
           headers:
-            x-tkslop-request-id:
+            x-tkslopper-request-id:
               $ref: "#/components/headers/RequestId"
           content:
             application/json:
@@ -186,7 +186,7 @@ components:
     shortGrant:
       type: http
       scheme: bearer
-      bearerFormat: tkslop+jwt
+      bearerFormat: tkslopper+jwt
       description: Short-lived audience/product/environment/capability-scoped grant
     serviceCredential:
       type: http
@@ -212,7 +212,7 @@ components:
     Error:
       description: Sanitized error; no upstream body or request payload is included
       headers:
-        x-tkslop-request-id:
+        x-tkslopper-request-id:
           $ref: "#/components/headers/RequestId"
       content:
         application/json:

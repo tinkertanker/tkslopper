@@ -1,6 +1,6 @@
 ## Change
 
-Describe the bounded outcome and why tkslop owns it.
+Describe the bounded outcome and why tkslopper owns it.
 
 ## Evidence
 

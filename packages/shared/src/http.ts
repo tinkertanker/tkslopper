@@ -38,7 +38,9 @@ export function errorResponse(
   message: string,
   requestId?: string,
 ): Response {
-  const headers = requestId ? { "x-tkslop-request-id": requestId } : undefined;
+  const headers = requestId
+    ? { "x-tkslopper-request-id": requestId }
+    : undefined;
   return jsonResponse(
     { error: { message, type: code, code }, request_id: requestId },
     status,

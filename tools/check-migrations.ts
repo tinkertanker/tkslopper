@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 
 async function main(): Promise<void> {
   const persistenceDirectory = await mkdtemp(
-    join(tmpdir(), "tkslop-migrations-"),
+    join(tmpdir(), "tkslopper-migrations-"),
   );
   try {
     await new Promise<void>((resolve, reject) => {
@@ -17,7 +17,7 @@ async function main(): Promise<void> {
           "d1",
           "migrations",
           "apply",
-          "tkslop",
+          "tkslopper",
           "--local",
           "--persist-to",
           persistenceDirectory,
