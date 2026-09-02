@@ -2,7 +2,7 @@
 
 ## Boundaries
 
-The control plane owns durable authorization facts. The gateway owns one physical inference attempt and its admission/accounting. Product systems own all semantic behavior.
+The control plane owns durable authorization facts and the metadata-only operations view. The gateway owns one physical inference attempt and its admission/accounting. Product systems own all semantic behavior.
 
 ```diagram
 ┌─────────────────────────────┐          ┌──────────────────────────────┐
@@ -43,6 +43,10 @@ The control plane owns durable authorization facts. The gateway owns one physica
 ## Provider replacement seam
 
 `ParsedGatewayRequest`, `ProviderRoute`, `ProviderResult`, normalized usage, and `ProviderError` form the data-plane seam. A future LiteLLM adapter can replace `callProvider` without moving entitlement, token, alias, or quota ownership.
+
+## Operations view
+
+The control Worker serves the read-only [operations dashboard](dashboard.md) because it already owns D1 policy, attempt, and audit metadata. A separate dashboard bearer credential cannot call write-capable admin routes. Live per-principal quota state remains inside Durable Objects and is deliberately not made enumerable for the dashboard.
 
 ## Extension seams
 

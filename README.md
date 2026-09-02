@@ -2,7 +2,7 @@
 
 `tkslopper` is Tinkertanker's shared managed-inference boundary. It has two bounded components:
 
-- a **control plane** for products, environments, entitlements, activation codes, service credentials, short-lived grants, revocation, and kill switches;
+- a **control plane** for products, environments, entitlements, activation codes, service credentials, short-lived grants, revocation, kill switches, and a metadata-only operations dashboard;
 - a **data plane** that resolves capability aliases, enforces policy and exact per-principal reservations, invokes one configured provider route, normalizes usage/errors, and records metadata-only attempt provenance.
 
 It intentionally does **not** own product prompts, workflows, retrieval, tools, memory, uploads, artifacts, classroom UX, payment UX, student records, provider fallback, semantic retries, or response caching.
@@ -81,6 +81,8 @@ pnpm admin -- help
 ```
 
 The CLI writes one-time service credentials and access codes to stdout. Do not put that output in shell history, tickets, logs, or source control.
+
+The control Worker also serves a read-only operations shell at `/dashboard`. It uses an independent `DASHBOARD_TOKEN`, never the write-capable admin token, and displays only bounded operational metadata. See the [dashboard contract](docs/dashboard.md).
 
 ## Validation
 

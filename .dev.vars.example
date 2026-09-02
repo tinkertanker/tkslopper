@@ -3,6 +3,8 @@
 TOKEN_SIGNING_SECRET=replace-me
 CREDENTIAL_PEPPER=replace-me
 ADMIN_TOKEN=replace-me
+# Independent read-only operations credential. Never reuse ADMIN_TOKEN.
+DASHBOARD_TOKEN=replace-me
 
 # OpenAI-compatible routes reference secret binding names from PROVIDER_ROUTES_JSON.
 # Add only the bindings used by your private route configuration.

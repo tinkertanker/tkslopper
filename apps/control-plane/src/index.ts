@@ -28,12 +28,14 @@ import {
   type GrantClaims,
 } from "@tkslopper/shared";
 import type { ZodType } from "zod";
+import { dashboardOverview, dashboardPage } from "./dashboard";
 
 export type ControlPlaneEnv = {
   DB: D1Database;
   TOKEN_SIGNING_SECRET: string;
   CREDENTIAL_PEPPER: string;
   ADMIN_TOKEN: string;
+  DASHBOARD_TOKEN: string;
   TOKEN_ISSUER: string;
   DEPLOYMENT_ENV: string;
   ENABLE_DEV_ISSUER: string;
@@ -109,6 +111,9 @@ function ensureConfiguration(env: ControlPlaneEnv): void {
     env.CREDENTIAL_PEPPER.length < 32 ||
     typeof env.ADMIN_TOKEN !== "string" ||
     env.ADMIN_TOKEN.length < 32 ||
+    typeof env.DASHBOARD_TOKEN !== "string" ||
+    env.DASHBOARD_TOKEN.length < 32 ||
+    env.DASHBOARD_TOKEN === env.ADMIN_TOKEN ||
     !issuerIsValid ||
     (env.DEPLOYMENT_ENV === "production" && env.ENABLE_DEV_ISSUER === "true")
   ) {
@@ -979,6 +984,12 @@ export async function handleControlPlane(
     ensureConfiguration(env);
     if (request.method === "GET" && url.pathname === "/healthz") {
       return jsonResponse({ status: "ok", component: "control-plane" });
+    }
+    if (request.method === "GET" && url.pathname === "/dashboard") {
+      return dashboardPage();
+    }
+    if (request.method === "GET" && url.pathname === "/admin/v1/dashboard") {
+      return await dashboardOverview(request, env);
     }
     if (request.method === "POST" && url.pathname === "/v1/token") {
       return await exchangeServiceCredential(request, env);

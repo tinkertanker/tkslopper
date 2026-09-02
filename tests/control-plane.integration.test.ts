@@ -46,12 +46,159 @@ function request(path: string, body: unknown, token?: string): Request {
   });
 }
 
+function get(path: string, token?: string): Request {
+  return new Request(`https://control.example.invalid${path}`, {
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+  });
+}
+
 async function admin(path: string, body: unknown): Promise<Response> {
   return handleControlPlane(
     request(path, body, String(env.ADMIN_TOKEN)),
     controlEnv,
   );
 }
+
+describe("operations dashboard", () => {
+  it("serves an inert same-origin shell without exposing configuration", async () => {
+    const response = await handleControlPlane(get("/dashboard"), controlEnv);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("content-security-policy")).toContain(
+      "default-src 'none'",
+    );
+    expect(response.headers.get("content-security-policy")).not.toContain(
+      "unsafe-inline",
+    );
+    const html = await response.text();
+    expect(html).toContain("tkslopper operations");
+    expect(html).not.toContain("__CSP_NONCE__");
+    expect(html).not.toContain(String(env.ADMIN_TOKEN));
+    expect(html).not.toContain(String(env.DASHBOARD_TOKEN));
+  });
+
+  it("fails closed when read and write credentials are reused", async () => {
+    const response = await handleControlPlane(get("/dashboard"), {
+      ...controlEnv,
+      DASHBOARD_TOKEN: String(env.ADMIN_TOKEN),
+    });
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "internal_error" },
+    });
+  });
+
+  it("requires the separate read credential and returns metadata-only operations state", async () => {
+    const timestamp = now();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO provider_attempts
+          (id, request_id, attempt_number, product_id, environment_id, tenant_hash, principal_hash,
+           alias, policy_version, route_id, provider, resolved_model, endpoint, status_code,
+           error_class, latency_ms, input_tokens, output_tokens, cost_microcents, created_at,
+           stale_after)
+         VALUES ('attempt_terminal', 'request_terminal', 1, 'prod_control', 'env_control',
+                 'private_tenant_hash', 'private_principal_hash', 'text.chat.v1', 1,
+                 'route_fixture', 'fixture', 'fixture-model', 'chat', 504, 'provider_timeout',
+                 1000, 120, 80, 25, ?, ?)`,
+      ).bind(timestamp - 30, timestamp + 30),
+      env.DB.prepare(
+        `INSERT INTO provider_attempts
+          (id, request_id, attempt_number, product_id, environment_id, tenant_hash, principal_hash,
+           alias, policy_version, route_id, provider, resolved_model, endpoint, status_code,
+           error_class, latency_ms, input_tokens, output_tokens, cost_microcents, created_at,
+           stale_after)
+         VALUES ('attempt_stale', 'request_stale', 1, 'prod_control', 'env_control',
+                 'private_tenant_hash', 'private_principal_hash', 'json.strict.v1', 1,
+                 'route_fixture', 'fixture', 'fixture-model', 'responses', 0, 'attempt_started',
+                 0, 200, 100, 40, ?, ?)`,
+      ).bind(timestamp - 120, timestamp - 60),
+      env.DB.prepare(
+        `INSERT INTO admin_audit
+          (id, action, resource_type, resource_id, actor_hash, created_at)
+         VALUES ('audit_fixture', 'kill', 'environment', 'env_control',
+                 'private_actor_hash', ?)`,
+      ).bind(timestamp - 10),
+    ]);
+
+    expect(
+      (await handleControlPlane(get("/admin/v1/dashboard"), controlEnv)).status,
+    ).toBe(401);
+    expect(
+      (
+        await handleControlPlane(
+          get("/admin/v1/dashboard", String(env.ADMIN_TOKEN)),
+          controlEnv,
+        )
+      ).status,
+    ).toBe(401);
+
+    const response = await handleControlPlane(
+      get("/admin/v1/dashboard", String(env.DASHBOARD_TOKEN)),
+      controlEnv,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const overview: unknown = await response.json();
+    expect(overview).toMatchObject({
+      totals: {
+        products: 1,
+        environments: 1,
+        attempts_24h: 2,
+        failed_attempts_24h: 2,
+        input_tokens_24h: "320",
+        output_tokens_24h: "180",
+        cost_microcents_24h: "65",
+        stale_attempts: 1,
+      },
+      products: [
+        {
+          id: "prod_control",
+          slug: "control-fixture",
+          display_name: "Control fixture",
+          enabled: true,
+          kill_switch: false,
+        },
+      ],
+      environments: [
+        {
+          id: "env_control",
+          product_id: "prod_control",
+          name: "test",
+          audience: "control:test",
+          attempts_24h: 2,
+          failed_attempts_24h: 2,
+          cost_microcents_24h: "65",
+        },
+      ],
+      stale_attempts: [
+        {
+          request_id: "request_stale",
+          product_id: "prod_control",
+          environment_id: "env_control",
+        },
+      ],
+      recent_admin_actions: [
+        {
+          action: "kill",
+          resource_type: "environment",
+          resource_id: "env_control",
+        },
+      ],
+      live_quota: {
+        available: false,
+      },
+    });
+    const serialized = JSON.stringify(overview);
+    expect(serialized).not.toContain("private_tenant_hash");
+    expect(serialized).not.toContain("private_principal_hash");
+    expect(serialized).not.toContain("private_actor_hash");
+    expect(serialized).not.toContain("secret_hash");
+  });
+});
 
 describe("control-plane credential workflows", () => {
   it("creates a one-time service credential, exchanges a scoped grant, and revokes it", async () => {

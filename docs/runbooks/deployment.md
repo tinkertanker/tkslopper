@@ -28,10 +28,11 @@ wrangler secret put TOKEN_SIGNING_SECRET --config apps/control-plane/wrangler.js
 wrangler secret put TOKEN_SIGNING_SECRET --config apps/gateway/wrangler.jsonc
 wrangler secret put CREDENTIAL_PEPPER --config apps/control-plane/wrangler.jsonc
 wrangler secret put ADMIN_TOKEN --config apps/control-plane/wrangler.jsonc
+wrangler secret put DASHBOARD_TOKEN --config apps/control-plane/wrangler.jsonc
 wrangler secret put UPSTREAM_API_KEY --config apps/gateway/wrangler.jsonc
 ```
 
-The same signing value must be supplied to both Workers in the HS256 v1 design. Provider route `credentialBinding` names must correspond to gateway secrets. Confirm secrets with binding metadata only; never print their values.
+The same signing value must be supplied to both Workers in the HS256 v1 design. The dashboard token must be independent from the write-capable admin token and all other secrets. Provider route `credentialBinding` names must correspond to gateway secrets. Confirm secrets with binding metadata only; never print their values.
 
 ## Order
 
