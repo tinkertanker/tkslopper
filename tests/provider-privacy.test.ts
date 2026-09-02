@@ -23,7 +23,9 @@ describe("provider contract", () => {
         JSON.stringify({
           route: {
             id: "route",
-            provider: "openai-compatible",
+            adapter: "openai-compatible",
+            provider: "custom",
+            profile: "custom",
             model: "physical-model-v1",
             baseUrl: "https://provider.example.invalid",
             credentialBinding: "TOKEN_SIGNING_SECRET",
@@ -38,12 +40,79 @@ describe("provider contract", () => {
     ).toThrow();
   });
 
+  it("separates the physical provider from its adapter and applies a trusted OpenRouter profile", async () => {
+    const route = parseProviderRoutes(
+      JSON.stringify({
+        route: {
+          id: "route",
+          adapter: "openai-compatible",
+          provider: "openrouter",
+          profile: "openrouter",
+          model: "physical-model-v1",
+          baseUrl: "https://provider.example.invalid",
+          credentialBinding: "UPSTREAM_KEY",
+          attribution: {
+            referer: "https://vibbit.example.invalid",
+            title: "Vibbit",
+            titleHeader: "x-title",
+          },
+          endpoints: ["chat"],
+          supportsImages: false,
+          supportsReasoning: true,
+          supportsStructuredJson: false,
+          timeoutMs: 5000,
+        },
+      }),
+    ).get("route")!;
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({
+        id: "chatcmpl_fixture",
+        object: "chat.completion",
+        model: "physical-model-v1",
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: "fixture response" },
+            finish_reason: "stop",
+          },
+        ],
+      }),
+    );
+
+    await callProvider({
+      request: {
+        ...request,
+        body: { ...request.body, reasoning_effort: "high" },
+      },
+      route,
+      deploymentEnvironment: "test",
+      maxResponseBytes: 10_000,
+      signal: new AbortController().signal,
+      getSecret: () => "public-fixture-upstream-value",
+      fetcher,
+    });
+
+    const init = fetcher.mock.calls[0]?.[1];
+    const headers = new Headers(init?.headers);
+    expect(headers.get("http-referer")).toBe("https://vibbit.example.invalid");
+    expect(headers.get("x-title")).toBe("Vibbit");
+    if (typeof init?.body !== "string")
+      throw new Error("provider body was not JSON text");
+    const upstreamBody = JSON.parse(init.body) as Record<string, unknown>;
+    expect(upstreamBody.reasoning).toEqual({ effort: "high" });
+    expect(upstreamBody).not.toHaveProperty("reasoning_effort");
+    expect(route.provider).toBe("openrouter");
+    expect(route.adapter).toBe("openai-compatible");
+  });
+
   it("keeps the fixture provider out of production", async () => {
     const route = parseProviderRoutes(
       JSON.stringify({
         fixture: {
           id: "fixture",
+          adapter: "fixture",
           provider: "fixture",
+          profile: "fixture",
           model: "fixture-model",
           endpoints: ["chat"],
           supportsImages: false,
@@ -72,7 +141,9 @@ describe("provider contract", () => {
       JSON.stringify({
         route: {
           id: "route",
-          provider: "openai-compatible",
+          adapter: "openai-compatible",
+          provider: "custom",
+          profile: "custom",
           model: "physical-model-v1",
           baseUrl: "https://provider.example.invalid",
           credentialBinding: "UPSTREAM_KEY",
@@ -210,7 +281,9 @@ describe("provider contract", () => {
       JSON.stringify({
         route: {
           id: "route",
-          provider: "openai-compatible",
+          adapter: "openai-compatible",
+          provider: "custom",
+          profile: "custom",
           model: "physical-model-v1",
           baseUrl: "https://provider.example.invalid",
           credentialBinding: "UPSTREAM_KEY",
@@ -247,7 +320,9 @@ describe("provider contract", () => {
       JSON.stringify({
         route: {
           id: "route",
-          provider: "openai-compatible",
+          adapter: "openai-compatible",
+          provider: "custom",
+          profile: "custom",
           model: "physical-model-v1",
           baseUrl: "https://provider.example.invalid",
           credentialBinding: "UPSTREAM_KEY",

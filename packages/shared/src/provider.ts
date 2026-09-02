@@ -4,7 +4,11 @@ import { readBoundedBytes } from "./http";
 import type { ParsedGatewayRequest } from "./schemas";
 
 const reservedCredentialBindings = new Set([
+  "ADMIN_TOKEN",
+  "CREDENTIAL_PEPPER",
+  "DASHBOARD_TOKEN",
   "DEPLOYMENT_ENV",
+  "ENABLE_DEV_ISSUER",
   "MAX_BODY_BYTES",
   "PROVIDER_ROUTES_JSON",
   "TOKEN_ISSUER",
@@ -90,67 +94,125 @@ const providerResponsesResponseSchema = z
   })
   .passthrough();
 
-const routeSchema = z
+const routeFields = {
+  id: z.string().min(1).max(100),
+  model: z.string().min(1).max(200),
+  endpoints: z.array(z.enum(["chat", "responses"])).min(1),
+  supportsImages: z.boolean(),
+  supportsReasoning: z.boolean(),
+  supportsStructuredJson: z.boolean(),
+  timeoutMs: z.number().int().min(1000).max(120_000),
+};
+
+const fixtureRouteSchema = z
   .object({
-    id: z.string().min(1).max(100),
-    provider: z.enum(["openai-compatible", "fixture"]),
-    model: z.string().min(1).max(200),
-    baseUrl: z.string().url().optional(),
-    credentialBinding: z
-      .string()
-      .regex(/^[A-Z][A-Z0-9_]*$/u)
-      .optional(),
-    endpoints: z.array(z.enum(["chat", "responses"])).min(1),
-    supportsImages: z.boolean(),
-    supportsReasoning: z.boolean(),
-    supportsStructuredJson: z.boolean(),
-    timeoutMs: z.number().int().min(1000).max(120_000),
+    ...routeFields,
+    adapter: z.literal("fixture"),
+    provider: z.literal("fixture"),
+    profile: z.literal("fixture"),
   })
-  .strict()
+  .strict();
+
+const compatibleRouteSchema = z
+  .object({
+    ...routeFields,
+    adapter: z.literal("openai-compatible"),
+    provider: z.enum([
+      "openai",
+      "openrouter",
+      "opencode",
+      "deepseek",
+      "custom",
+    ]),
+    profile: z.enum([
+      "openai",
+      "openrouter",
+      "opencode-go",
+      "opencode-zen",
+      "deepseek",
+      "custom",
+    ]),
+    baseUrl: z.string().url(),
+    credentialBinding: z.string().regex(/^[A-Z][A-Z0-9_]*$/u),
+    attribution: z
+      .object({
+        referer: z.string().url(),
+        title: z
+          .string()
+          .min(1)
+          .max(100)
+          .refine((value) => !/[\r\n]/u.test(value)),
+        titleHeader: z.enum(["x-title", "x-openrouter-title"]),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+const routeSchema = z
+  .discriminatedUnion("adapter", [fixtureRouteSchema, compatibleRouteSchema])
   .superRefine((route, context) => {
-    if (
-      route.provider === "openai-compatible" &&
-      (!route.baseUrl || !route.credentialBinding)
-    ) {
-      context.addIssue({
-        code: "custom",
-        message:
-          "openai-compatible routes require baseUrl and credentialBinding",
-      });
-    }
-    if (
-      route.provider === "openai-compatible" &&
-      route.baseUrl &&
-      !route.baseUrl.startsWith("https://")
-    ) {
+    if (route.adapter === "fixture") return;
+    if (!route.baseUrl.startsWith("https://")) {
       context.addIssue({
         code: "custom",
         message: "provider baseUrl must use HTTPS",
       });
     }
-    if (route.provider === "openai-compatible" && route.baseUrl) {
-      const baseUrl = new URL(route.baseUrl);
-      if (
-        baseUrl.username ||
-        baseUrl.password ||
-        baseUrl.search ||
-        baseUrl.hash
-      ) {
-        context.addIssue({
-          code: "custom",
-          message:
-            "provider baseUrl must not embed credentials, query parameters, or fragments",
-        });
-      }
-    }
+    const baseUrl = new URL(route.baseUrl);
     if (
-      route.credentialBinding &&
-      reservedCredentialBindings.has(route.credentialBinding)
+      baseUrl.username ||
+      baseUrl.password ||
+      baseUrl.search ||
+      baseUrl.hash
     ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "provider baseUrl must not embed credentials, query parameters, or fragments",
+      });
+    }
+    if (reservedCredentialBindings.has(route.credentialBinding)) {
       context.addIssue({
         code: "custom",
         message: "provider route must use a dedicated credential binding",
       });
+    }
+    const providerForProfile = {
+      openai: "openai",
+      openrouter: "openrouter",
+      "opencode-go": "opencode",
+      "opencode-zen": "opencode",
+      deepseek: "deepseek",
+      custom: "custom",
+    }[route.profile];
+    if (route.provider !== providerForProfile) {
+      context.addIssue({
+        code: "custom",
+        message: "provider must match the selected route profile",
+      });
+    }
+    if (route.attribution && route.profile !== "openrouter") {
+      context.addIssue({
+        code: "custom",
+        message:
+          "attribution headers are supported only by OpenRouter profiles",
+      });
+    }
+    if (route.attribution) {
+      const referer = new URL(route.attribution.referer);
+      if (
+        referer.protocol !== "https:" ||
+        referer.username ||
+        referer.password ||
+        referer.search ||
+        referer.hash
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "provider attribution referer must be a safe HTTPS URL",
+        });
+      }
     }
   });
 
@@ -374,6 +436,26 @@ function fixtureResult(
   };
 }
 
+function compatibleRequestBody(
+  request: ParsedGatewayRequest,
+  route: Extract<ProviderRoute, { adapter: "openai-compatible" }>,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    ...request.body,
+    model: route.model,
+    stream: false,
+  };
+  if (
+    request.endpoint === "chat" &&
+    route.profile === "openrouter" &&
+    request.body.reasoning_effort
+  ) {
+    delete body.reasoning_effort;
+    body.reasoning = { effort: request.body.reasoning_effort };
+  }
+  return body;
+}
+
 export async function callProvider(options: {
   request: ParsedGatewayRequest;
   route: ProviderRoute;
@@ -390,7 +472,7 @@ export async function callProvider(options: {
   }
   if (options.signal.aborted)
     throw abortedProviderError(options.signal, Date.now() - startedAt);
-  if (route.provider === "fixture") {
+  if (route.adapter === "fixture") {
     if (!["development", "test"].includes(options.deploymentEnvironment)) {
       throw new ProviderError(
         "provider_unavailable",
@@ -401,10 +483,8 @@ export async function callProvider(options: {
     return fixtureResult(request, route, Date.now() - startedAt);
   }
 
-  const secret = route.credentialBinding
-    ? options.getSecret(route.credentialBinding)
-    : undefined;
-  if (!secret || secret.length < 16 || !route.baseUrl)
+  const secret = options.getSecret(route.credentialBinding);
+  if (!secret || secret.length < 16)
     throw new ProviderError(
       "provider_unavailable",
       503,
@@ -412,17 +492,22 @@ export async function callProvider(options: {
     );
   const path =
     request.endpoint === "chat" ? "/v1/chat/completions" : "/v1/responses";
-  const upstreamBody = { ...request.body, model: route.model, stream: false };
+  const upstreamBody = compatibleRequestBody(request, route);
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${secret}`,
+    "content-type": "application/json",
+  };
+  if (route.attribution) {
+    headers["http-referer"] = route.attribution.referer;
+    headers[route.attribution.titleHeader] = route.attribution.title;
+  }
   try {
     const response = await (options.fetcher ?? fetch)(
       `${route.baseUrl.replace(/\/$/u, "")}${path}`,
       {
         method: "POST",
         redirect: "manual",
-        headers: {
-          authorization: `Bearer ${secret}`,
-          "content-type": "application/json",
-        },
+        headers,
         body: JSON.stringify(upstreamBody),
         signal: options.signal,
       },

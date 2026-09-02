@@ -167,7 +167,9 @@ function upstreamEnv(timeoutMs: number): GatewayEnv {
     PROVIDER_ROUTES_JSON: JSON.stringify({
       "fixture-text-v1": {
         id: "fixture-text-v1",
-        provider: "openai-compatible",
+        adapter: "openai-compatible",
+        provider: "custom",
+        profile: "custom",
         model: "physical-fixture-v1",
         baseUrl: "https://provider.example.invalid",
         credentialBinding: "UPSTREAM_KEY",

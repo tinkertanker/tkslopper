@@ -128,7 +128,7 @@ function isConfigured(env: GatewayEnv): boolean {
     const routes = parseProviderRoutes(env.PROVIDER_ROUTES_JSON);
     return !(
       env.DEPLOYMENT_ENV === "production" &&
-      [...routes.values()].some(({ provider }) => provider === "fixture")
+      [...routes.values()].some(({ adapter }) => adapter === "fixture")
     );
   } catch {
     return false;
