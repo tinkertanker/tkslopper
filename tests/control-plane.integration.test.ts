@@ -79,16 +79,22 @@ describe("operations dashboard", () => {
     expect(html).not.toContain(String(env.DASHBOARD_TOKEN));
   });
 
-  it("fails closed when read and write credentials are reused", async () => {
-    const response = await handleControlPlane(get("/dashboard"), {
-      ...controlEnv,
-      DASHBOARD_TOKEN: String(env.ADMIN_TOKEN),
-    });
+  it("fails closed when the read credential reuses any control-plane secret", async () => {
+    for (const conflictingSecret of [
+      controlEnv.ADMIN_TOKEN,
+      controlEnv.TOKEN_SIGNING_SECRET,
+      controlEnv.CREDENTIAL_PEPPER,
+    ]) {
+      const response = await handleControlPlane(get("/dashboard"), {
+        ...controlEnv,
+        DASHBOARD_TOKEN: conflictingSecret,
+      });
 
-    expect(response.status).toBe(500);
-    await expect(response.json()).resolves.toMatchObject({
-      error: { code: "internal_error" },
-    });
+      expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "internal_error" },
+      });
+    }
   });
 
   it("requires the separate read credential and returns metadata-only operations state", async () => {
@@ -111,11 +117,33 @@ describe("operations dashboard", () => {
            alias, policy_version, route_id, provider, resolved_model, endpoint, status_code,
            error_class, latency_ms, input_tokens, output_tokens, cost_microcents, created_at,
            stale_after)
+         VALUES ('attempt_success', 'request_success', 1, 'prod_control', 'env_control',
+                 'private_tenant_hash', 'private_principal_hash', 'text.chat.v1', 1,
+                 'route_fixture', 'fixture', 'fixture-model', 'chat', 200, NULL,
+                 100, 30, 20, 10, ?, ?)`,
+      ).bind(timestamp - 20, timestamp + 40),
+      env.DB.prepare(
+        `INSERT INTO provider_attempts
+          (id, request_id, attempt_number, product_id, environment_id, tenant_hash, principal_hash,
+           alias, policy_version, route_id, provider, resolved_model, endpoint, status_code,
+           error_class, latency_ms, input_tokens, output_tokens, cost_microcents, created_at,
+           stale_after)
          VALUES ('attempt_stale', 'request_stale', 1, 'prod_control', 'env_control',
                  'private_tenant_hash', 'private_principal_hash', 'json.strict.v1', 1,
                  'route_fixture', 'fixture', 'fixture-model', 'responses', 0, 'attempt_started',
                  0, 200, 100, 40, ?, ?)`,
       ).bind(timestamp - 120, timestamp - 60),
+      env.DB.prepare(
+        `INSERT INTO provider_attempts
+          (id, request_id, attempt_number, product_id, environment_id, tenant_hash, principal_hash,
+           alias, policy_version, route_id, provider, resolved_model, endpoint, status_code,
+           error_class, latency_ms, input_tokens, output_tokens, cost_microcents, created_at,
+           stale_after)
+         VALUES ('attempt_live', 'request_live', 1, 'prod_control', 'env_control',
+                 'private_tenant_hash', 'private_principal_hash', 'text.chat.v1', 1,
+                 'route_fixture', 'fixture', 'fixture-model', 'chat', 0, 'attempt_started',
+                 0, 400, 200, 80, ?, ?)`,
+      ).bind(timestamp - 5, timestamp + 600),
       env.DB.prepare(
         `INSERT INTO admin_audit
           (id, action, resource_type, resource_id, actor_hash, created_at)
@@ -147,11 +175,11 @@ describe("operations dashboard", () => {
       totals: {
         products: 1,
         environments: 1,
-        attempts_24h: 2,
-        failed_attempts_24h: 2,
-        input_tokens_24h: "320",
-        output_tokens_24h: "180",
-        cost_microcents_24h: "65",
+        finalized_attempts_24h: 2,
+        failed_finalized_attempts_24h: 1,
+        accounted_input_tokens_24h: "150",
+        accounted_output_tokens_24h: "100",
+        accounted_cost_microcents_24h: "35",
         stale_attempts: 1,
       },
       products: [
@@ -169,9 +197,11 @@ describe("operations dashboard", () => {
           product_id: "prod_control",
           name: "test",
           audience: "control:test",
-          attempts_24h: 2,
-          failed_attempts_24h: 2,
-          cost_microcents_24h: "65",
+          product_enabled: true,
+          product_kill_switch: false,
+          finalized_attempts_24h: 2,
+          failed_finalized_attempts_24h: 1,
+          accounted_cost_microcents_24h: "35",
         },
       ],
       stale_attempts: [
@@ -193,10 +223,116 @@ describe("operations dashboard", () => {
       },
     });
     const serialized = JSON.stringify(overview);
+    expect(serialized).toContain("exclude attempt_started");
     expect(serialized).not.toContain("private_tenant_hash");
     expect(serialized).not.toContain("private_principal_hash");
     expect(serialized).not.toContain("private_actor_hash");
     expect(serialized).not.toContain("secret_hash");
+  });
+
+  it("reports gateway-effective grant and parent policy state", async () => {
+    const timestamp = now();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO entitlements
+          (id, product_id, environment_id, tenant_id, principal_id, source,
+           capabilities_json, status, expires_at, created_at, updated_at)
+         VALUES ('ent_effective', 'prod_control', 'env_control', 'tenant_fixture',
+                 'principal_effective', 'dev', '["text.chat.v1"]', 'active', ?, ?, ?)`,
+      ).bind(timestamp + 600, timestamp, timestamp),
+      env.DB.prepare(
+        `INSERT INTO entitlements
+          (id, product_id, environment_id, tenant_id, principal_id, source,
+           capabilities_json, status, expires_at, created_at, updated_at)
+         VALUES ('ent_revoked', 'prod_control', 'env_control', 'tenant_fixture',
+                 'principal_revoked', 'dev', '["text.chat.v1"]', 'revoked', ?, ?, ?)`,
+      ).bind(timestamp + 600, timestamp, timestamp),
+      env.DB.prepare(
+        `INSERT INTO access_codes
+          (id, product_id, environment_id, tenant_id, secret_salt, secret_hash,
+           capabilities_json, expires_at, max_activations, disabled, created_at, updated_at)
+         VALUES ('code_disabled', 'prod_control', 'env_control', 'tenant_fixture', 'salt',
+                 'hash', '["text.chat.v1"]', ?, 1, 1, ?, ?)`,
+      ).bind(timestamp + 600, timestamp, timestamp),
+      env.DB.prepare(
+        `INSERT INTO activations
+          (id, access_code_id, tenant_id, principal_id, device_hash, activated_at)
+         VALUES ('activation_disabled', 'code_disabled', 'tenant_fixture',
+                 'principal_disabled', 'device_hash', ?)`,
+      ).bind(timestamp),
+      env.DB.prepare(
+        `INSERT INTO entitlements
+          (id, product_id, environment_id, tenant_id, principal_id, source, source_ref,
+           capabilities_json, status, expires_at, created_at, updated_at)
+         VALUES ('ent_disabled', 'prod_control', 'env_control', 'tenant_fixture',
+                 'principal_disabled', 'access_code', 'code_disabled', '["text.chat.v1"]',
+                 'active', ?, ?, ?)`,
+      ).bind(timestamp + 600, timestamp, timestamp),
+      env.DB.prepare(
+        `INSERT INTO token_grants
+          (id, jti_hash, entitlement_id, product_id, environment_id, tenant_id, principal_id,
+           audience, capabilities_json, expires_at, created_at)
+         VALUES ('grant_effective', 'jti_effective', 'ent_effective', 'prod_control',
+                 'env_control', 'tenant_fixture', 'principal_effective', 'control:test',
+                 '["text.chat.v1"]', ?, ?)`,
+      ).bind(timestamp + 300, timestamp),
+      env.DB.prepare(
+        `INSERT INTO token_grants
+          (id, jti_hash, entitlement_id, product_id, environment_id, tenant_id, principal_id,
+           audience, capabilities_json, expires_at, created_at)
+         VALUES ('grant_revoked', 'jti_revoked', 'ent_revoked', 'prod_control',
+                 'env_control', 'tenant_fixture', 'principal_revoked', 'control:test',
+                 '["text.chat.v1"]', ?, ?)`,
+      ).bind(timestamp + 300, timestamp),
+      env.DB.prepare(
+        `INSERT INTO token_grants
+          (id, jti_hash, entitlement_id, product_id, environment_id, tenant_id, principal_id,
+           audience, capabilities_json, expires_at, created_at)
+         VALUES ('grant_disabled', 'jti_disabled', 'ent_disabled', 'prod_control',
+                 'env_control', 'tenant_fixture', 'principal_disabled', 'control:test',
+                 '["text.chat.v1"]', ?, ?)`,
+      ).bind(timestamp + 300, timestamp),
+    ]);
+
+    const load = async (): Promise<unknown> => {
+      const response = await handleControlPlane(
+        get("/admin/v1/dashboard", String(env.DASHBOARD_TOKEN)),
+        controlEnv,
+      );
+      expect(response.status).toBe(200);
+      const overview: unknown = await response.json();
+      return overview;
+    };
+
+    expect(await load()).toMatchObject({
+      environments: [
+        {
+          product_enabled: true,
+          product_kill_switch: false,
+          enabled: true,
+          kill_switch: false,
+          effective_grants: 1,
+        },
+      ],
+    });
+
+    await env.DB.prepare(
+      "UPDATE products SET kill_switch = 1, updated_at = ? WHERE id = 'prod_control'",
+    )
+      .bind(timestamp)
+      .run();
+    expect(await load()).toMatchObject({
+      products: [{ kill_switch: true }],
+      environments: [
+        {
+          product_enabled: true,
+          product_kill_switch: true,
+          enabled: true,
+          kill_switch: false,
+          effective_grants: 0,
+        },
+      ],
+    });
   });
 });
 

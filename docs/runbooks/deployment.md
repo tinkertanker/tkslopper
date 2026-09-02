@@ -32,12 +32,14 @@ wrangler secret put DASHBOARD_TOKEN --config apps/control-plane/wrangler.jsonc
 wrangler secret put UPSTREAM_API_KEY --config apps/gateway/wrangler.jsonc
 ```
 
-The same signing value must be supplied to both Workers in the HS256 v1 design. The dashboard token must be independent from the write-capable admin token and all other secrets. Provider route `credentialBinding` names must correspond to gateway secrets. Confirm secrets with binding metadata only; never print their values.
+The same signing value must be supplied to both Workers in the HS256 v1 design. The dashboard token must be independent from the write-capable admin token and all other secrets. Provider route `credentialBinding` names must correspond to gateway secrets.
+
+Cloudflare does not reveal uploaded secret values. Before provisioning, compare one-way fingerprints inside the authorized private secret-management environment and require the dashboard fingerprint to differ from the admin token, signing secret, credential pepper, and every provider secret. The only expected cross-Worker duplicate is the signing secret. Record only the pass/fail result, not values or fingerprints. The control Worker also fails closed when the dashboard token equals any secret bound to that Worker. Confirm uploaded secrets with binding metadata only; never print their values.
 
 ## Order
 
 1. Back up D1 and apply migrations using the exact reviewed artifact.
-2. Deploy the control Worker with no public product enabled.
+2. Configure operator-only Cloudflare Access (or equivalent) for both dashboard paths, then deploy the control Worker with no public product enabled. Do not expose the dashboard without this ingress gate.
 3. Deploy the gateway Worker with fixture routes removed and production `DEPLOYMENT_ENV`; fixture routes fail closed in production but must not be production policy.
 4. Create products/environments/aliases through the admin workflow. Keep environment kill switches on.
 5. Run synthetic token exchange, revocation, alias isolation, quota, upstream deadline, and metadata-only logging checks.

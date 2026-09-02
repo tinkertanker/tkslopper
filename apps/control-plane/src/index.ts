@@ -114,6 +114,8 @@ function ensureConfiguration(env: ControlPlaneEnv): void {
     typeof env.DASHBOARD_TOKEN !== "string" ||
     env.DASHBOARD_TOKEN.length < 32 ||
     env.DASHBOARD_TOKEN === env.ADMIN_TOKEN ||
+    env.DASHBOARD_TOKEN === env.TOKEN_SIGNING_SECRET ||
+    env.DASHBOARD_TOKEN === env.CREDENTIAL_PEPPER ||
     !issuerIsValid ||
     (env.DEPLOYMENT_ENV === "production" && env.ENABLE_DEV_ISSUER === "true")
   ) {

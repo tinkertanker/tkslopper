@@ -4,9 +4,9 @@
 
 ## Decision
 
-Serve the first operations dashboard from the existing control-plane Worker because that component already owns D1 policy, physical-attempt metadata, stale-attempt evidence, and administrative audit records. Do not add a third service or give the control plane access to gateway provider secrets or Durable Object internals.
+Serve the first operations dashboard from the existing control-plane Worker because that component already owns D1 policy, provider-attempt metadata, stale-intent evidence, and administrative audit records. Do not add a third service or give the control plane access to gateway provider secrets or Durable Object internals.
 
-The browser surface is read-only. An inert `/dashboard` shell loads data from `GET /admin/v1/dashboard` using a dedicated high-entropy `DASHBOARD_TOKEN`. The write-capable admin token is rejected, equal read/write credentials fail configuration, responses are not cached, a per-response CSP nonce permits only the bundled script/style, and the submitted credential is cleared immediately without browser persistence.
+The browser surface is read-only. An inert `/dashboard` shell loads data from `GET /admin/v1/dashboard` using a dedicated high-entropy `DASHBOARD_TOKEN`. The write-capable admin token is rejected; equality with any other control-plane secret fails configuration. Responses are not cached, a per-response CSP nonce permits only the bundled script/style, and the submitted credential is cleared immediately without browser persistence.
 
 The API projects explicit metadata columns only. It omits request/response payloads, raw and pseudonymous identity values, credential and idempotency material, actor hashes, provider URLs, and route secrets. Aggregate token and microcent values are decimal strings so SQLite 64-bit totals are not narrowed through JavaScript numbers.
 
@@ -16,7 +16,7 @@ Before any deployed dashboard is exposed, restrict its hostname/path to named op
 
 ## Deliberate limitations
 
-The dashboard reports only persisted D1 facts. It does not claim visibility into pre-attempt authentication/admission denials or non-enumerable live per-principal Durable Object reservations. Recorded microcents are accounting evidence, not a provider invoice. It has no kill, restore, revoke, replay, quota-reset, provisioning, route-edit, deployment, or secret controls.
+The dashboard reports only persisted D1 facts. Attempt intents start after quota admission but before the provider call, so unfinished intents are excluded from finalized metrics and stale reservation ceilings are shown separately. Finalized errors can retain conservative accounting estimates. The dashboard does not claim visibility into pre-attempt authentication/admission denials or non-enumerable live per-principal Durable Object reservations. Recorded microcents are accounting evidence, not a provider invoice. It has no kill, restore, revoke, replay, quota-reset, provisioning, route-edit, deployment, or secret controls.
 
 ## Rejected alternatives
 
