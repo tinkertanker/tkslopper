@@ -215,7 +215,9 @@ describe("provider contract", () => {
       JSON.stringify({
         route: {
           id: "route",
-          provider: "openai-compatible",
+          adapter: "openai-compatible",
+          provider: "custom",
+          profile: "custom",
           model: "physical-responses-model-v1",
           baseUrl: "https://provider.example.invalid",
           credentialBinding: "UPSTREAM_KEY",

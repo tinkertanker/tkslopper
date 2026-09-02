@@ -105,7 +105,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       :root {
         color-scheme: light;
         --ink: #13201c;
-        --muted: #5d6e67;
+        --muted: #596a63;
         --paper: #f4f1e9;
         --card: #fffdf7;
         --line: #d9d4c6;
