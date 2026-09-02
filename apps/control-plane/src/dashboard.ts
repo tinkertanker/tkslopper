@@ -193,15 +193,16 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       th { color: var(--muted); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
       tbody tr:last-child td { border-bottom: 0; }
       tbody tr:hover { background: var(--accent-soft); }
-      #attempts { min-width: 1145px; table-layout: fixed; }
-      #attempts th:nth-child(1) { width: 145px; }
-      #attempts th:nth-child(2) { width: 160px; }
-      #attempts th:nth-child(3) { width: 155px; }
-      #attempts th:nth-child(4) { width: 220px; }
-      #attempts th:nth-child(5) { width: 145px; }
-      #attempts th:nth-child(6) { width: 105px; }
-      #attempts th:nth-child(7) { width: 135px; }
-      #attempts th:nth-child(8) { width: 80px; }
+      #attempts { min-width: 1310px; table-layout: fixed; }
+      #attempts th { overflow-wrap: anywhere; white-space: normal; }
+      #attempts th:nth-child(1) { width: 230px; }
+      #attempts th:nth-child(2) { width: 140px; }
+      #attempts th:nth-child(3) { width: 135px; }
+      #attempts th:nth-child(4) { width: 190px; }
+      #attempts th:nth-child(5) { width: 130px; }
+      #attempts th:nth-child(6) { width: 90px; }
+      #attempts th:nth-child(7) { width: 200px; }
+      #attempts th:nth-child(8) { width: 195px; }
       #attempts td { overflow: hidden; text-overflow: ellipsis; }
       #audit { table-layout: fixed; }
       #audit th:nth-child(1) { width: 25%; }
@@ -307,7 +308,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         try { return new Intl.NumberFormat().format(BigInt(String(value ?? 0))); }
         catch { return String(value ?? 0); }
       };
-      const time = (value) => value ? new Date(Number(value) * 1000).toLocaleString() : "—";
+      const time = (value) => value ? new Date(Number(value) * 1000).toISOString().replace("T", " ").replace(".000Z", " UTC") : "—";
       const cost = (value) => number(value) + " μ¢";
       const set = (id, value) => { document.getElementById(id).textContent = String(value); };
 
