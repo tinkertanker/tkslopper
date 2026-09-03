@@ -119,9 +119,17 @@ function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
 
+function hasBindingMethods(value: unknown, methods: string[]): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const binding = value as Record<string, unknown>;
+  return methods.every((method) => typeof binding[method] === "function");
+}
+
 function isConfigured(env: GatewayEnv): boolean {
   const maxBodyBytes = Number(env.MAX_BODY_BYTES);
   if (
+    !hasBindingMethods(env.DB, ["prepare"]) ||
+    !hasBindingMethods(env.QUOTA, ["idFromName", "get"]) ||
     typeof env.TOKEN_SIGNING_SECRET !== "string" ||
     env.TOKEN_SIGNING_SECRET.length < 32 ||
     !["development", "test", "production"].includes(env.DEPLOYMENT_ENV) ||
@@ -133,6 +141,7 @@ function isConfigured(env: GatewayEnv): boolean {
   try {
     if (new URL(env.TOKEN_ISSUER).protocol !== "https:") return false;
     const routes = parseProviderRoutes(env.PROVIDER_ROUTES_JSON);
+    if (routes.size === 0) return false;
     for (const route of routes.values()) {
       if (route.adapter === "fixture") {
         if (env.DEPLOYMENT_ENV === "production") return false;
@@ -414,11 +423,33 @@ async function quotaCall(
     policy.principal_id,
   );
   const stub = env.QUOTA.get(env.QUOTA.idFromName(scope));
-  return stub.fetch("https://quota.internal/", {
+  return await stub.fetch("https://quota.internal/", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+async function quotaCallWithRetry(
+  env: GatewayEnv,
+  policy: GrantPolicyRow,
+  body: QuotaAcquireRequest | QuotaCompleteRequest,
+): Promise<Response> {
+  let lastResponse: Response | undefined;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await quotaCall(env, policy, body);
+      if (response.ok || response.status < 500) return response;
+      lastResponse = response;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (lastResponse) return lastResponse;
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("quota coordinator call failed");
 }
 
 async function recordAttemptStart(
@@ -564,7 +595,11 @@ async function handleInference(
     endpoint,
     providerAttempted: false,
   };
-  let quotaAcquired = false;
+  let quotaMayBeAcquired = false;
+  let quotaCompletionExhausted = false;
+  let quotaReservationUnresolved = false;
+  let completionTokens = 0;
+  let completionCost = 0;
   let reservedTokens = 0;
   let reservedCost = 0;
   try {
@@ -703,13 +738,6 @@ async function handleInference(
       }
       throw error;
     }
-    if (request.signal.aborted) {
-      throw new HttpError(
-        499,
-        "provider_unavailable",
-        "request was cancelled before provider dispatch",
-      );
-    }
     await acquireIdempotency(request, env, context);
 
     const reservedInputTokens = inspection.hasImages
@@ -725,7 +753,8 @@ async function handleInference(
         inspection.maxOutputTokens,
         aliasPolicy.output_cost_microcents_per_million,
       );
-    const quotaResponse = await quotaCall(env, policy, {
+    quotaMayBeAcquired = true;
+    const quotaResponse = await quotaCallWithRetry(env, policy, {
       operation: "acquire",
       requestId: context.requestId,
       reservationTtlSeconds: Math.ceil(route.timeoutMs / 1000) + 30,
@@ -737,8 +766,16 @@ async function handleInference(
         concurrency: policy.concurrency_limit,
         dailyBudgetMicrocents: policy.daily_budget_microcents,
       },
-    });
-    if (!quotaResponse.ok) {
+    }).catch(() => undefined);
+    if (!quotaResponse?.ok) {
+      if (!quotaResponse || quotaResponse.status >= 500) {
+        throw new HttpError(
+          503,
+          "internal_error",
+          "quota accounting admission failed",
+        );
+      }
+      quotaMayBeAcquired = false;
       const reason = (await quotaResponse.json<{ reason?: string }>()).reason;
       const budget = reason === "budget";
       throw new HttpError(
@@ -749,7 +786,6 @@ async function handleInference(
           : "rate or concurrency limit exceeded",
       );
     }
-    quotaAcquired = true;
 
     await recordAttemptStart(env, context, {
       inputTokens: reservedInputTokens,
@@ -762,9 +798,6 @@ async function handleInference(
       () => controller.abort("deadline"),
       route.timeoutMs,
     );
-    const abortFromClient = (): void => controller.abort("client_disconnected");
-    request.signal.addEventListener("abort", abortFromClient, { once: true });
-    if (request.signal.aborted) abortFromClient();
     try {
       const result = await callProvider({
         request: parsedRequest,
@@ -773,6 +806,8 @@ async function handleInference(
         signal: controller.signal,
         onDispatch: () => {
           context.providerAttempted = true;
+          completionTokens = reservedTokens;
+          completionCost = reservedCost;
         },
       });
       if (
@@ -795,19 +830,24 @@ async function handleInference(
           outputTokens,
           aliasPolicy.output_cost_microcents_per_million,
         );
-      const completion = await quotaCall(env, policy, {
+      completionTokens = inputTokens + outputTokens;
+      completionCost = actualCost;
+      const completion = await quotaCallWithRetry(env, policy, {
         operation: "complete",
         requestId: context.requestId,
-        actualTokens: inputTokens + outputTokens,
-        actualCostMicrocents: actualCost,
-      });
-      if (!completion.ok)
+        actualTokens: completionTokens,
+        actualCostMicrocents: completionCost,
+      }).catch(() => undefined);
+      if (!completion?.ok) {
+        quotaCompletionExhausted = true;
+        quotaReservationUnresolved = true;
         throw new HttpError(
           503,
           "internal_error",
           "quota accounting completion failed",
         );
-      quotaAcquired = false;
+      }
+      quotaMayBeAcquired = false;
       await recordAttempt(env, context, {
         statusCode: result.status,
         errorClass: null,
@@ -832,19 +872,24 @@ async function handleInference(
     } catch (error) {
       if (!(error instanceof ProviderError)) throw error;
       const providerAttempted = context.providerAttempted;
-      const completion = await quotaCall(env, policy, {
+      completionTokens = providerAttempted ? reservedTokens : 0;
+      completionCost = providerAttempted ? reservedCost : 0;
+      const completion = await quotaCallWithRetry(env, policy, {
         operation: "complete",
         requestId: context.requestId,
-        actualTokens: providerAttempted ? reservedTokens : 0,
-        actualCostMicrocents: providerAttempted ? reservedCost : 0,
-      });
-      if (!completion.ok)
+        actualTokens: completionTokens,
+        actualCostMicrocents: completionCost,
+      }).catch(() => undefined);
+      if (!completion?.ok) {
+        quotaCompletionExhausted = true;
+        quotaReservationUnresolved = true;
         throw new HttpError(
           503,
           "internal_error",
           "quota accounting completion failed",
         );
-      quotaAcquired = false;
+      }
+      quotaMayBeAcquired = false;
       if (providerAttempted) {
         await recordAttempt(env, context, {
           statusCode: error.status,
@@ -858,12 +903,7 @@ async function handleInference(
         await discardAttemptIntent(env, context);
       }
       await finishIdempotency(request, env, context, "failed");
-      const status =
-        error.errorClass === "provider_timeout"
-          ? 504
-          : error.errorClass === "provider_cancelled"
-            ? 499
-            : 502;
+      const status = error.errorClass === "provider_timeout" ? 504 : 502;
       logSafeEvent(
         safeEvent(context, {
           status,
@@ -886,18 +926,19 @@ async function handleInference(
       );
     } finally {
       clearTimeout(timeout);
-      request.signal.removeEventListener("abort", abortFromClient);
     }
   } catch (error) {
-    if (quotaAcquired && context.policy) {
-      await quotaCall(env, context.policy, {
+    if (quotaMayBeAcquired && !quotaCompletionExhausted && context.policy) {
+      const completion = await quotaCallWithRetry(env, context.policy, {
         operation: "complete",
         requestId: context.requestId,
-        actualTokens: context.providerAttempted ? reservedTokens : 0,
-        actualCostMicrocents: context.providerAttempted ? reservedCost : 0,
+        actualTokens: completionTokens,
+        actualCostMicrocents: completionCost,
       }).catch(() => undefined);
+      if (completion?.ok) quotaMayBeAcquired = false;
+      else quotaReservationUnresolved = true;
     }
-    if (!context.providerAttempted) {
+    if (!context.providerAttempted && !quotaReservationUnresolved) {
       await discardAttemptIntent(env, context).catch(() => undefined);
     }
     await finishIdempotency(request, env, context, "failed").catch(
@@ -909,6 +950,9 @@ async function handleInference(
           status: error.status,
           errorClass: error.code,
           attempts: context.providerAttempted ? 1 : 0,
+          ...(quotaReservationUnresolved
+            ? { quotaReservationState: "unresolved" as const }
+            : {}),
         }),
       );
       return errorResponse(
@@ -923,6 +967,9 @@ async function handleInference(
         status: 500,
         errorClass: "internal_error",
         attempts: context.providerAttempted ? 1 : 0,
+        ...(quotaReservationUnresolved
+          ? { quotaReservationState: "unresolved" as const }
+          : {}),
       }),
     );
     return errorResponse(
@@ -942,6 +989,11 @@ export async function handleGateway(
     return errorResponse(500, "internal_error", "gateway is not configured");
   const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === "/healthz") {
+    try {
+      await env.DB.prepare("SELECT 1 AS ready FROM token_grants LIMIT 0").all();
+    } catch {
+      return errorResponse(500, "internal_error", "gateway is not ready");
+    }
     return jsonResponse({
       status: "ok",
       component: "gateway",

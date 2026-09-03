@@ -304,7 +304,7 @@ export const entitlementCreateSchema = z
     environment_id: identifierSchema,
     tenant_id: identifierSchema,
     principal_id: identifierSchema,
-    source: z.enum(["service", "dev", "stripe", "storekit", "contract"]),
+    source: z.enum(["dev", "stripe", "storekit", "contract"]),
     capabilities: capabilitiesSchema,
     expires_at: z.number().int().positive().nullable().default(null),
   })

@@ -26,6 +26,22 @@ LEFT JOIN environments AS environment
 WHERE environment.id IS NULL
 HAVING COUNT(*) > 0;
 
+SELECT 'entitlements_managed_source_reference' AS violation, COUNT(*) AS row_count
+FROM entitlements
+WHERE source IN ('access_code', 'service') AND source_ref IS NULL
+HAVING COUNT(*) > 0;
+
+SELECT 'entitlements_service_identity' AS violation, COUNT(*) AS row_count
+FROM entitlements AS entitlement
+LEFT JOIN service_credentials AS credential
+  ON credential.id = entitlement.source_ref
+ AND credential.product_id = entitlement.product_id
+ AND credential.environment_id = entitlement.environment_id
+ AND credential.tenant_id = entitlement.tenant_id
+ AND credential.principal_id = entitlement.principal_id
+WHERE entitlement.source = 'service' AND credential.id IS NULL
+HAVING COUNT(*) > 0;
+
 SELECT 'activations_access_code_identity' AS violation, COUNT(*) AS row_count
 FROM activations AS activation
 LEFT JOIN access_codes AS code
@@ -76,4 +92,11 @@ WHERE grant_row.entitlement_id IS NOT NULL
     OR entitlement.tenant_id <> grant_row.tenant_id
     OR entitlement.principal_id <> grant_row.principal_id
   )
+HAVING COUNT(*) > 0;
+
+SELECT 'provider_attempt_bounds' AS violation, COUNT(*) AS row_count
+FROM provider_attempts
+WHERE input_tokens NOT BETWEEN 0 AND 10000000
+   OR output_tokens NOT BETWEEN 0 AND 200000
+   OR cost_microcents NOT BETWEEN 0 AND 10200000000000
 HAVING COUNT(*) > 0;

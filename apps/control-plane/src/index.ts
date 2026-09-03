@@ -104,7 +104,16 @@ function ensureConfiguration(env: ControlPlaneEnv): void {
   } catch {
     issuerIsValid = false;
   }
+  const roleSecrets = [
+    env.TOKEN_SIGNING_SECRET,
+    env.CREDENTIAL_PEPPER,
+    env.ADMIN_TOKEN,
+    env.DASHBOARD_TOKEN,
+  ];
   if (
+    typeof env.DB !== "object" ||
+    env.DB === null ||
+    typeof env.DB.prepare !== "function" ||
     typeof env.TOKEN_SIGNING_SECRET !== "string" ||
     env.TOKEN_SIGNING_SECRET.length < 32 ||
     typeof env.CREDENTIAL_PEPPER !== "string" ||
@@ -113,9 +122,7 @@ function ensureConfiguration(env: ControlPlaneEnv): void {
     env.ADMIN_TOKEN.length < 32 ||
     typeof env.DASHBOARD_TOKEN !== "string" ||
     env.DASHBOARD_TOKEN.length < 32 ||
-    env.DASHBOARD_TOKEN === env.ADMIN_TOKEN ||
-    env.DASHBOARD_TOKEN === env.TOKEN_SIGNING_SECRET ||
-    env.DASHBOARD_TOKEN === env.CREDENTIAL_PEPPER ||
+    new Set(roleSecrets).size !== roleSecrets.length ||
     !["development", "test", "production"].includes(env.DEPLOYMENT_ENV) ||
     !["true", "false"].includes(env.ENABLE_DEV_ISSUER) ||
     !issuerIsValid ||
@@ -1047,6 +1054,7 @@ export async function handleControlPlane(
   try {
     ensureConfiguration(env);
     if (request.method === "GET" && url.pathname === "/healthz") {
+      await env.DB.prepare("SELECT 1 AS ready FROM products LIMIT 0").all();
       return jsonResponse({ status: "ok", component: "control-plane" });
     }
     if (request.method === "GET" && url.pathname === "/dashboard") {

@@ -8,7 +8,7 @@ Serve the first operations dashboard from the existing control-plane Worker beca
 
 The browser surface is read-only. An inert `/dashboard` shell loads data from `GET /admin/v1/dashboard` using a dedicated high-entropy `DASHBOARD_TOKEN`. The write-capable admin token is rejected; equality with any other control-plane secret fails configuration. Responses are not cached, a per-response CSP nonce permits only the bundled script/style, and the submitted credential is cleared immediately without browser persistence.
 
-The API projects explicit metadata columns only. It omits request/response payloads, raw and pseudonymous identity values, credential and idempotency material, actor hashes, provider URLs, and route secrets. Aggregate token and microcent values are decimal strings so SQLite 64-bit totals are not narrowed through JavaScript numbers.
+The API projects explicit metadata columns only. It omits request/response payloads, raw and pseudonymous identity values, credential and idempotency material, actor hashes, access-code resource IDs, provider URLs, and route secrets. Attempt aggregates are capped at 10,000 schema-bounded rows so each exact SQLite sum remains below signed 64-bit limits, then returned as decimal strings so JavaScript does not narrow it.
 
 ## Deployment boundary
 

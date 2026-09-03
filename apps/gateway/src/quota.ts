@@ -153,13 +153,13 @@ export class QuotaCoordinator implements DurableObject {
 
   private async acquire(request: QuotaAcquireRequest): Promise<Response> {
     const now = Math.floor(Date.now() / 1000);
-    let denial:
-      "duplicate" | "rpm" | "tpm" | "concurrency" | "budget" | undefined;
+    let denial: "rpm" | "tpm" | "concurrency" | "budget" | undefined;
+    let existing = false;
     await this.state.storage.transaction(async (transaction) => {
       const state =
         (await transaction.get<QuotaState>("quota")) ?? freshState(now);
       normalizeState(state, now);
-      if (state.reservations[request.requestId]) denial = "duplicate";
+      if (state.reservations[request.requestId]) existing = true;
       else if (state.requestsThisMinute + 1 > request.limits.rpm)
         denial = "rpm";
       else if (
@@ -198,7 +198,7 @@ export class QuotaCoordinator implements DurableObject {
         { acquired: false, reason: denial },
         { status: denial === "budget" ? 402 : 429 },
       );
-    return Response.json({ acquired: true });
+    return Response.json({ acquired: true, existing });
   }
 
   private async complete(request: QuotaCompleteRequest): Promise<Response> {
@@ -229,6 +229,6 @@ export class QuotaCoordinator implements DurableObject {
       delete state.reservations[request.requestId];
       await transaction.put("quota", state);
     });
-    return Response.json({ completed: found }, { status: found ? 200 : 404 });
+    return Response.json({ completed: true, found });
   }
 }

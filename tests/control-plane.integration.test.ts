@@ -5,6 +5,11 @@ import {
   handleControlPlane,
   type ControlPlaneEnv,
 } from "../apps/control-plane/src";
+import {
+  DASHBOARD_ATTEMPT_LIMIT,
+  DASHBOARD_ENVIRONMENTS_SQL,
+  DASHBOARD_TOTALS_SQL,
+} from "../apps/control-plane/src/dashboard";
 import { handleGateway } from "../apps/gateway/src";
 
 const controlEnv = env as unknown as ControlPlaneEnv;
@@ -16,10 +21,10 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM provider_attempts"),
     env.DB.prepare("DELETE FROM idempotency_keys"),
     env.DB.prepare("DELETE FROM token_grants"),
+    env.DB.prepare("DELETE FROM entitlements"),
     env.DB.prepare("DELETE FROM activations"),
     env.DB.prepare("DELETE FROM access_codes"),
     env.DB.prepare("DELETE FROM service_credentials"),
-    env.DB.prepare("DELETE FROM entitlements"),
     env.DB.prepare("DELETE FROM aliases"),
     env.DB.prepare("DELETE FROM environments"),
     env.DB.prepare("DELETE FROM products"),
@@ -80,16 +85,22 @@ describe("operations dashboard", () => {
     expect(html).not.toContain(String(env.DASHBOARD_TOKEN));
   });
 
-  it("fails closed when the read credential reuses any control-plane secret", async () => {
-    for (const conflictingSecret of [
-      controlEnv.ADMIN_TOKEN,
-      controlEnv.TOKEN_SIGNING_SECRET,
-      controlEnv.CREDENTIAL_PEPPER,
-    ]) {
-      const response = await handleControlPlane(get("/dashboard"), {
+  it("fails closed when any control-plane role secrets are reused", async () => {
+    for (const conflictingEnv of [
+      { ...controlEnv, DASHBOARD_TOKEN: controlEnv.ADMIN_TOKEN },
+      { ...controlEnv, DASHBOARD_TOKEN: controlEnv.TOKEN_SIGNING_SECRET },
+      { ...controlEnv, DASHBOARD_TOKEN: controlEnv.CREDENTIAL_PEPPER },
+      { ...controlEnv, ADMIN_TOKEN: controlEnv.TOKEN_SIGNING_SECRET },
+      { ...controlEnv, ADMIN_TOKEN: controlEnv.CREDENTIAL_PEPPER },
+      {
         ...controlEnv,
-        DASHBOARD_TOKEN: conflictingSecret,
-      });
+        TOKEN_SIGNING_SECRET: controlEnv.CREDENTIAL_PEPPER,
+      },
+    ]) {
+      const response = await handleControlPlane(
+        get("/dashboard"),
+        conflictingEnv,
+      );
 
       expect(response.status).toBe(500);
       await expect(response.json()).resolves.toMatchObject({
@@ -229,6 +240,37 @@ describe("operations dashboard", () => {
     expect(serialized).not.toContain("private_principal_hash");
     expect(serialized).not.toContain("private_actor_hash");
     expect(serialized).not.toContain("secret_hash");
+  });
+
+  it("redacts access-code identifiers from read-only audit output", async () => {
+    const created = await admin("/admin/v1/access-codes", {
+      product_id: "prod_control",
+      environment_id: "env_control",
+      tenant_id: "tenant_fixture",
+      capabilities: ["text.chat.v1"],
+      expires_at: now() + 3600,
+      max_activations: 1,
+      max_failed_attempts: 3,
+    });
+    expect(created.status).toBe(201);
+    const code = await created.json<{ id: string }>();
+
+    const response = await handleControlPlane(
+      get("/admin/v1/dashboard", String(env.DASHBOARD_TOKEN)),
+      controlEnv,
+    );
+    expect(response.status).toBe(200);
+    const serialized = await response.text();
+    expect(serialized).not.toContain(code.id);
+    expect(JSON.parse(serialized)).toMatchObject({
+      recent_admin_actions: [
+        {
+          action: "create",
+          resource_type: "access_code",
+          resource_id: "[redacted]",
+        },
+      ],
+    });
   });
 
   it("reports gateway-effective grant and parent policy state", async () => {
@@ -381,15 +423,81 @@ describe("operations dashboard", () => {
     });
   });
 
-  it("uses dashboard indexes for global recency and effective grants", async () => {
+  it("caps exact accounting before aggregate overflow", async () => {
+    const timestamp = now();
+    await env.DB.prepare(
+      `WITH RECURSIVE sequence(value) AS (
+         SELECT 1 UNION ALL SELECT value + 1 FROM sequence WHERE value < ?
+       )
+       INSERT INTO provider_attempts
+         (id, request_id, attempt_number, product_id, environment_id, tenant_hash,
+          principal_hash, alias, policy_version, route_id, provider, resolved_model,
+          endpoint, status_code, latency_ms, input_tokens, output_tokens,
+          cost_microcents, created_at, stale_after)
+       SELECT printf('attempt_scale_%05d', value), printf('request_scale_%05d', value),
+              1, 'prod_control', 'env_control', 'tenant_hash', 'principal_hash',
+              'text.chat.v1', 1, 'route_fixture', 'fixture', 'fixture-model', 'chat',
+              200, 1, 10000000, 200000, 10200000000000, ?, ?
+         FROM sequence`,
+    )
+      .bind(DASHBOARD_ATTEMPT_LIMIT + 1, timestamp, timestamp)
+      .run();
+
+    const response = await handleControlPlane(
+      get("/admin/v1/dashboard", String(env.DASHBOARD_TOKEN)),
+      controlEnv,
+    );
+    expect(response.status).toBe(200);
+    const overview = await response.json<{
+      totals: {
+        finalized_attempts_24h: number;
+        accounted_input_tokens_24h: string;
+        accounted_output_tokens_24h: string;
+        accounted_cost_microcents_24h: string;
+      };
+      environments: Array<{
+        finalized_attempts_24h: number;
+        accounted_cost_microcents_24h: string;
+      }>;
+      accounting_truncated: { finalized_attempts: boolean };
+    }>();
+    expect(overview.totals).toMatchObject({
+      finalized_attempts_24h: DASHBOARD_ATTEMPT_LIMIT,
+      accounted_input_tokens_24h: "100000000000",
+      accounted_output_tokens_24h: "2000000000",
+      accounted_cost_microcents_24h: "102000000000000000",
+    });
+    expect(overview.environments[0]).toMatchObject({
+      finalized_attempts_24h: DASHBOARD_ATTEMPT_LIMIT,
+      accounted_cost_microcents_24h: "102000000000000000",
+    });
+    expect(overview.accounting_truncated.finalized_attempts).toBe(true);
+  });
+
+  it("uses bounded, index-driven production dashboard queries", async () => {
+    await env.DB.prepare("ANALYZE").run();
+    const timestamp = now();
     const plans = await Promise.all([
-      env.DB.prepare(
-        `EXPLAIN QUERY PLAN
-         SELECT COUNT(*) FROM provider_attempts
-          WHERE created_at >= ?
-            AND (error_class IS NULL OR error_class <> 'attempt_started')`,
-      )
-        .bind(now() - 86_400)
+      env.DB.prepare(`EXPLAIN QUERY PLAN ${DASHBOARD_ENVIRONMENTS_SQL}`)
+        .bind(
+          251,
+          timestamp - 86_400,
+          DASHBOARD_ATTEMPT_LIMIT,
+          timestamp,
+          timestamp,
+          timestamp,
+          timestamp,
+        )
+        .all<{ detail: string }>(),
+      env.DB.prepare(`EXPLAIN QUERY PLAN ${DASHBOARD_TOTALS_SQL}`)
+        .bind(
+          timestamp - 86_400,
+          DASHBOARD_ATTEMPT_LIMIT + 1,
+          DASHBOARD_ATTEMPT_LIMIT,
+          timestamp,
+          DASHBOARD_ATTEMPT_LIMIT + 1,
+          DASHBOARD_ATTEMPT_LIMIT,
+        )
         .all<{ detail: string }>(),
       env.DB.prepare(
         `EXPLAIN QUERY PLAN
@@ -411,10 +519,30 @@ describe("operations dashboard", () => {
     const details = plans.map(({ results }) =>
       results.map(({ detail }) => detail).join("\n"),
     );
+    expect(details[0]).toContain("aliases_environment_active_idx");
+    expect(details[0]).toContain("entitlements_environment_active_idx");
+    expect(details[0]).toContain("token_grants_environment_active_idx");
     expect(details[0]).toContain("provider_attempts_finalized_time_idx");
-    expect(details[1]).toContain("provider_attempts_recent_idx");
-    expect(details[2]).toContain("admin_audit_recent_idx");
-    expect(details[3]).toContain("token_grants_environment_active_idx");
+    expect(details[0]).not.toMatch(/SCAN (?:a|n|g)(?:\s|$)/u);
+    expect(details[0]).not.toContain("SCAN provider_attempts");
+    expect(details[1]).toContain("provider_attempts_finalized_time_idx");
+    expect(details[1]).toContain("provider_attempts_stale_idx");
+    expect(details[2]).toContain("provider_attempts_recent_idx");
+    expect(details[3]).toContain("admin_audit_recent_idx");
+  });
+
+  it("bounds exact aggregate inputs below SQLite's signed integer limit", () => {
+    const maximumAttemptCost = 10_200_000_000_000n;
+    const signedIntegerMaximum = (1n << 63n) - 1n;
+    const firstOverflowingCount =
+      signedIntegerMaximum / maximumAttemptCost + 1n;
+
+    expect(firstOverflowingCount * maximumAttemptCost).toBeGreaterThan(
+      signedIntegerMaximum,
+    );
+    expect(BigInt(DASHBOARD_ATTEMPT_LIMIT) * maximumAttemptCost).toBeLessThan(
+      signedIntegerMaximum,
+    );
   });
 });
 
@@ -836,6 +964,95 @@ describe("product environment integrity", () => {
         "UPDATE access_codes SET tenant_id = 'other_tenant' WHERE id = 'code_identity'",
       ).run(),
     ).rejects.toThrow(/access code source identity mismatch/i);
+    await expect(
+      env.DB.prepare(
+        `UPDATE entitlements
+            SET source = 'dev', source_ref = NULL
+          WHERE id = 'ent_code_identity'`,
+      ).run(),
+    ).rejects.toThrow(/entitlement source provenance is immutable/i);
+    await env.DB.prepare(
+      "DELETE FROM activations WHERE id = 'activation_identity'",
+    ).run();
+    expect(
+      await env.DB.prepare(
+        "SELECT id FROM entitlements WHERE id = 'ent_code_identity'",
+      ).first(),
+    ).toBeNull();
+  });
+
+  it("enforces service-entitlement provenance at the database boundary", async () => {
+    await addOtherProduct();
+    const timestamp = now();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO environments
+         (id, product_id, name, audience, created_at, updated_at)
+         VALUES ('env_other', 'prod_other', 'test', 'other:test', ?, ?)`,
+      ).bind(timestamp, timestamp),
+      env.DB.prepare(
+        `INSERT INTO service_credentials
+         (id, product_id, environment_id, tenant_id, principal_id, secret_salt, secret_hash,
+          capabilities_json, created_at)
+         VALUES ('service_identity', 'prod_control', 'env_control', 'tenant_fixture',
+                 'principal_fixture', 'salt', 'hash', '["text.chat.v1"]', ?)`,
+      ).bind(timestamp),
+    ]);
+
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO entitlements
+         (id, product_id, environment_id, tenant_id, principal_id, source, source_ref,
+          capabilities_json, status, created_at, updated_at)
+         VALUES ('ent_bad_service', 'prod_other', 'env_other', 'other_tenant',
+                 'other_principal', 'service', 'service_identity', '["text.chat.v1"]',
+                 'active', ?, ?)`,
+      )
+        .bind(timestamp, timestamp)
+        .run(),
+    ).rejects.toThrow(/entitlement service credential identity mismatch/i);
+
+    await env.DB.prepare(
+      `INSERT INTO entitlements
+       (id, product_id, environment_id, tenant_id, principal_id, source, source_ref,
+        capabilities_json, status, created_at, updated_at)
+       VALUES ('ent_service_identity', 'prod_control', 'env_control', 'tenant_fixture',
+               'principal_fixture', 'service', 'service_identity', '["text.chat.v1"]',
+               'active', ?, ?)`,
+    )
+      .bind(timestamp, timestamp)
+      .run();
+    await expect(
+      env.DB.prepare(
+        "UPDATE service_credentials SET principal_id = 'other_principal' WHERE id = 'service_identity'",
+      ).run(),
+    ).rejects.toThrow(/service credential source identity mismatch/i);
+    await expect(
+      env.DB.prepare(
+        `UPDATE entitlements
+            SET source = 'dev', source_ref = NULL
+          WHERE id = 'ent_service_identity'`,
+      ).run(),
+    ).rejects.toThrow(/entitlement source provenance is immutable/i);
+
+    const genericService = await admin("/admin/v1/entitlements", {
+      product_id: "prod_control",
+      environment_id: "env_control",
+      tenant_id: "tenant_fixture",
+      principal_id: "principal_fixture",
+      source: "service",
+      capabilities: ["text.chat.v1"],
+      expires_at: null,
+    });
+    expect(genericService.status).toBe(400);
+    await env.DB.prepare(
+      "DELETE FROM service_credentials WHERE id = 'service_identity'",
+    ).run();
+    expect(
+      await env.DB.prepare(
+        "SELECT id FROM entitlements WHERE id = 'ent_service_identity'",
+      ).first(),
+    ).toBeNull();
   });
 
   it("returns a stable 4xx and leaves no partial admin writes for a mismatched pair", async () => {
@@ -1003,5 +1220,30 @@ describe("control-plane configuration", () => {
       { ...controlEnv, DEPLOYMENT_ENV: "prodution" },
     );
     expect(response.status).toBe(500);
+  });
+
+  it("fails readiness without a working D1 binding", async () => {
+    const request = () =>
+      new Request("https://control.example.invalid/healthz");
+    expect(
+      (
+        await handleControlPlane(request(), {
+          ...controlEnv,
+          DB: undefined as unknown as D1Database,
+        })
+      ).status,
+    ).toBe(500);
+    expect(
+      (
+        await handleControlPlane(request(), {
+          ...controlEnv,
+          DB: {
+            prepare() {
+              throw new Error("synthetic D1 outage");
+            },
+          } as unknown as D1Database,
+        })
+      ).status,
+    ).toBe(500);
   });
 });

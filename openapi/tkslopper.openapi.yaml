@@ -68,7 +68,6 @@ paths:
         "413": { $ref: "#/components/responses/Error" }
         "415": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
-        "499": { $ref: "#/components/responses/Cancelled" }
         "500": { $ref: "#/components/responses/Error" }
         "502": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
@@ -131,7 +130,6 @@ paths:
         "413": { $ref: "#/components/responses/Error" }
         "415": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
-        "499": { $ref: "#/components/responses/Cancelled" }
         "500": { $ref: "#/components/responses/Error" }
         "502": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
@@ -211,15 +209,6 @@ components:
       description: Pseudorandom request identifier safe to use for metadata lookup
       schema: { type: string }
   responses:
-    Cancelled:
-      description: The client disconnected and the provider request was cancelled
-      headers:
-        x-tkslopper-request-id:
-          $ref: "#/components/headers/RequestId"
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/ErrorResponse"
     Error:
       description: Sanitized error; no upstream body or request payload is included
       headers:

@@ -35,10 +35,10 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM provider_attempts"),
     env.DB.prepare("DELETE FROM idempotency_keys"),
     env.DB.prepare("DELETE FROM token_grants"),
+    env.DB.prepare("DELETE FROM entitlements"),
     env.DB.prepare("DELETE FROM activations"),
     env.DB.prepare("DELETE FROM access_codes"),
     env.DB.prepare("DELETE FROM service_credentials"),
-    env.DB.prepare("DELETE FROM entitlements"),
     env.DB.prepare("DELETE FROM aliases"),
     env.DB.prepare("DELETE FROM environments"),
     env.DB.prepare("DELETE FROM products"),
@@ -153,7 +153,6 @@ function chatRequest(
     max_completion_tokens: 100,
     stream: false,
   },
-  signal?: AbortSignal,
 ): Request {
   return new Request("https://gateway.example.invalid/v1/chat/completions", {
     method: "POST",
@@ -163,7 +162,6 @@ function chatRequest(
       ...overrides,
     },
     body: JSON.stringify(body),
-    ...(signal ? { signal } : {}),
   });
 }
 
@@ -488,28 +486,6 @@ describe("Stage 0 failure-path accounting", () => {
     );
   });
 
-  it("rejects a pre-aborted request before quota or attempt admission", async () => {
-    const token = await grant();
-    const controller = new AbortController();
-    controller.abort("synthetic_client_disconnect");
-    const response = await handleGateway(
-      chatRequest(
-        token,
-        { "idempotency-key": ["pre", "aborted", "fixture", "0001"].join("-") },
-        undefined,
-        controller.signal,
-      ),
-      env,
-    );
-    expect(response.status).toBe(499);
-    const persisted = await env.DB.prepare(
-      `SELECT
-         (SELECT COUNT(*) FROM provider_attempts) AS attempts,
-         (SELECT COUNT(*) FROM idempotency_keys) AS idempotency`,
-    ).first<{ attempts: number; idempotency: number }>();
-    expect(persisted).toEqual({ attempts: 0, idempotency: 0 });
-  });
-
   it("accounts zero and stores no attempt when intent persistence fails before dispatch", async () => {
     await env.DB.prepare(
       `CREATE TRIGGER fail_attempt_start
@@ -535,6 +511,129 @@ describe("Stage 0 failure-path accounting", () => {
       expect(quota.spentTodayMicrocents).toBe(0);
     } finally {
       await env.DB.prepare("DROP TRIGGER fail_attempt_start").run();
+    }
+  });
+
+  it("retries uncertain admission and zero-cost pre-dispatch cleanup", async () => {
+    await env.DB.prepare(
+      `CREATE TRIGGER fail_attempt_start
+       BEFORE INSERT ON provider_attempts
+       BEGIN SELECT RAISE(ABORT, 'synthetic attempt start failure'); END`,
+    ).run();
+    const operations: Array<Record<string, unknown>> = [];
+    let reservationExists = false;
+    const quotaStub = {
+      fetch(_url: string, init?: RequestInit): Promise<Response> {
+        if (typeof init?.body !== "string")
+          throw new Error("synthetic quota request body was not a string");
+        const operation = JSON.parse(init.body) as Record<string, unknown>;
+        operations.push(operation);
+        const matching = operations.filter(
+          ({ operation: name }) => name === operation.operation,
+        ).length;
+        if (operation.operation === "acquire") {
+          reservationExists = true;
+          if (matching === 1)
+            return Promise.reject(new Error("synthetic lost acquire response"));
+          return Promise.resolve(
+            Response.json({ acquired: true, existing: true }),
+          );
+        }
+        if (matching === 1)
+          return Promise.resolve(
+            Response.json({ completed: false }, { status: 503 }),
+          );
+        reservationExists = false;
+        return Promise.resolve(Response.json({ completed: true }));
+      },
+    };
+    const quotaNamespace = {
+      idFromName: () => ({ synthetic: true }),
+      get: () => quotaStub,
+    } as unknown as DurableObjectNamespace;
+    try {
+      const token = await grant();
+      const response = await handleGateway(chatRequest(token), {
+        ...(env as unknown as GatewayEnv),
+        QUOTA: quotaNamespace,
+      });
+      expect(response.status).toBe(500);
+      expect(operations.map(({ operation }) => operation)).toEqual([
+        "acquire",
+        "acquire",
+        "complete",
+        "complete",
+      ]);
+      for (const completion of operations.slice(2)) {
+        expect(completion).toMatchObject({
+          actualTokens: 0,
+          actualCostMicrocents: 0,
+        });
+      }
+      expect(reservationExists).toBe(false);
+      expect(
+        (
+          await env.DB.prepare(
+            "SELECT COUNT(*) AS count FROM provider_attempts",
+          ).first<{ count: number }>()
+        )?.count,
+      ).toBe(0);
+    } finally {
+      await env.DB.prepare("DROP TRIGGER fail_attempt_start").run();
+    }
+  });
+
+  it("exposes an unresolved reservation when pre-dispatch cleanup is unavailable", async () => {
+    const operations: Array<Record<string, unknown>> = [];
+    let reservationExists = false;
+    const quotaStub = {
+      fetch(_url: string, init?: RequestInit): Promise<Response> {
+        if (typeof init?.body !== "string")
+          throw new Error("synthetic quota request body was not a string");
+        const operation = JSON.parse(init.body) as Record<string, unknown>;
+        operations.push(operation);
+        if (operation.operation === "acquire") {
+          reservationExists = true;
+          return Promise.reject(new Error("synthetic lost acquire response"));
+        }
+        return Promise.resolve(
+          Response.json({ completed: false }, { status: 503 }),
+        );
+      },
+    };
+    const quotaNamespace = {
+      idFromName: () => ({ synthetic: true }),
+      get: () => quotaStub,
+    } as unknown as DurableObjectNamespace;
+    const logger = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      const token = await grant();
+      const response = await handleGateway(chatRequest(token), {
+        ...(env as unknown as GatewayEnv),
+        QUOTA: quotaNamespace,
+      });
+      expect(response.status).toBe(503);
+      expect(operations.map(({ operation }) => operation)).toEqual([
+        "acquire",
+        "acquire",
+        "complete",
+        "complete",
+      ]);
+      for (const completion of operations.slice(2)) {
+        expect(completion).toMatchObject({
+          actualTokens: 0,
+          actualCostMicrocents: 0,
+        });
+      }
+      expect(reservationExists).toBe(true);
+      expect(JSON.parse(String(logger.mock.calls.at(-1)?.[0]))).toMatchObject({
+        event: "inference_request",
+        status: 503,
+        attempts: 0,
+        quotaReservationState: "unresolved",
+      });
+    } finally {
+      logger.mockRestore();
     }
   });
 
@@ -647,59 +746,6 @@ describe("Stage 0 failure-path accounting", () => {
     }
   });
 
-  it("distinguishes client cancellation, aborts the provider, and accounts conservatively", async () => {
-    const token = await grant();
-    const requestController = new AbortController();
-    let providerStarted!: () => void;
-    const started = new Promise<void>((resolve) => {
-      providerStarted = resolve;
-    });
-    const providerFetch = abortableProviderFetch(providerStarted);
-    vi.stubGlobal("fetch", providerFetch);
-    try {
-      const responsePromise = handleGateway(
-        chatRequest(
-          token,
-          { "idempotency-key": "cancel-fixture-0001" },
-          undefined,
-          requestController.signal,
-        ),
-        upstreamEnv(5000),
-      );
-      await started;
-      requestController.abort("synthetic_client_disconnect");
-      const response = await responsePromise;
-      expect(response.status).toBe(499);
-      expect(providerFetch).toHaveBeenCalledTimes(1);
-      expect(providerFetch.mock.calls[0]?.[1]?.signal?.reason).toBe(
-        "client_disconnected",
-      );
-      const attempt = await env.DB.prepare(
-        "SELECT status_code, error_class, cost_microcents FROM provider_attempts",
-      ).first<{
-        status_code: number;
-        error_class: string;
-        cost_microcents: number;
-      }>();
-      expect(attempt).toMatchObject({
-        status_code: 499,
-        error_class: "provider_cancelled",
-      });
-      const quota = await quotaState();
-      expect(quota.reservations).toEqual({});
-      expect(quota.spentTodayMicrocents).toBe(attempt!.cost_microcents);
-      expect(
-        (
-          await env.DB.prepare("SELECT status FROM idempotency_keys").first<{
-            status: string;
-          }>()
-        )?.status,
-      ).toBe("failed");
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
   it("leaves bounded stale provenance when attempt finalization fails", async () => {
     await env.DB.prepare(
       `CREATE TRIGGER fail_attempt_finalization
@@ -741,6 +787,77 @@ describe("Stage 0 failure-path accounting", () => {
       await env.DB.prepare("DROP TRIGGER fail_attempt_finalization").run();
     }
   });
+
+  it.each([
+    {
+      name: "complete zero usage",
+      usage: { prompt_tokens: 0, completion_tokens: 0 },
+      expectedTokens: 0,
+      expectedCost: 0,
+    },
+    {
+      name: "partial usage",
+      usage: { prompt_tokens: 5 },
+      expectedTokens: 105,
+      expectedCost: 2,
+    },
+    {
+      name: "complete usage",
+      usage: { prompt_tokens: 5, completion_tokens: 7 },
+      expectedTokens: 12,
+      expectedCost: 2,
+    },
+  ])(
+    "preserves $name when quota completion succeeds on retry",
+    async ({ usage, expectedTokens, expectedCost }) => {
+      const operations: Array<Record<string, unknown>> = [];
+      const quotaStub = {
+        fetch(_url: string, init?: RequestInit): Promise<Response> {
+          if (typeof init?.body !== "string")
+            throw new Error("synthetic quota request body was not a string");
+          const operation = JSON.parse(init.body) as Record<string, unknown>;
+          operations.push(operation);
+          const completionCount = operations.filter(
+            ({ operation }) => operation === "complete",
+          ).length;
+          return Promise.resolve(
+            operation.operation === "acquire" || completionCount === 2
+              ? Response.json({ completed: true })
+              : Response.json({ completed: false }, { status: 503 }),
+          );
+        },
+      };
+      const quotaNamespace = {
+        idFromName: () => ({ synthetic: true }),
+        get: () => quotaStub,
+      } as unknown as DurableObjectNamespace;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>().mockResolvedValue(providerChatResponse(usage)),
+      );
+      try {
+        const token = await grant();
+        const response = await handleGateway(chatRequest(token), {
+          ...upstreamEnv(5000),
+          QUOTA: quotaNamespace,
+        });
+        expect(response.status).toBe(200);
+        expect(operations.map(({ operation }) => operation)).toEqual([
+          "acquire",
+          "complete",
+          "complete",
+        ]);
+        for (const completion of operations.slice(1)) {
+          expect(completion).toMatchObject({
+            actualTokens: expectedTokens,
+            actualCostMicrocents: expectedCost,
+          });
+        }
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
 
   it("retries quota completion once and leaves a bounded stale signal if it still fails", async () => {
     const operations: Array<Record<string, unknown>> = [];
@@ -881,6 +998,26 @@ describe("gateway configuration", () => {
     }
     expect((await handleGateway(healthRequest(), configured)).status).toBe(200);
   });
+
+  it("fails readiness without routes, core bindings, or a working D1 binding", async () => {
+    const healthRequest = () =>
+      new Request("https://gateway.example.invalid/healthz");
+    const unavailableDb = {
+      prepare() {
+        throw new Error("synthetic D1 outage");
+      },
+    } as unknown as D1Database;
+    for (const configured of [
+      { ...gatewayEnv, PROVIDER_ROUTES_JSON: "{}" },
+      { ...gatewayEnv, DB: undefined as unknown as D1Database },
+      { ...gatewayEnv, QUOTA: undefined as unknown as DurableObjectNamespace },
+      { ...gatewayEnv, DB: unavailableDb },
+    ]) {
+      expect((await handleGateway(healthRequest(), configured)).status).toBe(
+        500,
+      );
+    }
+  });
 });
 
 describe("exact quota reservations", () => {
@@ -935,6 +1072,66 @@ describe("exact quota reservations", () => {
       ).status,
     ).toBe(200);
     expect((await acquire("request-c")).status).toBe(200);
+  });
+
+  it("makes repeated admission and completion idempotent by request ID", async () => {
+    const stub = env.QUOTA.get(
+      env.QUOTA.idFromName("quota-idempotent-fixture"),
+    );
+    const request = {
+      operation: "acquire",
+      requestId: "request-idempotent",
+      reservationTtlSeconds: 60,
+      estimatedTokens: 100,
+      reservedCostMicrocents: 10,
+      limits: {
+        rpm: 10,
+        tpm: 1000,
+        concurrency: 2,
+        dailyBudgetMicrocents: 100,
+      },
+    };
+    const call = (body: Record<string, unknown>) =>
+      stub.fetch("https://quota.internal/", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    await expect((await call(request)).json()).resolves.toMatchObject({
+      acquired: true,
+      existing: false,
+    });
+    await expect((await call(request)).json()).resolves.toMatchObject({
+      acquired: true,
+      existing: true,
+    });
+    const completion = {
+      operation: "complete",
+      requestId: request.requestId,
+      actualTokens: 80,
+      actualCostMicrocents: 8,
+    };
+    expect((await call(completion)).status).toBe(200);
+    await expect((await call(completion)).json()).resolves.toMatchObject({
+      completed: true,
+      found: false,
+    });
+
+    const state = await runInDurableObject(
+      stub,
+      async (_instance, durableState) =>
+        durableState.storage.get<{
+          requestsThisMinute: number;
+          tokensThisMinute: number;
+          spentTodayMicrocents: number;
+        }>("quota"),
+    );
+    expect(state).toMatchObject({
+      requestsThisMinute: 1,
+      tokensThisMinute: 80,
+      spentTodayMicrocents: 8,
+    });
   });
 
   it("rejects budget over-reservation atomically", async () => {

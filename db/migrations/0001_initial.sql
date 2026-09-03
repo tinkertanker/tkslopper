@@ -54,6 +54,10 @@ CREATE TABLE aliases (
     REFERENCES environments(id, product_id) ON DELETE CASCADE
 );
 
+CREATE INDEX aliases_environment_active_idx
+  ON aliases(product_id, environment_id)
+  WHERE enabled = 1;
+
 CREATE TABLE entitlements (
   id TEXT PRIMARY KEY,
   product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
@@ -61,7 +65,7 @@ CREATE TABLE entitlements (
   tenant_id TEXT NOT NULL,
   principal_id TEXT NOT NULL,
   source TEXT NOT NULL CHECK (source IN ('access_code', 'service', 'dev', 'stripe', 'storekit', 'contract')),
-  source_ref TEXT,
+  source_ref TEXT CHECK (source NOT IN ('access_code', 'service') OR source_ref IS NOT NULL),
   capabilities_json TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('active', 'revoked', 'expired')),
   expires_at INTEGER,
@@ -73,6 +77,10 @@ CREATE TABLE entitlements (
 
 CREATE INDEX entitlements_principal_idx
   ON entitlements(environment_id, tenant_id, principal_id, status);
+
+CREATE INDEX entitlements_environment_active_idx
+  ON entitlements(product_id, environment_id, expires_at)
+  WHERE status = 'active';
 
 CREATE INDEX entitlements_source_idx ON entitlements(source, source_ref, status);
 
@@ -206,13 +214,78 @@ BEGIN
   SELECT RAISE(ABORT, 'entitlement access code identity mismatch');
 END;
 
+CREATE TRIGGER entitlements_service_identity_insert
+BEFORE INSERT ON entitlements
+WHEN NEW.source = 'service'
+  AND NOT EXISTS (
+    SELECT 1
+      FROM service_credentials
+     WHERE id = NEW.source_ref
+       AND product_id = NEW.product_id
+       AND environment_id = NEW.environment_id
+       AND tenant_id = NEW.tenant_id
+       AND principal_id = NEW.principal_id
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'entitlement service credential identity mismatch');
+END;
+
+CREATE TRIGGER entitlements_service_identity_update
+BEFORE UPDATE OF product_id, environment_id, tenant_id, principal_id, source, source_ref ON entitlements
+WHEN NEW.source = 'service'
+  AND NOT EXISTS (
+    SELECT 1
+      FROM service_credentials
+     WHERE id = NEW.source_ref
+       AND product_id = NEW.product_id
+       AND environment_id = NEW.environment_id
+       AND tenant_id = NEW.tenant_id
+       AND principal_id = NEW.principal_id
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'entitlement service credential identity mismatch');
+END;
+
+CREATE TRIGGER entitlements_source_provenance_update
+BEFORE UPDATE OF source, source_ref ON entitlements
+WHEN NEW.source <> OLD.source OR NEW.source_ref IS NOT OLD.source_ref
+BEGIN
+  SELECT RAISE(ABORT, 'entitlement source provenance is immutable');
+END;
+
+CREATE TRIGGER service_credentials_source_identity_update
+BEFORE UPDATE OF id, product_id, environment_id, tenant_id, principal_id ON service_credentials
+WHEN EXISTS (
+  SELECT 1
+    FROM entitlements
+   WHERE source = 'service'
+     AND source_ref = OLD.id
+     AND (
+       NEW.id <> OLD.id
+       OR product_id <> NEW.product_id
+       OR environment_id <> NEW.environment_id
+       OR tenant_id <> NEW.tenant_id
+       OR principal_id <> NEW.principal_id
+     )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'service credential source identity mismatch');
+END;
+
+CREATE TRIGGER service_credentials_source_delete
+BEFORE DELETE ON service_credentials
+BEGIN
+  DELETE FROM entitlements
+   WHERE source = 'service' AND source_ref = OLD.id;
+END;
+
 CREATE TRIGGER access_codes_source_identity_update
-BEFORE UPDATE OF product_id, environment_id, tenant_id ON access_codes
+BEFORE UPDATE OF id, product_id, environment_id, tenant_id ON access_codes
 WHEN EXISTS (
   SELECT 1
     FROM activations
    WHERE access_code_id = OLD.id
-     AND tenant_id <> NEW.tenant_id
+     AND (OLD.id <> NEW.id OR tenant_id <> NEW.tenant_id)
 )
 OR EXISTS (
   SELECT 1
@@ -220,13 +293,31 @@ OR EXISTS (
    WHERE source = 'access_code'
      AND source_ref = OLD.id
      AND (
-       product_id <> NEW.product_id
+       OLD.id <> NEW.id
+       OR product_id <> NEW.product_id
        OR environment_id <> NEW.environment_id
        OR tenant_id <> NEW.tenant_id
      )
 )
 BEGIN
   SELECT RAISE(ABORT, 'access code source identity mismatch');
+END;
+
+CREATE TRIGGER access_codes_source_delete
+BEFORE DELETE ON access_codes
+BEGIN
+  DELETE FROM entitlements
+   WHERE source = 'access_code' AND source_ref = OLD.id;
+END;
+
+CREATE TRIGGER activations_source_delete
+BEFORE DELETE ON activations
+BEGIN
+  DELETE FROM entitlements
+   WHERE source = 'access_code'
+     AND source_ref = OLD.access_code_id
+     AND tenant_id = OLD.tenant_id
+     AND principal_id = OLD.principal_id;
 END;
 
 CREATE TABLE token_grants (
@@ -328,9 +419,9 @@ CREATE TABLE provider_attempts (
   status_code INTEGER NOT NULL,
   error_class TEXT,
   latency_ms INTEGER NOT NULL,
-  input_tokens INTEGER NOT NULL DEFAULT 0,
-  output_tokens INTEGER NOT NULL DEFAULT 0,
-  cost_microcents INTEGER NOT NULL DEFAULT 0,
+  input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens BETWEEN 0 AND 10000000),
+  output_tokens INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens BETWEEN 0 AND 200000),
+  cost_microcents INTEGER NOT NULL DEFAULT 0 CHECK (cost_microcents BETWEEN 0 AND 10200000000000),
   created_at INTEGER NOT NULL,
   stale_after INTEGER NOT NULL CHECK (stale_after >= created_at),
   UNIQUE (request_id, attempt_number)

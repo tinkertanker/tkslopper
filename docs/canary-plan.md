@@ -6,7 +6,7 @@ No stage authorizes production deployment.
 
 Exercise service exchange, access-code activation bounds, revocation, kill switches, all normalized schema-smoke fixtures, cross-product alias denial, idempotency conflict, quota/concurrency/budget denial, deadlines, one-attempt accounting, and payload-leakage assertions.
 
-`pnpm check` executes the named Stage 0 failure gates: provider deadline abort, real local-Workers client-disconnect cancellation, one physical call, conservative timeout/cancellation accounting, attempt-finalization fault, quota-completion fault with one bounded retry, stale-attempt detection, 24-hour idempotency bounds, and conservative reservation expiry. No remote provider is used.
+`pnpm check` executes the named Stage 0 failure gates: provider deadline abort, one physical call, conservative timeout accounting, uncertain-admission and quota-completion recovery with one bounded retry, attempt-finalization fault, stale-attempt detection, 24-hour idempotency bounds, and conservative reservation expiry. No remote provider is used.
 
 `pnpm check` is the CI gate. With both local Workers running against the shared `.wrangler/local` state, `pnpm e2e:local` additionally proves the public control-plane→gateway flow for all three products without a remote provider.
 
@@ -14,13 +14,13 @@ Exercise service exchange, access-code activation bounds, revocation, kill switc
 
 **Kill:** any identity override, cross-product access, payload in logs/storage, unbounded attempt, or accounting race.
 
-Deadline, client-cancellation, finalization-failure, quota-completion-failure, and stale-attempt recovery remain blocking until [#5](https://github.com/tinkertanker/tkslopper/issues/5) is complete. A green happy-path smoke test is not Stage 0 completion.
+Deadline, finalization-failure, quota-completion-failure, and stale-attempt recovery remain blocking until [#5](https://github.com/tinkertanker/tkslopper/issues/5) is complete. Buffered pre-response client disconnects are not observable through `Request.signal` in the checked Workers runtime, so the current non-streaming gateway does not claim disconnect cancellation; a runtime-supported design remains part of #5. A green happy-path smoke test is not Stage 0 completion.
 
 ## Stage 1: isolated provider sandbox
 
 Use a dedicated provider project/key and synthetic prompts only. Cap daily budget at the smallest useful amount. Compare normalized usage, physical provider calls, D1 attempts, and Durable Object spend.
 
-**Accept:** 100% route provenance, zero duplicate physical attempts for reused idempotency keys, expected quota denials, cancellation/deadline behavior, and provider cost variance within the predeclared tolerance.
+**Accept:** 100% route provenance, zero duplicate physical attempts for reused idempotency keys, expected quota denials, deadline behavior, and provider cost variance within the predeclared tolerance.
 
 **Kill:** missing attempt provenance, unexplained spend, provider/model mismatch, secret exposure, or >1 physical call per request.
 
