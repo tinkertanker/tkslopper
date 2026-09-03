@@ -23,7 +23,7 @@ The checked-in Wrangler files are development fixtures only. Placeholder resourc
 
 ## Provider adapter contract v1
 
-The implemented production seam is `openai-compatible`; `fixture` is restricted to development/test. It is not a universal compatibility claim.
+The implemented production seam and initial launch family is `openai-compatible`; `fixture` is restricted to development/test. Trusted profiles cover official OpenAI, OpenRouter, OpenCode Go/Zen, direct DeepSeek, and deployment-approved compatible URLs. This is not a universal compatibility claim, and callers cannot supply a URL.
 
 1. A route declares Chat and/or Responses, image/reasoning/structured-JSON support, physical model, HTTPS base URL, timeout, and a dedicated secret binding.
 2. The gateway replaces the public alias with the configured physical model and forces `stream: false`.
@@ -34,7 +34,7 @@ The implemented production seam is `openai-compatible`; `fixture` is restricted 
 
 Public reasoning is `low|medium|high`. Trusted transforms from those portable values—or from omission—to provider-specific `none|minimal|max|xhigh`, `thinking`, or other dialect fields are not implemented yet and are tracked by [#13](https://github.com/tinkertanker/tkslopper/issues/13). Until then, a route must accept the portable wire shape exactly.
 
-Anthropic Messages is not a public v1 endpoint. Playground Pal's managed adapter must normalize its provider-specific requests into Chat or Responses; personal BYOK and Apple local/PCC calls remain outside tkslopper.
+Anthropic Messages is not a public v1 endpoint. Native Anthropic and Gemini adapters are deferred roadmap features ([#16](https://github.com/tinkertanker/tkslopper/issues/16), [#17](https://github.com/tinkertanker/tkslopper/issues/17)), not initial-launch dependencies. Playground Pal's managed adapter must normalize its provider-specific requests into Chat or Responses; personal BYOK and Apple local/PCC calls remain outside tkslopper.
 
 ## Configuration validation and release workflow
 
