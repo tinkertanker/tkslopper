@@ -37,6 +37,7 @@ type EnvironmentRow = {
   aliases: number;
   active_entitlements: number;
   effective_grants: number;
+  effective_grants_truncated: number;
   finalized_attempts_24h: number;
   failed_finalized_attempts_24h: number;
   accounted_input_tokens_24h: string;
@@ -97,6 +98,7 @@ type AuditRow = {
 };
 
 export const DASHBOARD_ATTEMPT_LIMIT = 10_000;
+export const DASHBOARD_INVENTORY_COUNT_LIMIT = 1000;
 
 export const DASHBOARD_ENVIRONMENTS_SQL = `WITH selected_environments AS (
   SELECT e.id, e.product_id, e.name, e.audience,
@@ -127,26 +129,61 @@ attempt_counts AS (
    GROUP BY product_id, environment_id
 )
 SELECT e.*,
-       (SELECT COUNT(*)
-          FROM aliases AS a INDEXED BY aliases_environment_active_idx
-         WHERE a.product_id = e.product_id AND a.environment_id = e.id AND a.enabled = 1) AS aliases,
-       (SELECT COUNT(*)
-          FROM entitlements AS n INDEXED BY entitlements_environment_active_idx
-         WHERE n.product_id = e.product_id AND n.environment_id = e.id
-           AND n.status = 'active' AND (n.expires_at IS NULL OR n.expires_at > ?)) AS active_entitlements,
+       (SELECT COUNT(*) FROM (
+          SELECT 1
+            FROM aliases AS a INDEXED BY aliases_environment_active_idx
+           WHERE a.product_id = e.product_id AND a.environment_id = e.id AND a.enabled = 1
+           LIMIT ?
+       )) AS aliases,
+       (SELECT COUNT(*) FROM (
+          SELECT 1
+            FROM entitlements AS n INDEXED BY entitlements_environment_active_idx
+           WHERE n.product_id = e.product_id AND n.environment_id = e.id
+             AND n.status = 'active' AND (n.expires_at IS NULL OR n.expires_at > ?)
+           LIMIT ?
+       )) AS active_entitlements,
+       CASE WHEN e.product_enabled = 1 AND e.product_kill_switch = 0
+                  AND e.enabled = 1 AND e.kill_switch = 0
+         THEN (SELECT CASE WHEN COUNT(*) > ? THEN 1 ELSE 0 END FROM (
+                SELECT 1
+                  FROM token_grants AS candidate INDEXED BY token_grants_environment_active_idx
+                 WHERE candidate.product_id = e.product_id
+                   AND candidate.environment_id = e.id
+                   AND candidate.revoked_at IS NULL AND candidate.expires_at > ?
+                 LIMIT ?
+              ))
+         ELSE 0
+       END AS effective_grants_truncated,
        CASE WHEN e.product_enabled = 1 AND e.product_kill_switch = 0
                   AND e.enabled = 1 AND e.kill_switch = 0
          THEN (SELECT COUNT(*)
-                 FROM token_grants AS g INDEXED BY token_grants_environment_active_idx
-                 JOIN entitlements AS n
-                   ON n.id = g.entitlement_id
+                 FROM token_grants AS g
+                 CROSS JOIN entitlements AS n
+                WHERE g.rowid IN (
+                  SELECT candidate.rowid
+                    FROM token_grants AS candidate INDEXED BY token_grants_environment_active_idx
+                   WHERE candidate.product_id = e.product_id
+                     AND candidate.environment_id = e.id
+                     AND candidate.revoked_at IS NULL AND candidate.expires_at > ?
+                   LIMIT ?
+                )
+                  AND n.id = g.entitlement_id
                   AND n.product_id = g.product_id
                   AND n.environment_id = g.environment_id
                   AND n.tenant_id = g.tenant_id
                   AND n.principal_id = g.principal_id
-                WHERE g.product_id = e.product_id AND g.environment_id = e.id
-                  AND g.revoked_at IS NULL AND g.expires_at > ?
                   AND n.status = 'active' AND (n.expires_at IS NULL OR n.expires_at > ?)
+                  AND (n.source <> 'service' OR EXISTS (
+                    SELECT 1
+                      FROM service_credentials AS s
+                     WHERE s.id = n.source_ref
+                       AND s.product_id = g.product_id
+                       AND s.environment_id = g.environment_id
+                       AND s.tenant_id = g.tenant_id
+                       AND s.principal_id = g.principal_id
+                       AND s.disabled = 0
+                       AND (s.expires_at IS NULL OR s.expires_at > ?)
+                  ))
                   AND (n.source <> 'access_code' OR EXISTS (
                     SELECT 1
                       FROM access_codes AS c
@@ -260,7 +297,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         border-radius: 10px;
         font: inherit;
       }
-      input { width: 100%; padding: 0 14px; background: var(--card); color: var(--ink); }
+      input { width: 100%; padding: 0 14px; border: 2px solid var(--muted); background: var(--card); color: var(--ink); }
       button {
         padding: 0 18px;
         border-color: var(--accent);
@@ -299,18 +336,21 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       th { color: var(--muted); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
       tbody tr:last-child td { border-bottom: 0; }
       tbody tr:hover { background: var(--accent-soft); }
-      #attempts { min-width: 1460px; table-layout: fixed; }
+      #attempts { min-width: 2000px; table-layout: fixed; }
       #attempts th { overflow-wrap: anywhere; white-space: normal; }
       #attempts th:nth-child(1) { width: 230px; }
-      #attempts th:nth-child(2) { width: 140px; }
-      #attempts th:nth-child(3) { width: 135px; }
-      #attempts th:nth-child(4) { width: 150px; }
-      #attempts th:nth-child(5) { width: 190px; }
-      #attempts th:nth-child(6) { width: 130px; }
-      #attempts th:nth-child(7) { width: 90px; }
-      #attempts th:nth-child(8) { width: 200px; }
-      #attempts th:nth-child(9) { width: 195px; }
+      #attempts th:nth-child(2), #attempts th:nth-child(3), #attempts th:nth-child(6) { width: 150px; }
+      #attempts th:nth-child(4) { width: 140px; }
+      #attempts th:nth-child(5) { width: 135px; }
+      #attempts th:nth-child(7) { width: 190px; }
+      #attempts th:nth-child(8) { width: 100px; }
+      #attempts th:nth-child(9), #attempts th:nth-child(11) { width: 90px; }
+      #attempts th:nth-child(10) { width: 130px; }
+      #attempts th:nth-child(12) { width: 200px; }
+      #attempts th:nth-child(13) { width: 195px; }
       #attempts td { overflow-wrap: anywhere; white-space: normal; vertical-align: top; }
+      #stale { min-width: 1700px; table-layout: fixed; }
+      #stale th, #stale td { overflow-wrap: anywhere; white-space: normal; vertical-align: top; }
       #audit { table-layout: fixed; }
       #audit th:nth-child(1) { width: 25%; }
       #audit th:nth-child(2) { width: 20%; }
@@ -341,7 +381,6 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           content: "Swipe horizontally for all columns →";
           font-size: 12px;
         }
-        #stale { min-width: 700px; }
         #audit { min-width: 640px; }
         #audit th:nth-child(1) { width: 170px; }
         #audit th:nth-child(2) { width: 100px; }
@@ -366,6 +405,8 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       </header>
 
       <main id="dashboard" hidden>
+        <p id="inventory-warning" class="notice" role="status" hidden></p>
+
         <div class="cards" role="list" aria-label="24 hour summary">
           <div class="card" role="listitem"><span>Products shown</span><strong id="total-products">—</strong></div>
           <div class="card" role="listitem"><span>Environments shown</span><strong id="total-environments">—</strong></div>
@@ -374,8 +415,6 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           <div class="card" role="listitem"><span>Accounted cost · 24h</span><strong id="total-cost">—</strong></div>
           <div class="card alert" role="listitem"><span>Stale intents</span><strong id="total-stale">—</strong></div>
         </div>
-
-        <p id="inventory-warning" class="notice" role="status" hidden></p>
 
         <section>
           <div class="section-head"><h2 id="products-heading">Products</h2><p class="section-note">Bounded inventory and parent policy state</p></div>
@@ -475,6 +514,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         const warnings = [];
         if (data.inventory_truncated.products) warnings.push("Product inventory is truncated to the first 100 rows.");
         if (data.inventory_truncated.environments) warnings.push("Environment inventory is truncated to the first 250 rows.");
+        if (data.inventory_truncated.environment_counts) warnings.push("One or more per-environment inventory counts are shown as bounded minimums.");
         if (data.accounting_truncated.finalized_attempts) warnings.push("24-hour accounting is truncated to the latest 10,000 finalized records.");
         if (data.accounting_truncated.stale_attempts) warnings.push("The stale-intent count is capped at 10,000.");
         const warning = document.getElementById("inventory-warning");
@@ -483,6 +523,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
 
         const productNames = Object.fromEntries(data.products.map((item) => [item.id, item.display_name]));
         const policyState = (enabled, killed) => killed ? "KILLED" : enabled ? "Enabled" : "Disabled";
+        const boundedCount = (value, truncated) => truncated ? "≥" + number(value) : number(value);
         renderTable("products", [
           { label: "Product", value: "display_name" },
           { label: "ID", value: "id" },
@@ -494,20 +535,31 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           { label: "Environment", value: "name" },
           { label: "Product state", value: (row) => policyState(row.product_enabled, row.product_kill_switch) },
           { label: "Environment state", value: (row) => policyState(row.enabled, row.kill_switch) },
+          { label: "Policy", value: "policy_version", format: number },
+          { label: "RPM", value: "rpm_limit", format: number },
+          { label: "TPM", value: "tpm_limit", format: number },
+          { label: "Concurrency", value: "concurrency_limit", format: number },
+          { label: "Daily budget", value: "daily_budget_microcents", format: cost },
+          { label: "Max request", value: (row) => number(row.max_request_bytes) + " bytes" },
           { label: "Finalized", value: "finalized_attempts_24h", format: number },
           { label: "Finalized failures", value: "failed_finalized_attempts_24h", format: number },
           { label: "Accounted input", value: "accounted_input_tokens_24h", format: number },
           { label: "Accounted output", value: "accounted_output_tokens_24h", format: number },
           { label: "Accounted cost", value: "accounted_cost_microcents_24h", format: cost },
-          { label: "Aliases", value: "aliases", format: number },
-          { label: "Effective grants", value: "effective_grants", format: number },
+          { label: "Aliases", value: (row) => boundedCount(row.aliases, row.aliases_truncated) },
+          { label: "Active entitlements", value: (row) => boundedCount(row.active_entitlements, row.active_entitlements_truncated) },
+          { label: "Effective grants", value: (row) => boundedCount(row.effective_grants, row.effective_grants_truncated) },
         ], data.environments);
         renderTable("attempts", [
           { label: "Time", value: "created_at", format: time },
+          { label: "Product", value: "product_id" },
+          { label: "Environment", value: "environment_id" },
           { label: "Request", value: "request_id" },
           { label: "Alias", value: "alias" },
           { label: "Route", value: "route_id" },
           { label: "Provider / model", value: (row) => row.provider + " / " + row.resolved_model },
+          { label: "Endpoint", value: "endpoint" },
+          { label: "Policy", value: "policy_version", format: number },
           { label: "Status", value: (row) => row.error_class === "attempt_started" ? Number(row.stale_after) <= Number(data.generated_at) ? "stale intent" : "in flight" : row.error_class || row.status_code },
           { label: "Latency", value: (row) => number(row.latency_ms) + " ms" },
           { label: "Accounted tokens / ceiling", value: (row) => number(row.input_tokens) + " / " + number(row.output_tokens) },
@@ -515,9 +567,15 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         ], data.recent_attempts);
         renderTable("stale", [
           { label: "Stale since", value: "stale_after", format: time },
+          { label: "Created", value: "created_at", format: time },
+          { label: "Product", value: "product_id" },
+          { label: "Environment", value: "environment_id" },
           { label: "Request", value: "request_id" },
           { label: "Route", value: "route_id" },
-          { label: "Provider", value: "provider" },
+          { label: "Provider / model", value: (row) => row.provider + " / " + row.resolved_model },
+          { label: "Endpoint", value: "endpoint" },
+          { label: "Input ceiling", value: "input_tokens", format: number },
+          { label: "Output ceiling", value: "output_tokens", format: number },
           { label: "Cost ceiling", value: "cost_microcents", format: cost },
         ], data.stale_attempts);
         renderTable("audit", [
@@ -613,7 +671,14 @@ export async function dashboardOverview(
           environmentLimit + 1,
           since,
           DASHBOARD_ATTEMPT_LIMIT,
+          DASHBOARD_INVENTORY_COUNT_LIMIT + 1,
           generatedAt,
+          DASHBOARD_INVENTORY_COUNT_LIMIT + 1,
+          DASHBOARD_INVENTORY_COUNT_LIMIT,
+          generatedAt,
+          DASHBOARD_INVENTORY_COUNT_LIMIT + 1,
+          generatedAt,
+          DASHBOARD_INVENTORY_COUNT_LIMIT + 1,
           generatedAt,
           generatedAt,
           generatedAt,
@@ -655,7 +720,14 @@ export async function dashboardOverview(
     ]);
 
   const productsTruncated = products.results.length > productLimit;
+  const visibleEnvironments = environments.results.slice(0, environmentLimit);
   const environmentsTruncated = environments.results.length > environmentLimit;
+  const environmentCountsTruncated = visibleEnvironments.some(
+    (environment) =>
+      environment.aliases > DASHBOARD_INVENTORY_COUNT_LIMIT ||
+      environment.active_entitlements > DASHBOARD_INVENTORY_COUNT_LIMIT ||
+      environment.effective_grants_truncated === 1,
+  );
   const finalizedAttemptsTruncated = totals?.finalized_attempts_truncated === 1;
   const staleAttemptCount = totals?.stale_attempts ?? 0;
   const staleAttemptsTruncated = staleAttemptCount > DASHBOARD_ATTEMPT_LIMIT;
@@ -666,15 +738,26 @@ export async function dashboardOverview(
       enabled: product.enabled === 1,
       kill_switch: product.kill_switch === 1,
     }));
-  const normalizedEnvironments = environments.results
-    .slice(0, environmentLimit)
-    .map((environment) => ({
-      ...environment,
-      product_enabled: environment.product_enabled === 1,
-      product_kill_switch: environment.product_kill_switch === 1,
-      enabled: environment.enabled === 1,
-      kill_switch: environment.kill_switch === 1,
-    }));
+  const normalizedEnvironments = visibleEnvironments.map((environment) => ({
+    ...environment,
+    product_enabled: environment.product_enabled === 1,
+    product_kill_switch: environment.product_kill_switch === 1,
+    enabled: environment.enabled === 1,
+    kill_switch: environment.kill_switch === 1,
+    aliases: Math.min(environment.aliases, DASHBOARD_INVENTORY_COUNT_LIMIT),
+    aliases_truncated: environment.aliases > DASHBOARD_INVENTORY_COUNT_LIMIT,
+    active_entitlements: Math.min(
+      environment.active_entitlements,
+      DASHBOARD_INVENTORY_COUNT_LIMIT,
+    ),
+    active_entitlements_truncated:
+      environment.active_entitlements > DASHBOARD_INVENTORY_COUNT_LIMIT,
+    effective_grants: Math.min(
+      environment.effective_grants,
+      DASHBOARD_INVENTORY_COUNT_LIMIT,
+    ),
+    effective_grants_truncated: environment.effective_grants_truncated === 1,
+  }));
 
   return jsonResponse({
     generated_at: generatedAt,
@@ -694,6 +777,7 @@ export async function dashboardOverview(
     inventory_truncated: {
       products: productsTruncated,
       environments: environmentsTruncated,
+      environment_counts: environmentCountsTruncated,
     },
     accounting_truncated: {
       finalized_attempts: finalizedAttemptsTruncated,

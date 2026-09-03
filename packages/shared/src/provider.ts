@@ -560,7 +560,11 @@ export async function callProvider(options: {
       throw new ProviderError("provider_protocol", 502, Date.now() - startedAt);
     }
     const projected = projectProviderBody(parsed, request.endpoint);
-    if (!projected || containsSecret(projected.body, credential))
+    if (
+      !projected ||
+      projected.body.model !== route.model ||
+      containsSecret(projected.body, credential)
+    )
       throw new ProviderError("provider_protocol", 502, Date.now() - startedAt);
     return {
       status: response.status,

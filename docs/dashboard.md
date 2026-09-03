@@ -7,10 +7,10 @@ The browser clears the token field when submitting and retains the value only fo
 ## Included data
 
 - at most 100 products and 250 environments per response, with prominent truncation warnings and separate visible product/environment enabled and kill-switch state;
-- policy limits and counts of active aliases/entitlements plus grants that satisfy the gateway's current entitlement, source, and parent-policy checks;
+- visible policy versions/limits and bounded minimum counts of active aliases/entitlements plus grants that satisfy the gateway's current entitlement, source, and parent-policy checks; cap-plus-one sentinels and a pre-join live-grant candidate cap keep work bounded, with `≥` and an explicit truncation warning when a count may be incomplete;
 - counts and exact accounted token/microcent aggregates over at most the latest 10,000 finalized records from the last 24 hours, with an explicit truncation warning;
-- the latest 50 metadata-only provider-attempt records, including live and stale intents;
-- overdue `attempt_started` intents from `stale_provider_attempts`, whose token/cost values are reservation ceilings;
+- the latest 50 metadata-only provider-attempt records, with product/environment, policy, route, provider, resolved model, endpoint, token/cost, and timing provenance visible in the browser;
+- overdue `attempt_started` intents from `stale_provider_attempts`, with complete route provenance, creation/stale times, and input/output/cost reservation ceilings visible in the browser;
 - the latest 25 administrative action/resource records without actor hashes; access-code resource IDs are redacted because possession of an ID would enable targeted failed-activation writes.
 
 The API and UI omit prompts, responses, raw tenant/principal identifiers, their stored pseudonymous hashes, credential material, capability payloads, and admin actor hashes. Responses use `Cache-Control: no-store`; the page renders API values with text nodes rather than HTML.

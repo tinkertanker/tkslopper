@@ -96,7 +96,7 @@ pnpm check
 pnpm audit --audit-level=high
 ```
 
-`pnpm check` runs format, lint, type checking, unit/integration/contract/adversarial tests, migration application, OpenAPI validation, Worker dry-runs, and public-repository hygiene checks. CI also scans the full Git history with Gitleaks.
+`pnpm check` runs format, lint, type checking, unit/integration/contract/adversarial tests, migration application, machine-enforced clean/dirty identity preflight checks, OpenAPI validation, Worker dry-runs, and public-repository hygiene checks. CI also scans the full Git history with Gitleaks.
 
 ## Deployment
 

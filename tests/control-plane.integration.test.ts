@@ -8,6 +8,7 @@ import {
 import {
   DASHBOARD_ATTEMPT_LIMIT,
   DASHBOARD_ENVIRONMENTS_SQL,
+  DASHBOARD_INVENTORY_COUNT_LIMIT,
   DASHBOARD_TOTALS_SQL,
 } from "../apps/control-plane/src/dashboard";
 import { handleGateway } from "../apps/gateway/src";
@@ -277,6 +278,13 @@ describe("operations dashboard", () => {
     const timestamp = now();
     await env.DB.batch([
       env.DB.prepare(
+        `INSERT INTO service_credentials
+          (id, product_id, environment_id, tenant_id, principal_id, secret_salt, secret_hash,
+           capabilities_json, disabled, expires_at, created_at)
+         VALUES ('service_disabled', 'prod_control', 'env_control', 'tenant_fixture',
+                 'principal_service', 'salt', 'hash', '["text.chat.v1"]', 1, ?, ?)`,
+      ).bind(timestamp + 600, timestamp),
+      env.DB.prepare(
         `INSERT INTO entitlements
           (id, product_id, environment_id, tenant_id, principal_id, source,
            capabilities_json, status, expires_at, created_at, updated_at)
@@ -289,6 +297,14 @@ describe("operations dashboard", () => {
            capabilities_json, status, expires_at, created_at, updated_at)
          VALUES ('ent_revoked', 'prod_control', 'env_control', 'tenant_fixture',
                  'principal_revoked', 'dev', '["text.chat.v1"]', 'revoked', ?, ?, ?)`,
+      ).bind(timestamp + 600, timestamp, timestamp),
+      env.DB.prepare(
+        `INSERT INTO entitlements
+          (id, product_id, environment_id, tenant_id, principal_id, source, source_ref,
+           capabilities_json, status, expires_at, created_at, updated_at)
+         VALUES ('ent_service', 'prod_control', 'env_control', 'tenant_fixture',
+                 'principal_service', 'service', 'service_disabled', '["text.chat.v1"]',
+                 'active', ?, ?, ?)`,
       ).bind(timestamp + 600, timestamp, timestamp),
       env.DB.prepare(
         `INSERT INTO access_codes
@@ -317,6 +333,14 @@ describe("operations dashboard", () => {
            audience, capabilities_json, expires_at, created_at)
          VALUES ('grant_effective', 'jti_effective', 'ent_effective', 'prod_control',
                  'env_control', 'tenant_fixture', 'principal_effective', 'control:test',
+                 '["text.chat.v1"]', ?, ?)`,
+      ).bind(timestamp + 300, timestamp),
+      env.DB.prepare(
+        `INSERT INTO token_grants
+          (id, jti_hash, entitlement_id, product_id, environment_id, tenant_id, principal_id,
+           audience, capabilities_json, expires_at, created_at)
+         VALUES ('grant_service', 'jti_service', 'ent_service', 'prod_control',
+                 'env_control', 'tenant_fixture', 'principal_service', 'control:test',
                  '["text.chat.v1"]', ?, ?)`,
       ).bind(timestamp + 300, timestamp),
       env.DB.prepare(
@@ -357,6 +381,21 @@ describe("operations dashboard", () => {
           effective_grants: 1,
         },
       ],
+    });
+
+    await env.DB.prepare(
+      "UPDATE service_credentials SET disabled = 0 WHERE id = 'service_disabled'",
+    ).run();
+    expect(await load()).toMatchObject({
+      environments: [{ effective_grants: 2 }],
+    });
+    await env.DB.prepare(
+      "UPDATE service_credentials SET expires_at = ? WHERE id = 'service_disabled'",
+    )
+      .bind(timestamp - 1)
+      .run();
+    expect(await load()).toMatchObject({
+      environments: [{ effective_grants: 1 }],
     });
 
     await env.DB.prepare(
@@ -412,7 +451,11 @@ describe("operations dashboard", () => {
       totals: { products: number; environments: number };
       products: unknown[];
       environments: unknown[];
-      inventory_truncated: { products: boolean; environments: boolean };
+      inventory_truncated: {
+        products: boolean;
+        environments: boolean;
+        environment_counts: boolean;
+      };
     }>();
     expect(overview.products).toHaveLength(100);
     expect(overview.environments).toHaveLength(250);
@@ -420,7 +463,88 @@ describe("operations dashboard", () => {
     expect(overview.inventory_truncated).toEqual({
       products: true,
       environments: true,
+      environment_counts: false,
     });
+  });
+
+  it("caps per-environment authorization counts with explicit sentinels", async () => {
+    const timestamp = now();
+    await env.DB.prepare(
+      `WITH RECURSIVE sequence(value) AS (
+         SELECT 1 UNION ALL SELECT value + 1 FROM sequence WHERE value <= ?
+       )
+       INSERT INTO entitlements
+         (id, product_id, environment_id, tenant_id, principal_id, source,
+          capabilities_json, status, expires_at, created_at, updated_at)
+       SELECT printf('ent_count_%05d', value), 'prod_control', 'env_control',
+              'tenant_fixture', printf('principal_count_%05d', value), 'dev',
+              '["text.chat.v1"]', 'active', ?, ?, ?
+         FROM sequence`,
+    )
+      .bind(
+        DASHBOARD_INVENTORY_COUNT_LIMIT,
+        timestamp + 600,
+        timestamp,
+        timestamp,
+      )
+      .run();
+    await env.DB.prepare(
+      `WITH RECURSIVE sequence(value) AS (
+         SELECT 1 UNION ALL SELECT value + 1 FROM sequence WHERE value <= ?
+       )
+       INSERT INTO token_grants
+         (id, jti_hash, entitlement_id, product_id, environment_id, tenant_id,
+          principal_id, audience, capabilities_json, expires_at, created_at)
+       SELECT printf('grant_count_%05d', value), printf('jti_count_%05d', value),
+              printf('ent_count_%05d', value), 'prod_control', 'env_control',
+              'tenant_fixture', printf('principal_count_%05d', value), 'control:test',
+              '["text.chat.v1"]', ?, ?
+         FROM sequence`,
+    )
+      .bind(DASHBOARD_INVENTORY_COUNT_LIMIT, timestamp + 300, timestamp)
+      .run();
+
+    const load = async () => {
+      const response = await handleControlPlane(
+        get("/admin/v1/dashboard", String(env.DASHBOARD_TOKEN)),
+        controlEnv,
+      );
+      expect(response.status).toBe(200);
+      return response.json<{
+        environments: Array<{
+          id: string;
+          active_entitlements: number;
+          active_entitlements_truncated: boolean;
+          effective_grants: number;
+          effective_grants_truncated: boolean;
+        }>;
+        inventory_truncated: { environment_counts: boolean };
+      }>();
+    };
+    const overview = await load();
+    expect(
+      overview.environments.find(({ id }) => id === "env_control"),
+    ).toMatchObject({
+      active_entitlements: DASHBOARD_INVENTORY_COUNT_LIMIT,
+      active_entitlements_truncated: true,
+      effective_grants: DASHBOARD_INVENTORY_COUNT_LIMIT,
+      effective_grants_truncated: true,
+    });
+    expect(overview.inventory_truncated.environment_counts).toBe(true);
+
+    await env.DB.prepare(
+      "UPDATE entitlements SET status = 'revoked' WHERE id LIKE 'ent_count_%'",
+    ).run();
+    const inactiveParents = await load();
+    expect(
+      inactiveParents.environments.find(({ id }) => id === "env_control"),
+    ).toMatchObject({
+      active_entitlements: 0,
+      active_entitlements_truncated: false,
+      effective_grants: 0,
+      effective_grants_truncated: true,
+    });
+    expect(inactiveParents.inventory_truncated.environment_counts).toBe(true);
   });
 
   it("caps exact accounting before aggregate overflow", async () => {
@@ -483,7 +607,14 @@ describe("operations dashboard", () => {
           251,
           timestamp - 86_400,
           DASHBOARD_ATTEMPT_LIMIT,
+          DASHBOARD_INVENTORY_COUNT_LIMIT + 1,
           timestamp,
+          DASHBOARD_INVENTORY_COUNT_LIMIT + 1,
+          DASHBOARD_INVENTORY_COUNT_LIMIT,
+          timestamp,
+          DASHBOARD_INVENTORY_COUNT_LIMIT + 1,
+          timestamp,
+          DASHBOARD_INVENTORY_COUNT_LIMIT + 1,
           timestamp,
           timestamp,
           timestamp,
@@ -1240,6 +1371,20 @@ describe("control-plane configuration", () => {
           DB: {
             prepare() {
               throw new Error("synthetic D1 outage");
+            },
+          } as unknown as D1Database,
+        })
+      ).status,
+    ).toBe(500);
+    expect(
+      (
+        await handleControlPlane(request(), {
+          ...controlEnv,
+          DB: {
+            prepare() {
+              return {
+                first: () => Promise.resolve({ value: "old-schema" }),
+              };
             },
           } as unknown as D1Database,
         })

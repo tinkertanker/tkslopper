@@ -28,8 +28,8 @@ The implemented production seam and initial launch family is `openai-compatible`
 1. A route declares Chat and/or Responses, image/reasoning/structured-JSON support, physical model, HTTPS base URL, timeout, and a dedicated secret binding.
 2. The gateway replaces the public alias with the configured physical model and forces `stream: false`.
 3. It sends one Bearer-authenticated POST to `/v1/chat/completions` or `/v1/responses` with redirect following disabled.
-4. Successful JSON is bounded, schema-validated, and projected. Usage is normalized. Provider extensions and error bodies are discarded.
-5. The gateway restores the requested alias in the public success body and records physical route/model only in metadata provenance.
+4. Successful JSON is bounded, schema-validated, and projected. The provider-reported model must exactly match the reviewed route model; a mismatch fails closed rather than becoming a silent fallback. Usage is normalized. Provider extensions and error bodies are discarded.
+5. The gateway restores the requested alias in the public success body and records the reviewed physical route/model only in metadata provenance.
 6. Unsupported endpoint/features fail before provider invocation. There is no retry, fallback, custom client header passthrough, arbitrary URL, or arbitrary provider field.
 
 Public reasoning is `low|medium|high`. The OpenRouter Chat profile implements the trusted structural transform from public `reasoning_effort` to `reasoning.effort`. Remaining value/default transforms to provider-specific `none|minimal|max|xhigh`, `thinking`, or other dialect fields are not implemented and are tracked by [#13](https://github.com/tinkertanker/tkslopper/issues/13).

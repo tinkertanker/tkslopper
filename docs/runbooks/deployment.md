@@ -17,7 +17,7 @@ pnpm wrangler d1 execute <database-name> --remote --config <private-config> \
   --file db/preflight/identity_integrity.sql
 ```
 
-An empty result is required; any reported violation/count blocks migration and requires an owner-reviewed forward migration. Running that remote preflight, like every remote operation in this runbook, requires separate authorization.
+An empty result is required; any reported violation/count blocks migration and requires an owner-reviewed forward migration. `pnpm migration:check` parses machine-readable Wrangler results, requires every preflight result set to be empty, and exercises a dirty-state fixture to prove the gate fails closed. Running a remote preflight, like every remote operation in this runbook, requires separate authorization and the same machine-enforced empty-result check rather than reliance on Wrangler's process status alone.
 
 ## Secrets
 
@@ -41,7 +41,7 @@ Cloudflare does not reveal uploaded secret values. Before provisioning, compare 
 1. Back up D1 and apply migrations using the exact reviewed artifact.
 2. Configure operator-only Cloudflare Access (or equivalent) for both dashboard paths, then deploy the control Worker with no public product enabled. Do not expose the dashboard without this ingress gate.
 3. Deploy the gateway Worker with fixture routes removed and production `DEPLOYMENT_ENV`; fixture routes fail closed in production but must not be production policy.
-4. Confirm every compatible route's dedicated credential binding and both core bindings pass the bounded `/healthz` readiness probe. Do not claim buffered client-disconnect cancellation or a `499` response; the checked Workers runtime does not signal disconnects before this non-streaming gateway returns headers.
+4. Confirm every compatible route's dedicated credential binding and both core bindings pass the bounded `/healthz` readiness probe. Both Workers require the exact reviewed D1 schema marker; gateway readiness also reaches a quota Durable Object stub and performs a side-effect-free storage read. Do not claim buffered client-disconnect cancellation or a `499` response; the checked Workers runtime does not signal disconnects before this non-streaming gateway returns headers.
 5. Create products/environments/aliases through the admin workflow. Keep environment kill switches on.
 6. Run synthetic token exchange, revocation, alias isolation, quota, upstream deadline, and metadata-only logging checks.
 7. Follow the [canary plan](../canary-plan.md). Enable one environment only after acceptance evidence is recorded.

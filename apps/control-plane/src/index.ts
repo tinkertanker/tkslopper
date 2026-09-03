@@ -1,4 +1,5 @@
 import {
+  DATABASE_SCHEMA_VERSION,
   HttpError,
   accessCodeCreateSchema,
   activationSchema,
@@ -1054,7 +1055,15 @@ export async function handleControlPlane(
   try {
     ensureConfiguration(env);
     if (request.method === "GET" && url.pathname === "/healthz") {
-      await env.DB.prepare("SELECT 1 AS ready FROM products LIMIT 0").all();
+      const schema = await env.DB.prepare(
+        "SELECT value FROM schema_metadata WHERE key = 'schema_version'",
+      ).first<{ value: string }>();
+      if (schema?.value !== DATABASE_SCHEMA_VERSION)
+        throw new HttpError(
+          500,
+          "internal_error",
+          "control plane is not ready",
+        );
       return jsonResponse({ status: "ok", component: "control-plane" });
     }
     if (request.method === "GET" && url.pathname === "/dashboard") {

@@ -204,6 +204,7 @@ components:
         type: string
         minLength: 8
         maxLength: 128
+        pattern: "^[!-~]{8,128}$"
   headers:
     RequestId:
       description: Pseudorandom request identifier safe to use for metadata lookup

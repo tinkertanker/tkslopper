@@ -1,4 +1,5 @@
 import {
+  DATABASE_SCHEMA_VERSION,
   HttpError,
   ProviderError,
   bearerToken,
@@ -59,6 +60,9 @@ type GrantPolicyRow = {
   entitlement_environment_id: string | null;
   entitlement_tenant_id: string | null;
   entitlement_principal_id: string | null;
+  service_credential_id: string | null;
+  service_credential_disabled: number | null;
+  service_credential_expires_at: number | null;
   access_code_disabled: number | null;
   access_code_expires_at: number | null;
   access_code_product_id: string | null;
@@ -217,6 +221,8 @@ async function authenticate(
             n.expires_at AS entitlement_expires_at, n.product_id AS entitlement_product_id,
             n.environment_id AS entitlement_environment_id, n.tenant_id AS entitlement_tenant_id,
             n.principal_id AS entitlement_principal_id,
+            s.id AS service_credential_id, s.disabled AS service_credential_disabled,
+            s.expires_at AS service_credential_expires_at,
             c.disabled AS access_code_disabled, c.expires_at AS access_code_expires_at,
             c.product_id AS access_code_product_id, c.environment_id AS access_code_environment_id,
             c.tenant_id AS access_code_tenant_id,
@@ -230,6 +236,11 @@ async function authenticate(
        JOIN products p ON p.id = g.product_id
        JOIN environments e ON e.id = g.environment_id AND e.product_id = g.product_id
        LEFT JOIN entitlements n ON n.id = g.entitlement_id
+       LEFT JOIN service_credentials s ON n.source = 'service' AND s.id = n.source_ref
+                                      AND s.product_id = g.product_id
+                                      AND s.environment_id = g.environment_id
+                                      AND s.tenant_id = g.tenant_id
+                                      AND s.principal_id = g.principal_id
        LEFT JOIN access_codes c ON n.source = 'access_code' AND c.id = n.source_ref
                                AND c.product_id = g.product_id
                                AND c.environment_id = g.environment_id
@@ -249,6 +260,11 @@ async function authenticate(
     policy.entitlement_status !== "active" ||
     (policy.entitlement_expires_at !== null &&
       policy.entitlement_expires_at <= now) ||
+    (policy.entitlement_source === "service" &&
+      (policy.service_credential_id === null ||
+        policy.service_credential_disabled !== 0 ||
+        (policy.service_credential_expires_at !== null &&
+          policy.service_credential_expires_at <= now))) ||
     (policy.entitlement_source === "access_code" &&
       (policy.access_code_disabled !== 0 ||
         policy.access_code_expires_at === null ||
@@ -450,6 +466,25 @@ async function quotaCallWithRetry(
   throw lastError instanceof Error
     ? lastError
     : new Error("quota coordinator call failed");
+}
+
+async function quotaCompletionSucceeded(
+  response: Response | undefined,
+): Promise<boolean> {
+  if (!response?.ok) return false;
+  try {
+    const body = await response.json<{
+      completed?: unknown;
+      found?: unknown;
+      knownCompleted?: unknown;
+    }>();
+    return (
+      body.completed === true &&
+      (body.found === true || body.knownCompleted === true)
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function recordAttemptStart(
@@ -838,7 +873,7 @@ async function handleInference(
         actualTokens: completionTokens,
         actualCostMicrocents: completionCost,
       }).catch(() => undefined);
-      if (!completion?.ok) {
+      if (!(await quotaCompletionSucceeded(completion))) {
         quotaCompletionExhausted = true;
         quotaReservationUnresolved = true;
         throw new HttpError(
@@ -880,7 +915,7 @@ async function handleInference(
         actualTokens: completionTokens,
         actualCostMicrocents: completionCost,
       }).catch(() => undefined);
-      if (!completion?.ok) {
+      if (!(await quotaCompletionSucceeded(completion))) {
         quotaCompletionExhausted = true;
         quotaReservationUnresolved = true;
         throw new HttpError(
@@ -935,7 +970,8 @@ async function handleInference(
         actualTokens: completionTokens,
         actualCostMicrocents: completionCost,
       }).catch(() => undefined);
-      if (completion?.ok) quotaMayBeAcquired = false;
+      if (await quotaCompletionSucceeded(completion))
+        quotaMayBeAcquired = false;
       else quotaReservationUnresolved = true;
     }
     if (!context.providerAttempted && !quotaReservationUnresolved) {
@@ -989,10 +1025,31 @@ export async function handleGateway(
     return errorResponse(500, "internal_error", "gateway is not configured");
   const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === "/healthz") {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort("deadline"), 2000);
     try {
-      await env.DB.prepare("SELECT 1 AS ready FROM token_grants LIMIT 0").all();
+      const quota = env.QUOTA.get(env.QUOTA.idFromName("readiness-probe"));
+      const [schema, quotaResponse] = await Promise.all([
+        env.DB.prepare(
+          "SELECT value FROM schema_metadata WHERE key = 'schema_version'",
+        ).first<{ value: string }>(),
+        quota.fetch("https://quota.internal/healthz", {
+          signal: controller.signal,
+        }),
+      ]);
+      const quotaBody = quotaResponse.ok
+        ? await quotaResponse.json<{ status?: unknown }>()
+        : undefined;
+      if (
+        schema?.value !== DATABASE_SCHEMA_VERSION ||
+        quotaBody?.status !== "ok"
+      ) {
+        throw new Error("readiness dependency is incompatible");
+      }
     } catch {
       return errorResponse(500, "internal_error", "gateway is not ready");
+    } finally {
+      clearTimeout(timeout);
     }
     return jsonResponse({
       status: "ok",

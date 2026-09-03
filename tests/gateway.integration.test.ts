@@ -85,24 +85,31 @@ async function grant(options?: {
   environmentId?: string;
   audience?: string;
   capability?: string;
+  source?: "dev" | "service";
+  sourceRef?: string;
 }): Promise<string> {
   const productId = options?.productId ?? "prod_vibbit";
   const environmentId = options?.environmentId ?? "env_vibbit";
   const audience = options?.audience ?? "vibbit:test";
   const capability = options?.capability ?? "text.chat.v1";
+  const source = options?.source ?? "dev";
+  if (source === "service" && !options?.sourceRef)
+    throw new Error("service grants require a source credential");
   const timestamp = now();
   const entitlementId = randomId("ent");
   const jti = randomId("grant");
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO entitlements
-       (id, product_id, environment_id, tenant_id, principal_id, source, capabilities_json,
+       (id, product_id, environment_id, tenant_id, principal_id, source, source_ref, capabilities_json,
         status, expires_at, created_at, updated_at)
-       VALUES (?, ?, ?, 'tenant_fixture', 'principal_fixture', 'dev', ?, 'active', ?, ?, ?)`,
+       VALUES (?, ?, ?, 'tenant_fixture', 'principal_fixture', ?, ?, ?, 'active', ?, ?, ?)`,
     ).bind(
       entitlementId,
       productId,
       environmentId,
+      source,
+      options?.sourceRef ?? null,
       JSON.stringify([capability]),
       timestamp + 600,
       timestamp,
@@ -138,7 +145,7 @@ async function grant(options?: {
       tenantId: "tenant_fixture",
       principalId: "principal_fixture",
       capabilities: [capability],
-      tokenType: "dev",
+      tokenType: source,
     },
   };
   return signGrant(claims, env.TOKEN_SIGNING_SECRET);
@@ -362,6 +369,35 @@ describe("gateway integration and isolation", () => {
     expect((await SELF.fetch(chatRequest(token))).status).toBe(403);
   });
 
+  it("fails closed when a service entitlement parent is disabled or expired", async () => {
+    const timestamp = now();
+    await env.DB.prepare(
+      `INSERT INTO service_credentials
+       (id, product_id, environment_id, tenant_id, principal_id, secret_salt, secret_hash,
+        capabilities_json, expires_at, created_at)
+       VALUES ('service_live_parent', 'prod_vibbit', 'env_vibbit', 'tenant_fixture',
+               'principal_fixture', 'salt', 'hash', '["text.chat.v1"]', ?, ?)`,
+    )
+      .bind(timestamp + 600, timestamp)
+      .run();
+    const token = await grant({
+      source: "service",
+      sourceRef: "service_live_parent",
+    });
+
+    expect((await SELF.fetch(chatRequest(token))).status).toBe(200);
+    await env.DB.prepare(
+      "UPDATE service_credentials SET disabled = 1 WHERE id = 'service_live_parent'",
+    ).run();
+    expect((await SELF.fetch(chatRequest(token))).status).toBe(403);
+    await env.DB.prepare(
+      "UPDATE service_credentials SET disabled = 0, expires_at = ? WHERE id = 'service_live_parent'",
+    )
+      .bind(timestamp - 1)
+      .run();
+    expect((await SELF.fetch(chatRequest(token))).status).toBe(403);
+  });
+
   it("fails closed at authentication when the linked entitlement tuple disagrees", async () => {
     const timestamp = now();
     const jti = randomId("grant");
@@ -544,7 +580,7 @@ describe("Stage 0 failure-path accounting", () => {
             Response.json({ completed: false }, { status: 503 }),
           );
         reservationExists = false;
-        return Promise.resolve(Response.json({ completed: true }));
+        return Promise.resolve(Response.json({ completed: true, found: true }));
       },
     };
     const quotaNamespace = {
@@ -822,7 +858,7 @@ describe("Stage 0 failure-path accounting", () => {
           ).length;
           return Promise.resolve(
             operation.operation === "acquire" || completionCount === 2
-              ? Response.json({ completed: true })
+              ? Response.json({ completed: true, found: true })
               : Response.json({ completed: false }, { status: 503 }),
           );
         },
@@ -952,6 +988,47 @@ describe("Stage 0 failure-path accounting", () => {
       ].sort(),
     );
   });
+
+  it("leaves the attempt stale when quota reports an unknown completion", async () => {
+    const operations: Array<Record<string, unknown>> = [];
+    const quotaStub = {
+      fetch(_url: string, init?: RequestInit): Promise<Response> {
+        if (typeof init?.body !== "string")
+          throw new Error("synthetic quota request body was not a string");
+        const operation = JSON.parse(init.body) as Record<string, unknown>;
+        operations.push(operation);
+        return Promise.resolve(
+          operation.operation === "acquire"
+            ? Response.json({ acquired: true })
+            : Response.json({ completed: true, found: false }),
+        );
+      },
+    };
+    const quotaNamespace = {
+      idFromName: () => ({ synthetic: true }),
+      get: () => quotaStub,
+    } as unknown as DurableObjectNamespace;
+    const token = await grant();
+
+    const response = await handleGateway(chatRequest(token), {
+      ...(env as unknown as GatewayEnv),
+      QUOTA: quotaNamespace,
+    });
+
+    expect(response.status).toBe(503);
+    expect(operations.map(({ operation }) => operation)).toEqual([
+      "acquire",
+      "complete",
+    ]);
+    await expect(
+      env.DB.prepare(
+        "SELECT status_code, error_class FROM provider_attempts",
+      ).first(),
+    ).resolves.toMatchObject({
+      status_code: 0,
+      error_class: "attempt_started",
+    });
+  });
 });
 
 describe("gateway configuration", () => {
@@ -1007,11 +1084,26 @@ describe("gateway configuration", () => {
         throw new Error("synthetic D1 outage");
       },
     } as unknown as D1Database;
+    const incompatibleDb = {
+      prepare() {
+        return {
+          first: () => Promise.resolve({ value: "old-schema" }),
+        };
+      },
+    } as unknown as D1Database;
+    const unavailableQuota = {
+      idFromName: () => ({ synthetic: true }),
+      get: () => ({
+        fetch: () => Promise.reject(new Error("synthetic quota outage")),
+      }),
+    } as unknown as DurableObjectNamespace;
     for (const configured of [
       { ...gatewayEnv, PROVIDER_ROUTES_JSON: "{}" },
       { ...gatewayEnv, DB: undefined as unknown as D1Database },
       { ...gatewayEnv, QUOTA: undefined as unknown as DurableObjectNamespace },
       { ...gatewayEnv, DB: unavailableDb },
+      { ...gatewayEnv, DB: incompatibleDb },
+      { ...gatewayEnv, QUOTA: unavailableQuota },
     ]) {
       expect((await handleGateway(healthRequest(), configured)).status).toBe(
         500,
@@ -1116,7 +1208,16 @@ describe("exact quota reservations", () => {
     await expect((await call(completion)).json()).resolves.toMatchObject({
       completed: true,
       found: false,
+      knownCompleted: true,
     });
+    expect(
+      (
+        await call({
+          ...completion,
+          actualCostMicrocents: completion.actualCostMicrocents + 1,
+        })
+      ).status,
+    ).toBe(409);
 
     const state = await runInDurableObject(
       stub,
@@ -1132,6 +1233,68 @@ describe("exact quota reservations", () => {
       tokensThisMinute: 80,
       spentTodayMicrocents: 8,
     });
+  });
+
+  it("reports a first completion after reservation expiry as unknown", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T12:00:00.000Z"));
+      const stub = env.QUOTA.get(
+        env.QUOTA.idFromName("quota-late-completion-fixture"),
+      );
+      const call = (body: Record<string, unknown>) =>
+        stub.fetch("https://quota.internal/", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      expect(
+        (
+          await call({
+            operation: "acquire",
+            requestId: "late-completion",
+            reservationTtlSeconds: 5,
+            estimatedTokens: 100,
+            reservedCostMicrocents: 10,
+            limits: {
+              rpm: 10,
+              tpm: 1000,
+              concurrency: 2,
+              dailyBudgetMicrocents: 100,
+            },
+          })
+        ).status,
+      ).toBe(200);
+
+      vi.setSystemTime(new Date("2026-01-01T12:00:06.000Z"));
+      const completion = await call({
+        operation: "complete",
+        requestId: "late-completion",
+        actualTokens: 80,
+        actualCostMicrocents: 8,
+      });
+      expect(completion.status).toBe(404);
+      await expect(completion.json()).resolves.toMatchObject({
+        completed: false,
+        reason: "unknown_reservation",
+      });
+      const state = await runInDurableObject(
+        stub,
+        async (_instance, durableState) =>
+          durableState.storage.get<{
+            tokensThisMinute: number;
+            spentTodayMicrocents: number;
+            reservations: Record<string, unknown>;
+          }>("quota"),
+      );
+      expect(state).toMatchObject({
+        tokensThisMinute: 100,
+        spentTodayMicrocents: 10,
+        reservations: {},
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rejects budget over-reservation atomically", async () => {

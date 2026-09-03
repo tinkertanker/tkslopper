@@ -1,3 +1,11 @@
+CREATE TABLE schema_metadata (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+INSERT INTO schema_metadata (key, value)
+VALUES ('schema_version', '2026-09-03.pre-release.1');
+
 CREATE TABLE products (
   id TEXT PRIMARY KEY,
   slug TEXT NOT NULL UNIQUE,

@@ -331,6 +331,73 @@ describe("provider contract", () => {
     );
   });
 
+  it.each([
+    {
+      name: "Chat Completions",
+      request,
+      body: {
+        id: "chatcmpl_model_mismatch",
+        object: "chat.completion",
+        model: "unapproved-substitute",
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: "fixture response" },
+            finish_reason: "stop",
+          },
+        ],
+      },
+    },
+    {
+      name: "Responses",
+      request: {
+        endpoint: "responses",
+        body: { model: "text.chat.v1", input: "Synthetic input." },
+      } satisfies ParsedGatewayRequest,
+      body: {
+        id: "resp_model_mismatch",
+        object: "response",
+        model: "unapproved-substitute",
+        status: "completed",
+        output: [],
+      },
+    },
+  ])("rejects a $name provider-model substitution", async (fixture) => {
+    const route = parseProviderRoutes(
+      JSON.stringify({
+        route: {
+          id: "route",
+          adapter: "openai-compatible",
+          provider: "custom",
+          profile: "custom",
+          model: "approved-model",
+          baseUrl: "https://provider.example.invalid",
+          credentialBinding: "UPSTREAM_KEY",
+          endpoints: [fixture.request.endpoint],
+          supportsImages: false,
+          supportsReasoning: false,
+          supportsStructuredJson: false,
+          timeoutMs: 5000,
+        },
+      }),
+    ).get("route")!;
+
+    await expect(
+      callProvider({
+        request: fixture.request,
+        prepared: preparedProvider(route),
+        maxResponseBytes: 10_000,
+        signal: new AbortController().signal,
+        onDispatch: () => undefined,
+        fetcher: vi
+          .fn<typeof fetch>()
+          .mockResolvedValue(Response.json(fixture.body)),
+      }),
+    ).rejects.toMatchObject({
+      errorClass: "provider_protocol",
+    } satisfies Partial<ProviderError>);
+  });
+
   it("rejects malformed and unbounded successful provider responses", async () => {
     const route = parseProviderRoutes(
       JSON.stringify({
