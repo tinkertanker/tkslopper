@@ -65,6 +65,16 @@ function assertNoIdentityViolations(output: unknown): void {
     );
 }
 
+function hasIdentityViolation(output: unknown, expected: string): boolean {
+  return identityViolations(output).some(
+    (result) =>
+      typeof result === "object" &&
+      result !== null &&
+      "violation" in result &&
+      result.violation === expected,
+  );
+}
+
 async function main(): Promise<void> {
   const persistenceDirectory = await mkdtemp(
     join(tmpdir(), "tkslopper-migrations-"),
@@ -115,6 +125,38 @@ async function main(): Promise<void> {
     }
     if (!rejected)
       throw new Error("identity preflight accepted the dirty-state fixture");
+
+    await runWranglerJson([
+      "d1",
+      "execute",
+      ...databaseArgs,
+      "--command",
+      `DELETE FROM entitlements WHERE id = 'preflight_fixture_entitlement';
+       DROP TABLE token_grants;
+       CREATE TABLE token_grants (
+         id TEXT PRIMARY KEY,
+         entitlement_id TEXT,
+         product_id TEXT NOT NULL,
+         environment_id TEXT NOT NULL,
+         tenant_id TEXT NOT NULL,
+         principal_id TEXT NOT NULL
+       );
+       INSERT INTO token_grants
+         (id, entitlement_id, product_id, environment_id, tenant_id, principal_id)
+       VALUES (NULL, NULL, 'preflight_fixture_product', 'preflight_fixture_environment',
+               'tenant_fixture', 'principal_fixture');`,
+    ]);
+    const nullKeyResult = await runWranglerJson(preflightArgs);
+    if (!hasIdentityViolation(nullKeyResult, "token_grants_primary_key_null"))
+      throw new Error("identity preflight missed a NULL logical primary key");
+    rejected = false;
+    try {
+      assertNoIdentityViolations(nullKeyResult);
+    } catch {
+      rejected = true;
+    }
+    if (!rejected)
+      throw new Error("identity preflight accepted a NULL logical primary key");
     console.log("Identity preflight clean and dirty-state gates passed.");
   } finally {
     await rm(persistenceDirectory, { recursive: true, force: true });

@@ -725,14 +725,18 @@ describe("control-plane credential workflows", () => {
       throw new Error("invalid grant response");
     }
     expect(grant.grant_id).toMatch(/^tgrant_/u);
+    const grantRevocation = await admin("/admin/v1/revoke", {
+      resource_type: "token_grant",
+      resource_id: grant.grant_id,
+    });
+    expect(grantRevocation.status).toBe(200);
     expect(
       (
-        await admin("/admin/v1/revoke", {
-          resource_type: "token_grant",
-          resource_id: grant.grant_id,
-        })
-      ).status,
-    ).toBe(200);
+        await env.DB.prepare("SELECT revoked_at FROM token_grants WHERE id = ?")
+          .bind(grant.grant_id)
+          .first<{ revoked_at: number | null }>()
+      )?.revoked_at,
+    ).toEqual(expect.any(Number));
 
     const revoked = await admin("/admin/v1/revoke", {
       resource_type: "service_credential",
@@ -937,6 +941,78 @@ describe("product environment integrity", () => {
       .bind(timestamp, timestamp)
       .run();
   }
+
+  it("makes every logical text primary key non-null", async () => {
+    const logicalKeys = [
+      ["schema_metadata", "key"],
+      ["products", "id"],
+      ["environments", "id"],
+      ["aliases", "id"],
+      ["entitlements", "id"],
+      ["service_credentials", "id"],
+      ["access_codes", "id"],
+      ["activations", "id"],
+      ["token_grants", "id"],
+      ["provider_attempts", "id"],
+      ["admin_audit", "id"],
+    ] as const;
+    for (const [table, key] of logicalKeys) {
+      const columns = await env.DB.prepare(`PRAGMA table_info(${table})`).all<{
+        name: string;
+        notnull: number;
+        pk: number;
+      }>();
+      expect(columns.results.find(({ name }) => name === key)).toMatchObject({
+        notnull: 1,
+        pk: 1,
+      });
+    }
+
+    const timestamp = now();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO service_credentials
+         (id, product_id, environment_id, tenant_id, principal_id, secret_salt, secret_hash,
+          capabilities_json, created_at)
+         VALUES ('service_non_null', 'prod_control', 'env_control', 'tenant_fixture',
+                 'principal_fixture', 'salt', 'hash', '["text.chat.v1"]', ?)`,
+      ).bind(timestamp),
+      env.DB.prepare(
+        `INSERT INTO entitlements
+         (id, product_id, environment_id, tenant_id, principal_id, source, capabilities_json,
+          status, created_at, updated_at)
+         VALUES ('ent_non_null', 'prod_control', 'env_control', 'tenant_fixture',
+                 'principal_fixture', 'dev', '["text.chat.v1"]', 'active', ?, ?)`,
+      ).bind(timestamp, timestamp),
+      env.DB.prepare(
+        `INSERT INTO token_grants
+         (id, jti_hash, entitlement_id, product_id, environment_id, tenant_id, principal_id,
+          audience, capabilities_json, expires_at, created_at)
+         VALUES ('grant_non_null', 'jti_non_null', 'ent_non_null', 'prod_control', 'env_control',
+                 'tenant_fixture', 'principal_fixture', 'control:test', '["text.chat.v1"]', ?, ?)`,
+      ).bind(timestamp + 300, timestamp),
+    ]);
+
+    await expect(
+      env.DB.prepare(
+        "UPDATE service_credentials SET id = NULL WHERE id = 'service_non_null'",
+      ).run(),
+    ).rejects.toThrow(/not null constraint failed: service_credentials\.id/i);
+    await expect(
+      env.DB.prepare(
+        "UPDATE token_grants SET id = NULL WHERE id = 'grant_non_null'",
+      ).run(),
+    ).rejects.toThrow(/not null constraint failed: token_grants\.id/i);
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO admin_audit
+         (id, action, resource_type, resource_id, actor_hash, created_at)
+         VALUES (NULL, 'fixture', 'fixture', 'fixture', 'fixture', ?)`,
+      )
+        .bind(timestamp)
+        .run(),
+    ).rejects.toThrow(/not null constraint failed: admin_audit\.id/i);
+  });
 
   it("rejects mismatched product and environment pairs at the database boundary", async () => {
     await addOtherProduct();

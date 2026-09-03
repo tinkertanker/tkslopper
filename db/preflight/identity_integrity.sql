@@ -1,3 +1,55 @@
+-- schema_metadata is absent from legacy databases; its current key is declared
+-- PRIMARY KEY NOT NULL in the initial pre-release schema.
+SELECT 'products_primary_key_null' AS violation, COUNT(*) AS row_count
+FROM products
+WHERE id IS NULL
+HAVING COUNT(*) > 0;
+
+SELECT 'environments_primary_key_null' AS violation, COUNT(*) AS row_count
+FROM environments
+WHERE id IS NULL
+HAVING COUNT(*) > 0;
+
+SELECT 'aliases_primary_key_null' AS violation, COUNT(*) AS row_count
+FROM aliases
+WHERE id IS NULL
+HAVING COUNT(*) > 0;
+
+SELECT 'entitlements_primary_key_null' AS violation, COUNT(*) AS row_count
+FROM entitlements
+WHERE id IS NULL
+HAVING COUNT(*) > 0;
+
+SELECT 'service_credentials_primary_key_null' AS violation, COUNT(*) AS row_count
+FROM service_credentials
+WHERE id IS NULL
+HAVING COUNT(*) > 0;
+
+SELECT 'access_codes_primary_key_null' AS violation, COUNT(*) AS row_count
+FROM access_codes
+WHERE id IS NULL
+HAVING COUNT(*) > 0;
+
+SELECT 'activations_primary_key_null' AS violation, COUNT(*) AS row_count
+FROM activations
+WHERE id IS NULL
+HAVING COUNT(*) > 0;
+
+SELECT 'token_grants_primary_key_null' AS violation, COUNT(*) AS row_count
+FROM token_grants
+WHERE id IS NULL
+HAVING COUNT(*) > 0;
+
+SELECT 'provider_attempts_primary_key_null' AS violation, COUNT(*) AS row_count
+FROM provider_attempts
+WHERE id IS NULL
+HAVING COUNT(*) > 0;
+
+SELECT 'admin_audit_primary_key_null' AS violation, COUNT(*) AS row_count
+FROM admin_audit
+WHERE id IS NULL
+HAVING COUNT(*) > 0;
+
 SELECT 'aliases_product_environment' AS violation, COUNT(*) AS row_count
 FROM aliases AS child
 LEFT JOIN environments AS environment

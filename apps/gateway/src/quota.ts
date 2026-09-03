@@ -25,6 +25,7 @@ type QuotaState = {
 
 const COMPLETION_RECEIPT_TTL_SECONDS = 300;
 const MAX_COMPLETION_RECEIPTS = 512;
+export const QUOTA_PROTOCOL_VERSION = "1";
 
 export type QuotaAcquireRequest = {
   operation: "acquire";
@@ -184,7 +185,10 @@ export class QuotaCoordinator implements DurableObject {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/healthz") {
       await this.state.storage.get("readiness-probe");
-      return Response.json({ status: "ok" });
+      return Response.json({
+        status: "ok",
+        protocolVersion: QUOTA_PROTOCOL_VERSION,
+      });
     }
     if (request.method !== "POST")
       return Response.json({ error: "method_not_allowed" }, { status: 405 });

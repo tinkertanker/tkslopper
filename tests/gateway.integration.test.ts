@@ -619,6 +619,65 @@ describe("Stage 0 failure-path accounting", () => {
     }
   });
 
+  it.each([
+    { name: "a completion receipt", body: { completed: true, found: true } },
+    { name: "a missing existing flag", body: { acquired: true } },
+    {
+      name: "a non-boolean existing flag",
+      body: { acquired: true, existing: "false" },
+    },
+  ])(
+    "fails closed and cleans up when quota admission returns $name",
+    async ({ body }) => {
+      const operations: Array<Record<string, unknown>> = [];
+      const quotaStub = {
+        fetch(_url: string, init?: RequestInit): Promise<Response> {
+          if (typeof init?.body !== "string")
+            throw new Error("synthetic quota request body was not a string");
+          const operation = JSON.parse(init.body) as Record<string, unknown>;
+          operations.push(operation);
+          return Promise.resolve(
+            operation.operation === "acquire"
+              ? Response.json(body)
+              : Response.json({ completed: true, found: true }),
+          );
+        },
+      };
+      const quotaNamespace = {
+        idFromName: () => ({ synthetic: true }),
+        get: () => quotaStub,
+      } as unknown as DurableObjectNamespace;
+      const providerFetch = vi.fn<typeof fetch>();
+      vi.stubGlobal("fetch", providerFetch);
+      try {
+        const token = await grant();
+        const response = await handleGateway(chatRequest(token), {
+          ...(env as unknown as GatewayEnv),
+          QUOTA: quotaNamespace,
+        });
+        expect(response.status).toBe(503);
+        expect(providerFetch).not.toHaveBeenCalled();
+        expect(operations.map(({ operation }) => operation)).toEqual([
+          "acquire",
+          "complete",
+        ]);
+        expect(operations[1]).toMatchObject({
+          actualTokens: 0,
+          actualCostMicrocents: 0,
+        });
+        expect(
+          (
+            await env.DB.prepare(
+              "SELECT COUNT(*) AS count FROM provider_attempts",
+            ).first<{ count: number }>()
+          )?.count,
+        ).toBe(0);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
   it("exposes an unresolved reservation when pre-dispatch cleanup is unavailable", async () => {
     const operations: Array<Record<string, unknown>> = [];
     let reservationExists = false;
@@ -858,7 +917,9 @@ describe("Stage 0 failure-path accounting", () => {
           ).length;
           return Promise.resolve(
             operation.operation === "acquire" || completionCount === 2
-              ? Response.json({ completed: true, found: true })
+              ? operation.operation === "acquire"
+                ? Response.json({ acquired: true, existing: false })
+                : Response.json({ completed: true, found: true })
               : Response.json({ completed: false }, { status: 503 }),
           );
         },
@@ -908,7 +969,7 @@ describe("Stage 0 failure-path accounting", () => {
         operations.push(operation);
         return Promise.resolve(
           operation.operation === "acquire"
-            ? Response.json({ acquired: true })
+            ? Response.json({ acquired: true, existing: false })
             : Response.json({ completed: false }, { status: 503 }),
         );
       },
@@ -999,7 +1060,7 @@ describe("Stage 0 failure-path accounting", () => {
         operations.push(operation);
         return Promise.resolve(
           operation.operation === "acquire"
-            ? Response.json({ acquired: true })
+            ? Response.json({ acquired: true, existing: false })
             : Response.json({ completed: true, found: false }),
         );
       },
@@ -1097,6 +1158,15 @@ describe("gateway configuration", () => {
         fetch: () => Promise.reject(new Error("synthetic quota outage")),
       }),
     } as unknown as DurableObjectNamespace;
+    const incompatibleQuota = {
+      idFromName: () => ({ synthetic: true }),
+      get: () => ({
+        fetch: () =>
+          Promise.resolve(
+            Response.json({ status: "ok", protocolVersion: "old" }),
+          ),
+      }),
+    } as unknown as DurableObjectNamespace;
     for (const configured of [
       { ...gatewayEnv, PROVIDER_ROUTES_JSON: "{}" },
       { ...gatewayEnv, DB: undefined as unknown as D1Database },
@@ -1104,6 +1174,7 @@ describe("gateway configuration", () => {
       { ...gatewayEnv, DB: unavailableDb },
       { ...gatewayEnv, DB: incompatibleDb },
       { ...gatewayEnv, QUOTA: unavailableQuota },
+      { ...gatewayEnv, QUOTA: incompatibleQuota },
     ]) {
       expect((await handleGateway(healthRequest(), configured)).status).toBe(
         500,

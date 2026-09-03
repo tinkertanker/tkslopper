@@ -1,13 +1,13 @@
 CREATE TABLE schema_metadata (
-  key TEXT PRIMARY KEY,
+  key TEXT PRIMARY KEY NOT NULL,
   value TEXT NOT NULL
 );
 
 INSERT INTO schema_metadata (key, value)
-VALUES ('schema_version', '2026-09-03.pre-release.1');
+VALUES ('schema_version', '2026-09-03.pre-release.2');
 
 CREATE TABLE products (
-  id TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY NOT NULL,
   slug TEXT NOT NULL UNIQUE,
   display_name TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
@@ -17,7 +17,7 @@ CREATE TABLE products (
 );
 
 CREATE TABLE environments (
-  id TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY NOT NULL,
   product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   audience TEXT NOT NULL UNIQUE,
@@ -38,7 +38,7 @@ CREATE TABLE environments (
 );
 
 CREATE TABLE aliases (
-  id TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY NOT NULL,
   product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
   environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
   alias TEXT NOT NULL,
@@ -67,7 +67,7 @@ CREATE INDEX aliases_environment_active_idx
   WHERE enabled = 1;
 
 CREATE TABLE entitlements (
-  id TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY NOT NULL,
   product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
   environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
   tenant_id TEXT NOT NULL,
@@ -97,7 +97,7 @@ CREATE UNIQUE INDEX entitlements_source_principal_unique
   WHERE source_ref IS NOT NULL;
 
 CREATE TABLE service_credentials (
-  id TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY NOT NULL,
   product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
   environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
   tenant_id TEXT NOT NULL,
@@ -114,7 +114,7 @@ CREATE TABLE service_credentials (
 );
 
 CREATE TABLE access_codes (
-  id TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY NOT NULL,
   product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
   environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
   tenant_id TEXT NOT NULL,
@@ -134,7 +134,7 @@ CREATE TABLE access_codes (
 );
 
 CREATE TABLE activations (
-  id TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY NOT NULL,
   access_code_id TEXT NOT NULL REFERENCES access_codes(id) ON DELETE CASCADE,
   tenant_id TEXT NOT NULL,
   principal_id TEXT NOT NULL,
@@ -175,9 +175,9 @@ OR EXISTS (
      AND tenant_id = OLD.tenant_id
      AND principal_id = OLD.principal_id
      AND (
-       source_ref <> NEW.access_code_id
-       OR tenant_id <> NEW.tenant_id
-       OR principal_id <> NEW.principal_id
+       source_ref IS NOT NEW.access_code_id
+       OR tenant_id IS NOT NEW.tenant_id
+       OR principal_id IS NOT NEW.principal_id
      )
 )
 BEGIN
@@ -256,7 +256,7 @@ END;
 
 CREATE TRIGGER entitlements_source_provenance_update
 BEFORE UPDATE OF source, source_ref ON entitlements
-WHEN NEW.source <> OLD.source OR NEW.source_ref IS NOT OLD.source_ref
+WHEN NEW.source IS NOT OLD.source OR NEW.source_ref IS NOT OLD.source_ref
 BEGIN
   SELECT RAISE(ABORT, 'entitlement source provenance is immutable');
 END;
@@ -269,11 +269,11 @@ WHEN EXISTS (
    WHERE source = 'service'
      AND source_ref = OLD.id
      AND (
-       NEW.id <> OLD.id
-       OR product_id <> NEW.product_id
-       OR environment_id <> NEW.environment_id
-       OR tenant_id <> NEW.tenant_id
-       OR principal_id <> NEW.principal_id
+       NEW.id IS NOT OLD.id
+       OR product_id IS NOT NEW.product_id
+       OR environment_id IS NOT NEW.environment_id
+       OR tenant_id IS NOT NEW.tenant_id
+       OR principal_id IS NOT NEW.principal_id
      )
 )
 BEGIN
@@ -293,7 +293,7 @@ WHEN EXISTS (
   SELECT 1
     FROM activations
    WHERE access_code_id = OLD.id
-     AND (OLD.id <> NEW.id OR tenant_id <> NEW.tenant_id)
+     AND (OLD.id IS NOT NEW.id OR tenant_id IS NOT NEW.tenant_id)
 )
 OR EXISTS (
   SELECT 1
@@ -301,10 +301,10 @@ OR EXISTS (
    WHERE source = 'access_code'
      AND source_ref = OLD.id
      AND (
-       OLD.id <> NEW.id
-       OR product_id <> NEW.product_id
-       OR environment_id <> NEW.environment_id
-       OR tenant_id <> NEW.tenant_id
+       OLD.id IS NOT NEW.id
+       OR product_id IS NOT NEW.product_id
+       OR environment_id IS NOT NEW.environment_id
+       OR tenant_id IS NOT NEW.tenant_id
      )
 )
 BEGIN
@@ -329,7 +329,7 @@ BEGIN
 END;
 
 CREATE TABLE token_grants (
-  id TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY NOT NULL,
   jti_hash TEXT NOT NULL UNIQUE,
   entitlement_id TEXT REFERENCES entitlements(id) ON DELETE SET NULL,
   product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
@@ -384,10 +384,10 @@ WHEN EXISTS (
     FROM token_grants
    WHERE entitlement_id = OLD.id
      AND (
-       product_id <> NEW.product_id
-       OR environment_id <> NEW.environment_id
-       OR tenant_id <> NEW.tenant_id
-       OR principal_id <> NEW.principal_id
+       product_id IS NOT NEW.product_id
+       OR environment_id IS NOT NEW.environment_id
+       OR tenant_id IS NOT NEW.tenant_id
+       OR principal_id IS NOT NEW.principal_id
      )
 )
 BEGIN
@@ -411,7 +411,7 @@ CREATE TABLE idempotency_keys (
 );
 
 CREATE TABLE provider_attempts (
-  id TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY NOT NULL,
   request_id TEXT NOT NULL,
   attempt_number INTEGER NOT NULL CHECK (attempt_number = 1),
   product_id TEXT NOT NULL,
@@ -455,7 +455,7 @@ FROM provider_attempts
 WHERE error_class = 'attempt_started' AND stale_after <= unixepoch();
 
 CREATE TABLE admin_audit (
-  id TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY NOT NULL,
   action TEXT NOT NULL,
   resource_type TEXT NOT NULL,
   resource_id TEXT NOT NULL,

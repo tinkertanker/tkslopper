@@ -26,6 +26,7 @@ import {
 } from "@tkslopper/shared";
 
 import {
+  QUOTA_PROTOCOL_VERSION,
   QuotaCoordinator,
   type QuotaAcquireRequest,
   type QuotaCompleteRequest,
@@ -487,6 +488,19 @@ async function quotaCompletionSucceeded(
   }
 }
 
+async function quotaAcquisitionSucceeded(response: Response): Promise<boolean> {
+  if (!response.ok) return false;
+  try {
+    const body = await response.json<{
+      acquired?: unknown;
+      existing?: unknown;
+    }>();
+    return body.acquired === true && typeof body.existing === "boolean";
+  } catch {
+    return false;
+  }
+}
+
 async function recordAttemptStart(
   env: GatewayEnv,
   context: RequestContext,
@@ -821,6 +835,13 @@ async function handleInference(
           : "rate or concurrency limit exceeded",
       );
     }
+    if (!(await quotaAcquisitionSucceeded(quotaResponse))) {
+      throw new HttpError(
+        503,
+        "internal_error",
+        "quota accounting admission failed",
+      );
+    }
 
     await recordAttemptStart(env, context, {
       inputTokens: reservedInputTokens,
@@ -1038,11 +1059,15 @@ export async function handleGateway(
         }),
       ]);
       const quotaBody = quotaResponse.ok
-        ? await quotaResponse.json<{ status?: unknown }>()
+        ? await quotaResponse.json<{
+            status?: unknown;
+            protocolVersion?: unknown;
+          }>()
         : undefined;
       if (
         schema?.value !== DATABASE_SCHEMA_VERSION ||
-        quotaBody?.status !== "ok"
+        quotaBody?.status !== "ok" ||
+        quotaBody.protocolVersion !== QUOTA_PROTOCOL_VERSION
       ) {
         throw new Error("readiness dependency is incompatible");
       }
