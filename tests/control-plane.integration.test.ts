@@ -81,6 +81,9 @@ describe("operations dashboard", () => {
     );
     const html = await response.text();
     expect(html).toContain("tkslopper operations");
+    expect(html).toContain(
+      "#audit th, #audit td { overflow-wrap: anywhere; white-space: normal; vertical-align: top; }",
+    );
     expect(html).not.toContain("__CSP_NONCE__");
     expect(html).not.toContain(String(env.ADMIN_TOKEN));
     expect(html).not.toContain(String(env.DASHBOARD_TOKEN));

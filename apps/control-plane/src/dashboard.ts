@@ -352,6 +352,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       #stale { min-width: 1700px; table-layout: fixed; }
       #stale th, #stale td { overflow-wrap: anywhere; white-space: normal; vertical-align: top; }
       #audit { table-layout: fixed; }
+      #audit th, #audit td { overflow-wrap: anywhere; white-space: normal; vertical-align: top; }
       #audit th:nth-child(1) { width: 25%; }
       #audit th:nth-child(2) { width: 20%; }
       #audit th:nth-child(3) { width: 55%; }
