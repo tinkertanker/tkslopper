@@ -87,6 +87,24 @@ function normalizeState(state: QuotaState, now: number): boolean {
     changed = true;
   }
   for (const [requestId, reservation] of Object.entries(state.reservations)) {
+    if (state.completionReceipts[requestId]) {
+      if (reservation.minuteKey === state.minuteKey) {
+        state.requestsThisMinute = Math.max(0, state.requestsThisMinute - 1);
+        state.tokensThisMinute = Math.max(
+          0,
+          state.tokensThisMinute - reservation.estimatedTokens,
+        );
+      }
+      if (reservation.dayKey === state.dayKey) {
+        state.reservedTodayMicrocents = Math.max(
+          0,
+          state.reservedTodayMicrocents - reservation.reservedCostMicrocents,
+        );
+      }
+      delete state.reservations[requestId];
+      changed = true;
+      continue;
+    }
     if (reservation.expiresAt > now) continue;
     if (reservation.dayKey === state.dayKey) {
       state.reservedTodayMicrocents = Math.max(
@@ -207,11 +225,13 @@ export class QuotaCoordinator implements DurableObject {
     const now = Math.floor(Date.now() / 1000);
     let denial: "rpm" | "tpm" | "concurrency" | "budget" | undefined;
     let existing = false;
+    let completed = false;
     await this.state.storage.transaction(async (transaction) => {
       const state =
         (await transaction.get<QuotaState>("quota")) ?? freshState(now);
       let changed = normalizeState(state, now);
       if (state.reservations[request.requestId]) existing = true;
+      else if (state.completionReceipts[request.requestId]) completed = true;
       else if (state.requestsThisMinute + 1 > request.limits.rpm)
         denial = "rpm";
       else if (
@@ -246,6 +266,11 @@ export class QuotaCoordinator implements DurableObject {
       }
       if (changed) await transaction.put("quota", state);
     });
+    if (completed)
+      return Response.json(
+        { acquired: false, reason: "request_completed" },
+        { status: 409 },
+      );
     if (denial)
       return Response.json(
         { acquired: false, reason: denial },

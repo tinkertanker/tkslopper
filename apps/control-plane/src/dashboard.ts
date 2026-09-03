@@ -79,6 +79,8 @@ type StaleAttemptRow = {
   request_id: string;
   product_id: string;
   environment_id: string;
+  alias: string;
+  policy_version: number;
   route_id: string;
   provider: string;
   resolved_model: string;
@@ -99,6 +101,7 @@ type AuditRow = {
 
 export const DASHBOARD_ATTEMPT_LIMIT = 10_000;
 export const DASHBOARD_INVENTORY_COUNT_LIMIT = 1000;
+export const DASHBOARD_STALE_DETAIL_LIMIT = 50;
 
 export const DASHBOARD_ENVIRONMENTS_SQL = `WITH selected_environments AS (
   SELECT e.id, e.product_id, e.name, e.audience,
@@ -349,7 +352,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       #attempts th:nth-child(12) { width: 200px; }
       #attempts th:nth-child(13) { width: 195px; }
       #attempts td { overflow-wrap: anywhere; white-space: normal; vertical-align: top; }
-      #stale { min-width: 1700px; table-layout: fixed; }
+      #stale { min-width: 1950px; table-layout: fixed; }
       #stale th, #stale td { overflow-wrap: anywhere; white-space: normal; vertical-align: top; }
       #audit { table-layout: fixed; }
       #audit th, #audit td { overflow-wrap: anywhere; white-space: normal; vertical-align: top; }
@@ -434,7 +437,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
 
         <div class="split">
           <section>
-            <div class="section-head"><h2 id="stale-heading">Stale intents</h2><p class="section-note">Past route deadline plus grace; usage values are reservation ceilings</p></div>
+            <div class="section-head"><h2 id="stale-heading">Stale intents</h2><p class="section-note">Oldest 50 past route deadline plus grace; usage values are reservation ceilings</p></div>
             <div class="table-wrap" role="region" tabindex="0" aria-labelledby="stale-heading"><table id="stale"></table></div>
           </section>
           <section>
@@ -518,6 +521,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         if (data.inventory_truncated.environment_counts) warnings.push("One or more per-environment inventory counts are shown as bounded minimums.");
         if (data.accounting_truncated.finalized_attempts) warnings.push("24-hour accounting is truncated to the latest 10,000 finalized records.");
         if (data.accounting_truncated.stale_attempts) warnings.push("The stale-intent count is capped at 10,000.");
+        if (data.accounting_truncated.stale_attempt_details) warnings.push("Stale-intent details are truncated to the oldest 50 records.");
         const warning = document.getElementById("inventory-warning");
         warning.textContent = warnings.join(" ");
         warning.hidden = warnings.length === 0;
@@ -561,7 +565,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           { label: "Provider / model", value: (row) => row.provider + " / " + row.resolved_model },
           { label: "Endpoint", value: "endpoint" },
           { label: "Policy", value: "policy_version", format: number },
-          { label: "Status", value: (row) => row.error_class === "attempt_started" ? Number(row.stale_after) <= Number(data.generated_at) ? "stale intent" : "in flight" : row.error_class || row.status_code },
+          { label: "Status", value: "display_status" },
           { label: "Latency", value: (row) => number(row.latency_ms) + " ms" },
           { label: "Accounted tokens / ceiling", value: (row) => number(row.input_tokens) + " / " + number(row.output_tokens) },
           { label: "Accounted cost / ceiling", value: "cost_microcents", format: cost },
@@ -572,6 +576,8 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           { label: "Product", value: "product_id" },
           { label: "Environment", value: "environment_id" },
           { label: "Request", value: "request_id" },
+          { label: "Alias", value: "alias" },
+          { label: "Policy", value: "policy_version", format: number },
           { label: "Route", value: "route_id" },
           { label: "Provider / model", value: (row) => row.provider + " / " + row.resolved_model },
           { label: "Endpoint", value: "endpoint" },
@@ -704,12 +710,15 @@ export async function dashboardOverview(
           LIMIT 50`,
       ).all<AttemptRow>(),
       env.DB.prepare(
-        `SELECT request_id, product_id, environment_id, route_id, provider, resolved_model,
-                endpoint, input_tokens, output_tokens, cost_microcents, created_at, stale_after
+        `SELECT request_id, product_id, environment_id, alias, policy_version, route_id,
+                provider, resolved_model, endpoint, input_tokens, output_tokens,
+                cost_microcents, created_at, stale_after
            FROM stale_provider_attempts
           ORDER BY stale_after
-          LIMIT 50`,
-      ).all<StaleAttemptRow>(),
+          LIMIT ?`,
+      )
+        .bind(DASHBOARD_STALE_DETAIL_LIMIT + 1)
+        .all<StaleAttemptRow>(),
       env.DB.prepare(
         `SELECT action, resource_type,
                 CASE WHEN resource_type = 'access_code' THEN '[redacted]' ELSE resource_id END AS resource_id,
@@ -732,6 +741,8 @@ export async function dashboardOverview(
   const finalizedAttemptsTruncated = totals?.finalized_attempts_truncated === 1;
   const staleAttemptCount = totals?.stale_attempts ?? 0;
   const staleAttemptsTruncated = staleAttemptCount > DASHBOARD_ATTEMPT_LIMIT;
+  const staleAttemptDetailsTruncated =
+    stale.results.length > DASHBOARD_STALE_DETAIL_LIMIT;
   const normalizedProducts = products.results
     .slice(0, productLimit)
     .map((product) => ({
@@ -759,6 +770,17 @@ export async function dashboardOverview(
     ),
     effective_grants_truncated: environment.effective_grants_truncated === 1,
   }));
+  const normalizedAttempts = attempts.results.map((attempt) => ({
+    ...attempt,
+    display_status:
+      attempt.error_class === "attempt_started"
+        ? attempt.stale_after <= generatedAt
+          ? "stale intent"
+          : "in flight"
+        : attempt.error_class
+          ? `${attempt.error_class} / ${attempt.status_code}`
+          : String(attempt.status_code),
+  }));
 
   return jsonResponse({
     generated_at: generatedAt,
@@ -783,9 +805,10 @@ export async function dashboardOverview(
     accounting_truncated: {
       finalized_attempts: finalizedAttemptsTruncated,
       stale_attempts: staleAttemptsTruncated,
+      stale_attempt_details: staleAttemptDetailsTruncated,
     },
-    recent_attempts: attempts.results,
-    stale_attempts: stale.results,
+    recent_attempts: normalizedAttempts,
+    stale_attempts: stale.results.slice(0, DASHBOARD_STALE_DETAIL_LIMIT),
     recent_admin_actions: actions.results,
     accounting_basis: {
       coverage:

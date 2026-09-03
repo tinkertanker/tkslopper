@@ -39,8 +39,8 @@ Explicit completion replaces a reservation with normalized actual usage. If comp
 Detect overdue attempt intents with the metadata-only view:
 
 ```sql
-SELECT request_id, product_id, environment_id, route_id, provider, resolved_model,
-       endpoint, input_tokens, output_tokens, cost_microcents, created_at, stale_after
+SELECT request_id, product_id, environment_id, alias, policy_version, route_id, provider,
+       resolved_model, endpoint, input_tokens, output_tokens, cost_microcents, created_at, stale_after
 FROM stale_provider_attempts
 ORDER BY stale_after;
 ```

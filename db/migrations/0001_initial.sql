@@ -4,7 +4,7 @@ CREATE TABLE schema_metadata (
 );
 
 INSERT INTO schema_metadata (key, value)
-VALUES ('schema_version', '2026-09-03.pre-release.2');
+VALUES ('schema_version', '2026-09-03.pre-release.3');
 
 CREATE TABLE products (
   id TEXT PRIMARY KEY NOT NULL,
@@ -449,8 +449,8 @@ CREATE INDEX provider_attempts_recent_idx
   ON provider_attempts(created_at DESC);
 
 CREATE VIEW stale_provider_attempts AS
-SELECT request_id, product_id, environment_id, route_id, provider, resolved_model, endpoint,
-       input_tokens, output_tokens, cost_microcents, created_at, stale_after
+SELECT request_id, product_id, environment_id, alias, policy_version, route_id, provider,
+       resolved_model, endpoint, input_tokens, output_tokens, cost_microcents, created_at, stale_after
 FROM provider_attempts
 WHERE error_class = 'attempt_started' AND stale_after <= unixepoch();
 

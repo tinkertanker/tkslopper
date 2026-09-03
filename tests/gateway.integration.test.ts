@@ -1022,6 +1022,8 @@ describe("Stage 0 failure-path accounting", () => {
     expect(stale).toMatchObject({
       product_id: "prod_vibbit",
       environment_id: "env_vibbit",
+      alias: "text.chat.v1",
+      policy_version: 1,
       route_id: "fixture-text-v1",
       provider: "fixture",
       resolved_model: "fixture-chat-v1",
@@ -1037,6 +1039,8 @@ describe("Stage 0 failure-path accounting", () => {
         "request_id",
         "product_id",
         "environment_id",
+        "alias",
+        "policy_version",
         "route_id",
         "provider",
         "resolved_model",
@@ -1304,6 +1308,120 @@ describe("exact quota reservations", () => {
       tokensThisMinute: 80,
       spentTodayMicrocents: 8,
     });
+  });
+
+  it("fences completed request IDs and repairs hidden duplicate reservations", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T12:00:00.000Z"));
+      const stub = env.QUOTA.get(
+        env.QUOTA.idFromName("quota-completed-replay-fixture"),
+      );
+      const call = (body: Record<string, unknown>) =>
+        stub.fetch("https://quota.internal/", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      const acquire = (requestId: string, tokens = 100, cost = 10) =>
+        call({
+          operation: "acquire",
+          requestId,
+          reservationTtlSeconds: 60,
+          estimatedTokens: tokens,
+          reservedCostMicrocents: cost,
+          limits: {
+            rpm: 10,
+            tpm: 1000,
+            concurrency: 1,
+            dailyBudgetMicrocents: 100,
+          },
+        });
+      const complete = (requestId: string, tokens: number, cost: number) =>
+        call({
+          operation: "complete",
+          requestId,
+          actualTokens: tokens,
+          actualCostMicrocents: cost,
+        });
+
+      expect((await acquire("completed-request")).status).toBe(200);
+      expect((await complete("completed-request", 80, 8)).status).toBe(200);
+
+      const delayedAcquire = await acquire("completed-request");
+      expect(delayedAcquire.status).toBe(409);
+      await expect(delayedAcquire.json()).resolves.toMatchObject({
+        acquired: false,
+        reason: "request_completed",
+      });
+
+      await runInDurableObject(stub, async (_instance, durableState) => {
+        const state = await durableState.storage.get<{
+          minuteKey: string;
+          requestsThisMinute: number;
+          tokensThisMinute: number;
+          dayKey: string;
+          reservedTodayMicrocents: number;
+          reservations: Record<
+            string,
+            {
+              estimatedTokens: number;
+              reservedCostMicrocents: number;
+              expiresAt: number;
+              minuteKey: string;
+              dayKey: string;
+            }
+          >;
+        }>("quota");
+        if (!state) throw new Error("completed quota state was not persisted");
+        state.requestsThisMinute += 1;
+        state.tokensThisMinute += 100;
+        state.reservedTodayMicrocents += 10;
+        state.reservations["completed-request"] = {
+          estimatedTokens: 100,
+          reservedCostMicrocents: 10,
+          expiresAt: Math.floor(Date.now() / 1000) + 60,
+          minuteKey: state.minuteKey,
+          dayKey: state.dayKey,
+        };
+        await durableState.storage.put("quota", state);
+      });
+      await expect(
+        (await complete("completed-request", 80, 8)).json(),
+      ).resolves.toMatchObject({
+        completed: true,
+        found: false,
+        knownCompleted: true,
+      });
+
+      expect((await acquire("next-request")).status).toBe(200);
+      expect((await complete("next-request", 0, 0)).status).toBe(200);
+
+      vi.setSystemTime(new Date("2026-01-01T12:01:01.000Z"));
+      expect((await acquire("post-expiry-probe", 0, 0)).status).toBe(200);
+      const state = await runInDurableObject(
+        stub,
+        async (_instance, durableState) =>
+          durableState.storage.get<{
+            requestsThisMinute: number;
+            tokensThisMinute: number;
+            spentTodayMicrocents: number;
+            reservedTodayMicrocents: number;
+            reservations: Record<string, unknown>;
+          }>("quota"),
+      );
+      expect(state).toMatchObject({
+        requestsThisMinute: 1,
+        tokensThisMinute: 0,
+        spentTodayMicrocents: 8,
+        reservedTodayMicrocents: 0,
+      });
+      expect(Object.keys(state?.reservations ?? {})).toEqual([
+        "post-expiry-probe",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("reports a first completion after reservation expiry as unknown", async () => {

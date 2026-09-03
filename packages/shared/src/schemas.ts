@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const DATABASE_SCHEMA_VERSION = "2026-09-03.pre-release.2";
+export const DATABASE_SCHEMA_VERSION = "2026-09-03.pre-release.3";
 
 export const identifierSchema = z
   .string()

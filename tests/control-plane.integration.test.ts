@@ -9,6 +9,7 @@ import {
   DASHBOARD_ATTEMPT_LIMIT,
   DASHBOARD_ENVIRONMENTS_SQL,
   DASHBOARD_INVENTORY_COUNT_LIMIT,
+  DASHBOARD_STALE_DETAIL_LIMIT,
   DASHBOARD_TOTALS_SQL,
 } from "../apps/control-plane/src/dashboard";
 import { handleGateway } from "../apps/gateway/src";
@@ -84,6 +85,8 @@ describe("operations dashboard", () => {
     expect(html).toContain(
       "#audit th, #audit td { overflow-wrap: anywhere; white-space: normal; vertical-align: top; }",
     );
+    expect(html).toContain("Oldest 50 past route deadline plus grace");
+    expect(html).toContain('{ label: "Status", value: "display_status" }');
     expect(html).not.toContain("__CSP_NONCE__");
     expect(html).not.toContain(String(env.ADMIN_TOKEN));
     expect(html).not.toContain(String(env.DASHBOARD_TOKEN));
@@ -225,6 +228,8 @@ describe("operations dashboard", () => {
           request_id: "request_stale",
           product_id: "prod_control",
           environment_id: "env_control",
+          alias: "json.strict.v1",
+          policy_version: 1,
         },
       ],
       recent_admin_actions: [
@@ -238,12 +243,89 @@ describe("operations dashboard", () => {
         available: false,
       },
     });
+    expect(
+      (
+        overview as {
+          recent_attempts: Array<{
+            request_id: string;
+            status_code: number;
+            error_class: string | null;
+            display_status: string;
+          }>;
+        }
+      ).recent_attempts.find(
+        ({ request_id }) => request_id === "request_terminal",
+      ),
+    ).toMatchObject({
+      status_code: 504,
+      error_class: "provider_timeout",
+      display_status: "provider_timeout / 504",
+    });
     const serialized = JSON.stringify(overview);
     expect(serialized).toContain("exclude attempt_started");
     expect(serialized).not.toContain("private_tenant_hash");
     expect(serialized).not.toContain("private_principal_hash");
     expect(serialized).not.toContain("private_actor_hash");
     expect(serialized).not.toContain("secret_hash");
+  });
+
+  it("returns only the oldest 50 stale details with explicit truncation", async () => {
+    const timestamp = now();
+    await env.DB.prepare(
+      `WITH RECURSIVE sequence(value) AS (
+         SELECT 1 UNION ALL SELECT value + 1 FROM sequence WHERE value < ?
+       )
+       INSERT INTO provider_attempts
+         (id, request_id, attempt_number, product_id, environment_id, tenant_hash,
+          principal_hash, alias, policy_version, route_id, provider, resolved_model,
+          endpoint, status_code, error_class, latency_ms, input_tokens, output_tokens,
+          cost_microcents, created_at, stale_after)
+       SELECT printf('attempt_stale_detail_%03d', value),
+              printf('request_stale_detail_%03d', value), 1, 'prod_control',
+              'env_control', 'tenant_hash', 'principal_hash',
+              printf('alias.stale.%03d.v1', value), value, 'route_fixture',
+              'fixture', 'fixture-model', 'chat', 0, 'attempt_started', 0, 1, 1, 1,
+              ?, ? + value
+         FROM sequence`,
+    )
+      .bind(DASHBOARD_STALE_DETAIL_LIMIT + 1, timestamp - 200, timestamp - 100)
+      .run();
+
+    const response = await handleControlPlane(
+      get("/admin/v1/dashboard", String(env.DASHBOARD_TOKEN)),
+      controlEnv,
+    );
+    expect(response.status).toBe(200);
+    const overview = await response.json<{
+      totals: { stale_attempts: number };
+      accounting_truncated: {
+        stale_attempts: boolean;
+        stale_attempt_details: boolean;
+      };
+      stale_attempts: Array<{
+        request_id: string;
+        alias: string;
+        policy_version: number;
+      }>;
+    }>();
+    expect(overview.totals.stale_attempts).toBe(
+      DASHBOARD_STALE_DETAIL_LIMIT + 1,
+    );
+    expect(overview.accounting_truncated).toMatchObject({
+      stale_attempts: false,
+      stale_attempt_details: true,
+    });
+    expect(overview.stale_attempts).toHaveLength(DASHBOARD_STALE_DETAIL_LIMIT);
+    expect(overview.stale_attempts[0]).toMatchObject({
+      request_id: "request_stale_detail_001",
+      alias: "alias.stale.001.v1",
+      policy_version: 1,
+    });
+    expect(overview.stale_attempts.at(-1)).toMatchObject({
+      request_id: "request_stale_detail_050",
+      alias: "alias.stale.050.v1",
+      policy_version: 50,
+    });
   });
 
   it("redacts access-code identifiers from read-only audit output", async () => {
