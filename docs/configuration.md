@@ -32,7 +32,7 @@ The implemented production seam and initial launch family is `openai-compatible`
 5. The gateway restores the requested alias in the public success body and records physical route/model only in metadata provenance.
 6. Unsupported endpoint/features fail before provider invocation. There is no retry, fallback, custom client header passthrough, arbitrary URL, or arbitrary provider field.
 
-Public reasoning is `low|medium|high`. Trusted transforms from those portable values—or from omission—to provider-specific `none|minimal|max|xhigh`, `thinking`, or other dialect fields are not implemented yet and are tracked by [#13](https://github.com/tinkertanker/tkslopper/issues/13). Until then, a route must accept the portable wire shape exactly.
+Public reasoning is `low|medium|high`. The OpenRouter Chat profile implements the trusted structural transform from public `reasoning_effort` to `reasoning.effort`. Remaining value/default transforms to provider-specific `none|minimal|max|xhigh`, `thinking`, or other dialect fields are not implemented and are tracked by [#13](https://github.com/tinkertanker/tkslopper/issues/13).
 
 Anthropic Messages is not a public v1 endpoint. Native Anthropic and Gemini adapters are deferred roadmap features ([#16](https://github.com/tinkertanker/tkslopper/issues/16), [#17](https://github.com/tinkertanker/tkslopper/issues/17)), not initial-launch dependencies. Playground Pal's managed adapter must normalize its provider-specific requests into Chat or Responses; personal BYOK and Apple local/PCC calls remain outside tkslopper.
 
@@ -48,7 +48,7 @@ Anthropic Messages is not a public v1 endpoint. Native Anthropic and Gemini adap
 ## Privacy and retention defaults
 
 - Payload retention: **zero** in tkslopper logs and D1. Provider payload handling is governed separately by the approved provider contract/settings.
-- Idempotency: key/scope/request hashes and status only; logical expiry is fixed at 24 hours. No response body is replayed.
+- Idempotency: key and identity-scope hashes, request ID, and status only; logical expiry is fixed at 24 hours. No payload hash or response body is stored or replayed.
 - Grants: live rows are required for revocation/authorization until expiry. Post-expiry deletion timing is unresolved.
 - Provider attempts and admin audit: metadata-only, but the current scaffold does not delete them automatically.
 - Raw device IDs are keyed-pseudonymized; raw IP addresses and emails are not stored.

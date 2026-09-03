@@ -128,6 +128,107 @@ CREATE TABLE activations (
   UNIQUE (access_code_id, device_hash)
 );
 
+CREATE UNIQUE INDEX activations_access_code_principal_unique
+  ON activations(access_code_id, tenant_id, principal_id);
+
+CREATE TRIGGER activations_access_code_identity_insert
+BEFORE INSERT ON activations
+WHEN NOT EXISTS (
+  SELECT 1
+    FROM access_codes
+   WHERE id = NEW.access_code_id
+     AND tenant_id = NEW.tenant_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'activation access code identity mismatch');
+END;
+
+CREATE TRIGGER activations_access_code_identity_update
+BEFORE UPDATE OF access_code_id, tenant_id, principal_id ON activations
+WHEN NOT EXISTS (
+  SELECT 1
+    FROM access_codes
+   WHERE id = NEW.access_code_id
+     AND tenant_id = NEW.tenant_id
+)
+OR EXISTS (
+  SELECT 1
+    FROM entitlements
+   WHERE source = 'access_code'
+     AND source_ref = OLD.access_code_id
+     AND tenant_id = OLD.tenant_id
+     AND principal_id = OLD.principal_id
+     AND (
+       source_ref <> NEW.access_code_id
+       OR tenant_id <> NEW.tenant_id
+       OR principal_id <> NEW.principal_id
+     )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'activation access code identity mismatch');
+END;
+
+CREATE TRIGGER entitlements_access_code_identity_insert
+BEFORE INSERT ON entitlements
+WHEN NEW.source = 'access_code'
+  AND NOT EXISTS (
+    SELECT 1
+      FROM access_codes AS code
+      JOIN activations AS activation
+        ON activation.access_code_id = code.id
+       AND activation.tenant_id = code.tenant_id
+     WHERE code.id = NEW.source_ref
+       AND code.product_id = NEW.product_id
+       AND code.environment_id = NEW.environment_id
+       AND code.tenant_id = NEW.tenant_id
+       AND activation.principal_id = NEW.principal_id
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'entitlement access code identity mismatch');
+END;
+
+CREATE TRIGGER entitlements_access_code_identity_update
+BEFORE UPDATE OF product_id, environment_id, tenant_id, principal_id, source, source_ref ON entitlements
+WHEN NEW.source = 'access_code'
+  AND NOT EXISTS (
+    SELECT 1
+      FROM access_codes AS code
+      JOIN activations AS activation
+        ON activation.access_code_id = code.id
+       AND activation.tenant_id = code.tenant_id
+     WHERE code.id = NEW.source_ref
+       AND code.product_id = NEW.product_id
+       AND code.environment_id = NEW.environment_id
+       AND code.tenant_id = NEW.tenant_id
+       AND activation.principal_id = NEW.principal_id
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'entitlement access code identity mismatch');
+END;
+
+CREATE TRIGGER access_codes_source_identity_update
+BEFORE UPDATE OF product_id, environment_id, tenant_id ON access_codes
+WHEN EXISTS (
+  SELECT 1
+    FROM activations
+   WHERE access_code_id = OLD.id
+     AND tenant_id <> NEW.tenant_id
+)
+OR EXISTS (
+  SELECT 1
+    FROM entitlements
+   WHERE source = 'access_code'
+     AND source_ref = OLD.id
+     AND (
+       product_id <> NEW.product_id
+       OR environment_id <> NEW.environment_id
+       OR tenant_id <> NEW.tenant_id
+     )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'access code source identity mismatch');
+END;
+
 CREATE TABLE token_grants (
   id TEXT PRIMARY KEY,
   jti_hash TEXT NOT NULL UNIQUE,
@@ -196,10 +297,13 @@ END;
 
 CREATE INDEX token_grants_active_idx ON token_grants(jti_hash, expires_at, revoked_at);
 
+CREATE INDEX token_grants_environment_active_idx
+  ON token_grants(product_id, environment_id, expires_at)
+  WHERE revoked_at IS NULL;
+
 CREATE TABLE idempotency_keys (
   scope_hash TEXT NOT NULL,
   key_hash TEXT NOT NULL,
-  request_hash TEXT NOT NULL,
   request_id TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('started', 'completed', 'failed')),
   created_at INTEGER NOT NULL,
@@ -238,6 +342,13 @@ CREATE INDEX provider_attempts_product_time_idx
 CREATE INDEX provider_attempts_stale_idx
   ON provider_attempts(error_class, stale_after);
 
+CREATE INDEX provider_attempts_finalized_time_idx
+  ON provider_attempts(created_at)
+  WHERE error_class IS NULL OR error_class <> 'attempt_started';
+
+CREATE INDEX provider_attempts_recent_idx
+  ON provider_attempts(created_at DESC);
+
 CREATE VIEW stale_provider_attempts AS
 SELECT request_id, product_id, environment_id, route_id, provider, resolved_model, endpoint,
        input_tokens, output_tokens, cost_microcents, created_at, stale_after
@@ -252,3 +363,5 @@ CREATE TABLE admin_audit (
   actor_hash TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
+
+CREATE INDEX admin_audit_recent_idx ON admin_audit(created_at DESC);

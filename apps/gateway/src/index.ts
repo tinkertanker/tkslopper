@@ -9,6 +9,7 @@ import {
   jsonResponse,
   logSafeEvent,
   parseProviderRoutes,
+  prepareProvider,
   pseudonymize,
   randomId,
   readJsonBody,
@@ -18,6 +19,7 @@ import {
   zodMessage,
   type Endpoint,
   type ParsedGatewayRequest,
+  type PreparedProvider,
   type ProviderRoute,
   type SafeRequestEvent,
 } from "@tkslopper/shared";
@@ -59,7 +61,12 @@ type GrantPolicyRow = {
   entitlement_principal_id: string | null;
   access_code_disabled: number | null;
   access_code_expires_at: number | null;
+  access_code_product_id: string | null;
+  access_code_environment_id: string | null;
+  access_code_tenant_id: string | null;
   activation_id: string | null;
+  activation_tenant_id: string | null;
+  activation_principal_id: string | null;
   activation_revoked_at: number | null;
   product_enabled: number;
   product_kill_switch: number;
@@ -126,10 +133,20 @@ function isConfigured(env: GatewayEnv): boolean {
   try {
     if (new URL(env.TOKEN_ISSUER).protocol !== "https:") return false;
     const routes = parseProviderRoutes(env.PROVIDER_ROUTES_JSON);
-    return !(
-      env.DEPLOYMENT_ENV === "production" &&
-      [...routes.values()].some(({ adapter }) => adapter === "fixture")
-    );
+    for (const route of routes.values()) {
+      if (route.adapter === "fixture") {
+        if (env.DEPLOYMENT_ENV === "production") return false;
+        continue;
+      }
+      const credential = env[route.credentialBinding];
+      if (
+        typeof credential !== "string" ||
+        credential.length < 16 ||
+        credential === env.TOKEN_SIGNING_SECRET
+      )
+        return false;
+    }
+    return true;
   } catch {
     return false;
   }
@@ -192,7 +209,10 @@ async function authenticate(
             n.environment_id AS entitlement_environment_id, n.tenant_id AS entitlement_tenant_id,
             n.principal_id AS entitlement_principal_id,
             c.disabled AS access_code_disabled, c.expires_at AS access_code_expires_at,
-            a.id AS activation_id, a.revoked_at AS activation_revoked_at,
+            c.product_id AS access_code_product_id, c.environment_id AS access_code_environment_id,
+            c.tenant_id AS access_code_tenant_id,
+            a.id AS activation_id, a.tenant_id AS activation_tenant_id,
+            a.principal_id AS activation_principal_id, a.revoked_at AS activation_revoked_at,
             p.enabled AS product_enabled, p.kill_switch AS product_kill_switch,
             e.enabled AS environment_enabled, e.kill_switch AS environment_kill_switch,
             e.policy_version AS environment_policy_version, e.rpm_limit, e.tpm_limit,
@@ -202,7 +222,11 @@ async function authenticate(
        JOIN environments e ON e.id = g.environment_id AND e.product_id = g.product_id
        LEFT JOIN entitlements n ON n.id = g.entitlement_id
        LEFT JOIN access_codes c ON n.source = 'access_code' AND c.id = n.source_ref
-       LEFT JOIN activations a ON n.source = 'access_code' AND a.access_code_id = n.source_ref
+                               AND c.product_id = g.product_id
+                               AND c.environment_id = g.environment_id
+                               AND c.tenant_id = g.tenant_id
+       LEFT JOIN activations a ON n.source = 'access_code' AND a.access_code_id = c.id
+                              AND a.tenant_id = g.tenant_id
                               AND a.principal_id = g.principal_id
       WHERE g.jti_hash = ?`,
   )
@@ -220,7 +244,12 @@ async function authenticate(
       (policy.access_code_disabled !== 0 ||
         policy.access_code_expires_at === null ||
         policy.access_code_expires_at <= now ||
+        policy.access_code_product_id !== policy.product_id ||
+        policy.access_code_environment_id !== policy.environment_id ||
+        policy.access_code_tenant_id !== policy.tenant_id ||
         policy.activation_id === null ||
+        policy.activation_tenant_id !== policy.tenant_id ||
+        policy.activation_principal_id !== policy.principal_id ||
         policy.activation_revoked_at !== null)) ||
     policy.product_enabled !== 1 ||
     policy.product_kill_switch === 1 ||
@@ -277,11 +306,19 @@ function parseGatewayRequest(
   return { endpoint, body: parsed.data };
 }
 
+export function identityScope(
+  productId: string,
+  environmentId: string,
+  tenantId: string,
+  principalId: string,
+): string {
+  return JSON.stringify([productId, environmentId, tenantId, principalId]);
+}
+
 async function acquireIdempotency(
   request: Request,
   env: GatewayEnv,
   context: RequestContext,
-  requestHash: string,
 ): Promise<void> {
   const key = request.headers.get("idempotency-key");
   if (!key) return;
@@ -297,23 +334,27 @@ async function acquireIdempotency(
     throw new HttpError(500, "internal_error", "request context is incomplete");
   const now = nowSeconds();
   const scopeHash = await pseudonymize(
-    `${policy.product_id}:${policy.environment_id}:${policy.tenant_id}:${policy.principal_id}`,
+    identityScope(
+      policy.product_id,
+      policy.environment_id,
+      policy.tenant_id,
+      policy.principal_id,
+    ),
     env.TOKEN_SIGNING_SECRET,
   );
   const keyHash = await pseudonymize(key, env.TOKEN_SIGNING_SECRET);
   const result = await env.DB.prepare(
     `INSERT INTO idempotency_keys
-      (scope_hash, key_hash, request_hash, request_id, status, created_at, expires_at)
-     VALUES (?, ?, ?, ?, 'started', ?, ?)
+      (scope_hash, key_hash, request_id, status, created_at, expires_at)
+     VALUES (?, ?, ?, 'started', ?, ?)
      ON CONFLICT(scope_hash, key_hash) DO UPDATE SET
-       request_hash = excluded.request_hash,
        request_id = excluded.request_id,
        status = 'started',
        created_at = excluded.created_at,
        expires_at = excluded.expires_at
      WHERE idempotency_keys.expires_at <= excluded.created_at`,
   )
-    .bind(scopeHash, keyHash, requestHash, context.requestId, now, now + 86_400)
+    .bind(scopeHash, keyHash, context.requestId, now, now + 86_400)
     .run();
   if ((result.meta.changes ?? 0) !== 1) {
     throw new HttpError(
@@ -335,7 +376,12 @@ async function finishIdempotency(
   if (!key || !policy) return;
   const [scopeHash, keyHash] = await Promise.all([
     pseudonymize(
-      `${policy.product_id}:${policy.environment_id}:${policy.tenant_id}:${policy.principal_id}`,
+      identityScope(
+        policy.product_id,
+        policy.environment_id,
+        policy.tenant_id,
+        policy.principal_id,
+      ),
       env.TOKEN_SIGNING_SECRET,
     ),
     pseudonymize(key, env.TOKEN_SIGNING_SECRET),
@@ -361,7 +407,12 @@ async function quotaCall(
   policy: GrantPolicyRow,
   body: QuotaAcquireRequest | QuotaCompleteRequest,
 ): Promise<Response> {
-  const scope = `${policy.product_id}:${policy.environment_id}:${policy.tenant_id}:${policy.principal_id}`;
+  const scope = identityScope(
+    policy.product_id,
+    policy.environment_id,
+    policy.tenant_id,
+    policy.principal_id,
+  );
   const stub = env.QUOTA.get(env.QUOTA.idFromName(scope));
   return stub.fetch("https://quota.internal/", {
     method: "POST",
@@ -467,6 +518,18 @@ async function recordAttempt(
       "provider attempt accounting failed",
     );
   }
+}
+
+async function discardAttemptIntent(
+  env: GatewayEnv,
+  context: RequestContext,
+): Promise<void> {
+  await env.DB.prepare(
+    `DELETE FROM provider_attempts
+      WHERE request_id = ? AND attempt_number = 1 AND error_class = 'attempt_started'`,
+  )
+    .bind(context.requestId)
+    .run();
 }
 
 function safeEvent(
@@ -622,12 +685,32 @@ async function handleInference(
       );
     }
     context.route = route;
-    await acquireIdempotency(
-      request,
-      env,
-      context,
-      await sha256(`${endpoint}:${inspection.alias}:${context.requestId}`),
-    );
+    let preparedProvider: PreparedProvider;
+    try {
+      preparedProvider = prepareProvider({
+        route,
+        deploymentEnvironment: env.DEPLOYMENT_ENV,
+        getSecret: (binding) =>
+          typeof env[binding] === "string" ? env[binding] : undefined,
+      });
+    } catch (error) {
+      if (error instanceof ProviderError) {
+        throw new HttpError(
+          503,
+          "provider_unavailable",
+          "capability route is unavailable",
+        );
+      }
+      throw error;
+    }
+    if (request.signal.aborted) {
+      throw new HttpError(
+        499,
+        "provider_unavailable",
+        "request was cancelled before provider dispatch",
+      );
+    }
+    await acquireIdempotency(request, env, context);
 
     const reservedInputTokens = inspection.hasImages
       ? aliasPolicy.max_input_tokens
@@ -683,25 +766,26 @@ async function handleInference(
     request.signal.addEventListener("abort", abortFromClient, { once: true });
     if (request.signal.aborted) abortFromClient();
     try {
-      context.providerAttempted = true;
       const result = await callProvider({
         request: parsedRequest,
-        route,
-        deploymentEnvironment: env.DEPLOYMENT_ENV,
+        prepared: preparedProvider,
         maxResponseBytes: Math.min(maxBody, 8_388_608),
         signal: controller.signal,
-        getSecret: (binding) =>
-          typeof env[binding] === "string" ? env[binding] : undefined,
+        onDispatch: () => {
+          context.providerAttempted = true;
+        },
       });
       if (
-        result.usage.inputTokens > aliasPolicy.max_input_tokens ||
-        result.usage.outputTokens > inspection.maxOutputTokens
+        (result.usage.inputTokens !== undefined &&
+          result.usage.inputTokens > aliasPolicy.max_input_tokens) ||
+        (result.usage.outputTokens !== undefined &&
+          result.usage.outputTokens > inspection.maxOutputTokens)
       ) {
         throw new ProviderError("provider_protocol", 502, result.latencyMs);
       }
-      const inputTokens = result.usage.inputTokens || reservedInputTokens;
+      const inputTokens = result.usage.inputTokens ?? reservedInputTokens;
       const outputTokens =
-        result.usage.outputTokens || inspection.maxOutputTokens;
+        result.usage.outputTokens ?? inspection.maxOutputTokens;
       const actualCost =
         costMicrocents(
           inputTokens,
@@ -747,11 +831,12 @@ async function handleInference(
       });
     } catch (error) {
       if (!(error instanceof ProviderError)) throw error;
+      const providerAttempted = context.providerAttempted;
       const completion = await quotaCall(env, policy, {
         operation: "complete",
         requestId: context.requestId,
-        actualTokens: reservedTokens,
-        actualCostMicrocents: reservedCost,
+        actualTokens: providerAttempted ? reservedTokens : 0,
+        actualCostMicrocents: providerAttempted ? reservedCost : 0,
       });
       if (!completion.ok)
         throw new HttpError(
@@ -760,14 +845,18 @@ async function handleInference(
           "quota accounting completion failed",
         );
       quotaAcquired = false;
-      await recordAttempt(env, context, {
-        statusCode: error.status,
-        errorClass: error.errorClass,
-        latencyMs: error.latencyMs,
-        inputTokens: reservedInputTokens,
-        outputTokens: inspection.maxOutputTokens,
-        costMicrocents: reservedCost,
-      });
+      if (providerAttempted) {
+        await recordAttempt(env, context, {
+          statusCode: error.status,
+          errorClass: error.errorClass,
+          latencyMs: error.latencyMs,
+          inputTokens: reservedInputTokens,
+          outputTokens: inspection.maxOutputTokens,
+          costMicrocents: reservedCost,
+        });
+      } else {
+        await discardAttemptIntent(env, context);
+      }
       await finishIdempotency(request, env, context, "failed");
       const status =
         error.errorClass === "provider_timeout"
@@ -779,10 +868,14 @@ async function handleInference(
         safeEvent(context, {
           status,
           errorClass: error.errorClass,
-          inputTokens: reservedInputTokens,
-          outputTokens: inspection.maxOutputTokens,
-          costMicrocents: reservedCost,
-          attempts: 1,
+          ...(providerAttempted
+            ? {
+                inputTokens: reservedInputTokens,
+                outputTokens: inspection.maxOutputTokens,
+                costMicrocents: reservedCost,
+              }
+            : {}),
+          attempts: providerAttempted ? 1 : 0,
         }),
       );
       return errorResponse(
@@ -800,9 +893,12 @@ async function handleInference(
       await quotaCall(env, context.policy, {
         operation: "complete",
         requestId: context.requestId,
-        actualTokens: reservedTokens,
-        actualCostMicrocents: reservedCost,
+        actualTokens: context.providerAttempted ? reservedTokens : 0,
+        actualCostMicrocents: context.providerAttempted ? reservedCost : 0,
       }).catch(() => undefined);
+    }
+    if (!context.providerAttempted) {
+      await discardAttemptIntent(env, context).catch(() => undefined);
     }
     await finishIdempotency(request, env, context, "failed").catch(
       () => undefined,

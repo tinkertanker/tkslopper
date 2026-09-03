@@ -8,6 +8,7 @@ import tappletStrictJson from "../tests/fixtures/tapplet-strict-json.json";
 import vibbitChat from "../tests/fixtures/vibbit-chat.json";
 import vibbitChatRepair from "../tests/fixtures/vibbit-chat-repair.json";
 import vibbitResponses from "../tests/fixtures/vibbit-responses.json";
+import { validateLocalOrigin } from "./local-origin";
 
 type JsonObject = Record<string, unknown>;
 type Alias = {
@@ -24,36 +25,15 @@ type InferenceFixture = {
   body: JsonObject;
 };
 
-const controlPlaneUrl = validatedBaseUrl(
+const controlPlaneUrl = validateLocalOrigin(
   process.env.TKSLOPPER_CONTROL_PLANE_URL ?? "http://127.0.0.1:8787",
 );
-const gatewayUrl = validatedBaseUrl(
+const gatewayUrl = validateLocalOrigin(
   process.env.TKSLOPPER_GATEWAY_URL ?? "http://127.0.0.1:8788",
 );
 const adminToken = process.env.TKSLOPPER_ADMIN_TOKEN;
 if (!adminToken)
   throw new Error("TKSLOPPER_ADMIN_TOKEN is required for the local E2E flow");
-
-function validatedBaseUrl(value: string): string {
-  const url = new URL(value);
-  const loopbackHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
-  const allowedProtocol =
-    url.protocol === "https:" ||
-    (url.protocol === "http:" && loopbackHosts.has(url.hostname));
-  if (
-    !allowedProtocol ||
-    url.username ||
-    url.password ||
-    url.pathname !== "/" ||
-    url.search ||
-    url.hash
-  ) {
-    throw new Error(
-      "local E2E URLs must be HTTPS or HTTP loopback origins without credentials, paths, queries, or fragments",
-    );
-  }
-  return url.origin;
-}
 
 async function postJson(
   baseUrl: string,

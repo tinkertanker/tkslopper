@@ -204,6 +204,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       #attempts th:nth-child(7) { width: 200px; }
       #attempts th:nth-child(8) { width: 195px; }
       #attempts td { overflow: hidden; text-overflow: ellipsis; }
+      #attempts td:nth-child(2) { overflow: visible; overflow-wrap: anywhere; white-space: normal; }
       #audit { table-layout: fixed; }
       #audit th:nth-child(1) { width: 25%; }
       #audit th:nth-child(2) { width: 20%; }
@@ -260,8 +261,8 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
 
       <main id="dashboard" hidden>
         <div class="cards" role="list" aria-label="24 hour summary">
-          <div class="card" role="listitem"><span>Products</span><strong id="total-products">—</strong></div>
-          <div class="card" role="listitem"><span>Environments</span><strong id="total-environments">—</strong></div>
+          <div class="card" role="listitem"><span>Products shown</span><strong id="total-products">—</strong></div>
+          <div class="card" role="listitem"><span>Environments shown</span><strong id="total-environments">—</strong></div>
           <div class="card" role="listitem"><span>Finalized · 24h</span><strong id="total-attempts">—</strong></div>
           <div class="card" role="listitem"><span>Finalized failures · 24h</span><strong id="total-failures">—</strong></div>
           <div class="card" role="listitem"><span>Accounted cost · 24h</span><strong id="total-cost">—</strong></div>
@@ -269,7 +270,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         </div>
 
         <section>
-          <div class="section-head"><h2 id="environments-heading">Environments</h2><p class="section-note">Policy state and finalized 24-hour accounting; terminal errors may retain conservative estimates</p></div>
+          <div class="section-head"><h2 id="environments-heading">Environments</h2><p class="section-note">Bounded inventory; policy state and finalized 24-hour accounting</p></div>
           <div class="table-wrap" role="region" tabindex="0" aria-labelledby="environments-heading"><table id="environments"></table></div>
         </section>
 
@@ -412,7 +413,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           if (!response.ok) throw new Error(response.status === 401 ? "Dashboard authentication failed." : "Dashboard data is unavailable.");
           render(await response.json());
           dashboard.hidden = false;
-          status.textContent = "Loaded. Token was not stored; re-enter it to refresh.";
+          status.textContent = "Loaded bounded metadata. Token was not stored; re-enter it to refresh.";
         } catch (error) {
           status.className = "error";
           status.textContent = error instanceof Error ? error.message : "Dashboard data is unavailable.";
@@ -466,80 +467,116 @@ export async function dashboardOverview(
   await requireDashboard(request, env);
   const generatedAt = Math.floor(Date.now() / 1000);
   const since = generatedAt - 86_400;
+  const productLimit = 100;
+  const environmentLimit = 250;
   const [products, environments, totals, attempts, stale, actions] =
     await Promise.all([
       env.DB.prepare(
         `SELECT id, slug, display_name, enabled, kill_switch
            FROM products
-          ORDER BY slug`,
-      ).all<ProductRow>(),
+          ORDER BY slug
+          LIMIT ?`,
+      )
+        .bind(productLimit + 1)
+        .all<ProductRow>(),
       env.DB.prepare(
-        `SELECT e.id, e.product_id, e.name, e.audience,
-                p.enabled AS product_enabled, p.kill_switch AS product_kill_switch,
-                e.enabled, e.kill_switch,
-                e.policy_version, e.rpm_limit, e.tpm_limit, e.concurrency_limit,
-                e.daily_budget_microcents, e.max_request_bytes,
-                (SELECT COUNT(*) FROM aliases a
-                  WHERE a.product_id = e.product_id AND a.environment_id = e.id AND a.enabled = 1) AS aliases,
-                (SELECT COUNT(*) FROM entitlements n
-                  WHERE n.product_id = e.product_id AND n.environment_id = e.id
-                    AND n.status = 'active' AND (n.expires_at IS NULL OR n.expires_at > ?)) AS active_entitlements,
-                (SELECT COUNT(*) FROM token_grants g
-                  JOIN entitlements n
-                    ON n.id = g.entitlement_id
-                   AND n.product_id = g.product_id
-                   AND n.environment_id = g.environment_id
-                   AND n.tenant_id = g.tenant_id
-                   AND n.principal_id = g.principal_id
-                  WHERE g.product_id = e.product_id AND g.environment_id = e.id
-                    AND g.revoked_at IS NULL AND g.expires_at > ?
-                    AND n.status = 'active' AND (n.expires_at IS NULL OR n.expires_at > ?)
-                    AND p.enabled = 1 AND p.kill_switch = 0
-                    AND e.enabled = 1 AND e.kill_switch = 0
-                    AND (n.source <> 'access_code' OR EXISTS (
-                      SELECT 1
-                        FROM access_codes c
-                        JOIN activations a ON a.access_code_id = c.id
-                       WHERE c.id = n.source_ref
-                         AND c.product_id = g.product_id
-                         AND c.environment_id = g.environment_id
-                         AND c.disabled = 0 AND c.expires_at > ?
-                         AND a.principal_id = g.principal_id
-                         AND a.revoked_at IS NULL
-                    ))) AS effective_grants,
-                (SELECT COUNT(*) FROM provider_attempts x
-                  WHERE x.product_id = e.product_id AND x.environment_id = e.id
-                    AND x.created_at >= ?
-                    AND (x.error_class IS NULL OR x.error_class <> 'attempt_started')) AS finalized_attempts_24h,
-                (SELECT COUNT(*) FROM provider_attempts x
-                  WHERE x.product_id = e.product_id AND x.environment_id = e.id
-                    AND x.created_at >= ? AND x.error_class IS NOT NULL
-                    AND x.error_class <> 'attempt_started') AS failed_finalized_attempts_24h,
-                CAST((SELECT COALESCE(SUM(x.input_tokens), 0) FROM provider_attempts x
-                  WHERE x.product_id = e.product_id AND x.environment_id = e.id
-                    AND x.created_at >= ?
-                    AND (x.error_class IS NULL OR x.error_class <> 'attempt_started')) AS TEXT) AS accounted_input_tokens_24h,
-                CAST((SELECT COALESCE(SUM(x.output_tokens), 0) FROM provider_attempts x
-                  WHERE x.product_id = e.product_id AND x.environment_id = e.id
-                    AND x.created_at >= ?
-                    AND (x.error_class IS NULL OR x.error_class <> 'attempt_started')) AS TEXT) AS accounted_output_tokens_24h,
-                CAST((SELECT COALESCE(SUM(x.cost_microcents), 0) FROM provider_attempts x
-                  WHERE x.product_id = e.product_id AND x.environment_id = e.id
-                    AND x.created_at >= ?
-                    AND (x.error_class IS NULL OR x.error_class <> 'attempt_started')) AS TEXT) AS accounted_cost_microcents_24h
-           FROM environments e
-           JOIN products p ON p.id = e.product_id
+        `WITH selected_environments AS (
+           SELECT e.id, e.product_id, e.name, e.audience,
+                  p.enabled AS product_enabled, p.kill_switch AS product_kill_switch,
+                  e.enabled, e.kill_switch, e.policy_version, e.rpm_limit, e.tpm_limit,
+                  e.concurrency_limit, e.daily_budget_microcents, e.max_request_bytes
+             FROM environments e
+             JOIN products p ON p.id = e.product_id
+            ORDER BY e.product_id, e.name
+            LIMIT ?
+         ),
+         alias_counts AS (
+           SELECT a.product_id, a.environment_id, COUNT(*) AS aliases
+             FROM aliases a
+             JOIN selected_environments e
+               ON e.product_id = a.product_id AND e.id = a.environment_id
+            WHERE a.enabled = 1
+            GROUP BY a.product_id, a.environment_id
+         ),
+         entitlement_counts AS (
+           SELECT n.product_id, n.environment_id, COUNT(*) AS active_entitlements
+             FROM entitlements n
+             JOIN selected_environments e
+               ON e.product_id = n.product_id AND e.id = n.environment_id
+            WHERE n.status = 'active' AND (n.expires_at IS NULL OR n.expires_at > ?)
+            GROUP BY n.product_id, n.environment_id
+         ),
+         grant_counts AS (
+           SELECT g.product_id, g.environment_id, COUNT(*) AS effective_grants
+             FROM token_grants g
+             JOIN selected_environments e
+               ON e.product_id = g.product_id AND e.id = g.environment_id
+             JOIN entitlements n
+               ON n.id = g.entitlement_id
+              AND n.product_id = g.product_id
+              AND n.environment_id = g.environment_id
+              AND n.tenant_id = g.tenant_id
+              AND n.principal_id = g.principal_id
+            WHERE g.revoked_at IS NULL AND g.expires_at > ?
+              AND n.status = 'active' AND (n.expires_at IS NULL OR n.expires_at > ?)
+              AND e.product_enabled = 1 AND e.product_kill_switch = 0
+              AND e.enabled = 1 AND e.kill_switch = 0
+              AND (n.source <> 'access_code' OR EXISTS (
+                SELECT 1
+                  FROM access_codes c
+                  JOIN activations a
+                    ON a.access_code_id = c.id
+                   AND a.tenant_id = c.tenant_id
+                 WHERE c.id = n.source_ref
+                   AND c.product_id = g.product_id
+                   AND c.environment_id = g.environment_id
+                   AND c.tenant_id = g.tenant_id
+                   AND c.disabled = 0 AND c.expires_at > ?
+                   AND a.principal_id = g.principal_id
+                   AND a.revoked_at IS NULL
+              ))
+            GROUP BY g.product_id, g.environment_id
+         ),
+         attempt_counts AS (
+           SELECT x.product_id, x.environment_id,
+                  COUNT(*) AS finalized_attempts_24h,
+                  SUM(CASE WHEN x.error_class IS NOT NULL THEN 1 ELSE 0 END) AS failed_finalized_attempts_24h,
+                  SUM(x.input_tokens) AS accounted_input_tokens_24h,
+                  SUM(x.output_tokens) AS accounted_output_tokens_24h,
+                  SUM(x.cost_microcents) AS accounted_cost_microcents_24h
+             FROM provider_attempts x
+             JOIN selected_environments e
+               ON e.product_id = x.product_id AND e.id = x.environment_id
+            WHERE x.created_at >= ?
+              AND (x.error_class IS NULL OR x.error_class <> 'attempt_started')
+            GROUP BY x.product_id, x.environment_id
+         )
+         SELECT e.*,
+                COALESCE(ac.aliases, 0) AS aliases,
+                COALESCE(ec.active_entitlements, 0) AS active_entitlements,
+                COALESCE(gc.effective_grants, 0) AS effective_grants,
+                COALESCE(xc.finalized_attempts_24h, 0) AS finalized_attempts_24h,
+                COALESCE(xc.failed_finalized_attempts_24h, 0) AS failed_finalized_attempts_24h,
+                CAST(COALESCE(xc.accounted_input_tokens_24h, 0) AS TEXT) AS accounted_input_tokens_24h,
+                CAST(COALESCE(xc.accounted_output_tokens_24h, 0) AS TEXT) AS accounted_output_tokens_24h,
+                CAST(COALESCE(xc.accounted_cost_microcents_24h, 0) AS TEXT) AS accounted_cost_microcents_24h
+           FROM selected_environments e
+           LEFT JOIN alias_counts ac
+             ON ac.product_id = e.product_id AND ac.environment_id = e.id
+           LEFT JOIN entitlement_counts ec
+             ON ec.product_id = e.product_id AND ec.environment_id = e.id
+           LEFT JOIN grant_counts gc
+             ON gc.product_id = e.product_id AND gc.environment_id = e.id
+           LEFT JOIN attempt_counts xc
+             ON xc.product_id = e.product_id AND xc.environment_id = e.id
           ORDER BY e.product_id, e.name`,
       )
         .bind(
+          environmentLimit + 1,
           generatedAt,
           generatedAt,
           generatedAt,
           generatedAt,
-          since,
-          since,
-          since,
-          since,
           since,
         )
         .all<EnvironmentRow>(),
@@ -579,18 +616,24 @@ export async function dashboardOverview(
       ).all<AuditRow>(),
     ]);
 
-  const normalizedProducts = products.results.map((product) => ({
-    ...product,
-    enabled: product.enabled === 1,
-    kill_switch: product.kill_switch === 1,
-  }));
-  const normalizedEnvironments = environments.results.map((environment) => ({
-    ...environment,
-    product_enabled: environment.product_enabled === 1,
-    product_kill_switch: environment.product_kill_switch === 1,
-    enabled: environment.enabled === 1,
-    kill_switch: environment.kill_switch === 1,
-  }));
+  const productsTruncated = products.results.length > productLimit;
+  const environmentsTruncated = environments.results.length > environmentLimit;
+  const normalizedProducts = products.results
+    .slice(0, productLimit)
+    .map((product) => ({
+      ...product,
+      enabled: product.enabled === 1,
+      kill_switch: product.kill_switch === 1,
+    }));
+  const normalizedEnvironments = environments.results
+    .slice(0, environmentLimit)
+    .map((environment) => ({
+      ...environment,
+      product_enabled: environment.product_enabled === 1,
+      product_kill_switch: environment.product_kill_switch === 1,
+      enabled: environment.enabled === 1,
+      kill_switch: environment.kill_switch === 1,
+    }));
 
   return jsonResponse({
     generated_at: generatedAt,
@@ -607,6 +650,10 @@ export async function dashboardOverview(
     },
     products: normalizedProducts,
     environments: normalizedEnvironments,
+    inventory_truncated: {
+      products: productsTruncated,
+      environments: environmentsTruncated,
+    },
     recent_attempts: attempts.results,
     stale_attempts: stale.results,
     recent_admin_actions: actions.results,

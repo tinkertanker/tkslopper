@@ -6,7 +6,7 @@ These plans are based on public-safe synthetic audits at fixed product refs:
 - Tapplet `tinkertanker/tapplet@d3ca90e31af5f0e7c727271391363eab27168e71`
 - Playground Pal `tinkertanker/playground-pal@a28d2cd8c1075022adaab99a350f801b0ba6f949`
 
-Fixtures contain synthetic content only. They describe gateway-bound normalized requests, not permission to connect a product or provider.
+Fixtures contain synthetic content only. They are partial normalized schema-smoke examples, not source-exact captures or complete product conformance. In particular, they do not prove runtime model fallback, every per-operation token default, Playground Pal analysis/ordered-repair flows, or Tapplet's full repair workflow. They describe gateway-bound normalized requests, not permission to connect a product or provider.
 
 ## Shared adapter rules
 

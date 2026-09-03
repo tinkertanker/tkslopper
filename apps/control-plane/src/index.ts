@@ -202,25 +202,29 @@ async function requireAdmin(
   return suppliedHash;
 }
 
-async function audit(
+function auditStatement(
   env: ControlPlaneEnv,
   actorHash: string,
   action: string,
   resourceType: string,
   resourceId: string,
-): Promise<void> {
-  await env.DB.prepare(
-    "INSERT INTO admin_audit (id, action, resource_type, resource_id, actor_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-  )
-    .bind(
-      randomId("audit"),
-      action,
-      resourceType,
-      resourceId,
-      actorHash,
-      nowSeconds(),
-    )
-    .run();
+  options?: { id?: string; onlyIfChanged?: boolean },
+): D1PreparedStatement {
+  const values = [
+    options?.id ?? randomId("audit"),
+    action,
+    resourceType,
+    resourceId,
+    actorHash,
+    nowSeconds(),
+  ];
+  return env.DB.prepare(
+    options?.onlyIfChanged
+      ? `INSERT INTO admin_audit (id, action, resource_type, resource_id, actor_hash, created_at)
+         SELECT ?, ?, ?, ?, ?, ? WHERE changes() > 0`
+      : `INSERT INTO admin_audit (id, action, resource_type, resource_id, actor_hash, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+  ).bind(...values);
 }
 
 async function requireProductEnvironment(
@@ -237,13 +241,14 @@ async function requireProductEnvironment(
     throw new HttpError(404, "not_found", "product environment not found");
 }
 
-async function findActiveEntitlement(
+async function findActiveServiceEntitlement(
   env: ControlPlaneEnv,
   identity: {
     productId: string;
     environmentId: string;
     tenantId: string;
     principalId: string;
+    credentialId: string;
   },
   now: number,
 ): Promise<EntitlementRow | null> {
@@ -251,6 +256,7 @@ async function findActiveEntitlement(
     `SELECT id, capabilities_json, expires_at
        FROM entitlements
       WHERE product_id = ? AND environment_id = ? AND tenant_id = ? AND principal_id = ?
+        AND source = 'service' AND source_ref = ?
         AND status = 'active'
         AND (expires_at IS NULL OR expires_at > ?)
       ORDER BY created_at DESC LIMIT 1`,
@@ -260,12 +266,13 @@ async function findActiveEntitlement(
       identity.environmentId,
       identity.tenantId,
       identity.principalId,
+      identity.credentialId,
       now,
     )
     .first<EntitlementRow>();
 }
 
-async function mintAndStoreGrant(
+async function prepareGrant(
   env: ControlPlaneEnv,
   options: {
     productId: string;
@@ -280,11 +287,14 @@ async function mintAndStoreGrant(
     entitlementExpiresAt: number | null;
   },
 ): Promise<{
-  grant_id: string;
-  access_token: string;
-  token_type: "Bearer";
-  expires_in: number;
-  capabilities: string[];
+  statement: D1PreparedStatement;
+  response: {
+    grant_id: string;
+    access_token: string;
+    token_type: "Bearer";
+    expires_in: number;
+    capabilities: string[];
+  };
 }> {
   const now = nowSeconds();
   const expiration = Math.min(
@@ -312,33 +322,43 @@ async function mintAndStoreGrant(
   };
   const token = await signGrant(claims, env.TOKEN_SIGNING_SECRET);
   const grantId = randomId("tgrant");
-  await env.DB.prepare(
+  const statement = env.DB.prepare(
     `INSERT INTO token_grants
       (id, jti_hash, entitlement_id, product_id, environment_id, tenant_id, principal_id, audience,
        capabilities_json, expires_at, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  )
-    .bind(
-      grantId,
-      await sha256(jti),
-      options.entitlementId,
-      options.productId,
-      options.environmentId,
-      options.tenantId,
-      options.principalId,
-      options.audience,
-      JSON.stringify(options.capabilities),
-      expiration,
-      now,
-    )
-    .run();
+  ).bind(
+    grantId,
+    await sha256(jti),
+    options.entitlementId,
+    options.productId,
+    options.environmentId,
+    options.tenantId,
+    options.principalId,
+    options.audience,
+    JSON.stringify(options.capabilities),
+    expiration,
+    now,
+  );
   return {
-    grant_id: grantId,
-    access_token: token,
-    token_type: "Bearer",
-    expires_in: expiration - now,
-    capabilities: options.capabilities,
+    statement,
+    response: {
+      grant_id: grantId,
+      access_token: token,
+      token_type: "Bearer",
+      expires_in: expiration - now,
+      capabilities: options.capabilities,
+    },
   };
+}
+
+async function mintAndStoreGrant(
+  env: ControlPlaneEnv,
+  options: Parameters<typeof prepareGrant>[1],
+): Promise<Awaited<ReturnType<typeof prepareGrant>>["response"]> {
+  const grant = await prepareGrant(env, options);
+  await grant.statement.run();
+  return grant.response;
 }
 
 async function exchangeServiceCredential(
@@ -387,13 +407,14 @@ async function exchangeServiceCredential(
     );
   }
   ensureEnvironmentEnabled(row);
-  const entitlement = await findActiveEntitlement(
+  const entitlement = await findActiveServiceEntitlement(
     env,
     {
       productId: row.product_id,
       environmentId: row.environment_id,
       tenantId: row.tenant_id,
       principalId: row.principal_id,
+      credentialId: row.id,
     },
     now,
   );
@@ -615,12 +636,12 @@ async function adminCreateProduct(
   const body = await parseBody(request, productCreateSchema);
   const id = randomId("prod");
   const now = nowSeconds();
-  await env.DB.prepare(
-    "INSERT INTO products (id, slug, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-  )
-    .bind(id, body.slug, body.display_name, now, now)
-    .run();
-  await audit(env, actorHash, "create", "product", id);
+  await env.DB.batch([
+    env.DB.prepare(
+      "INSERT INTO products (id, slug, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    ).bind(id, body.slug, body.display_name, now, now),
+    auditStatement(env, actorHash, "create", "product", id),
+  ]);
   return jsonResponse({ id, ...body }, 201);
 }
 
@@ -632,13 +653,13 @@ async function adminCreateEnvironment(
   const body = await parseBody(request, environmentCreateSchema);
   const id = randomId("env");
   const now = nowSeconds();
-  await env.DB.prepare(
-    `INSERT INTO environments
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO environments
       (id, product_id, name, audience, token_ttl_seconds, rpm_limit, tpm_limit, concurrency_limit,
        daily_budget_microcents, max_request_bytes, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  )
-    .bind(
+    ).bind(
       id,
       body.product_id,
       body.name,
@@ -651,9 +672,9 @@ async function adminCreateEnvironment(
       body.max_request_bytes,
       now,
       now,
-    )
-    .run();
-  await audit(env, actorHash, "create", "environment", id);
+    ),
+    auditStatement(env, actorHash, "create", "environment", id),
+  ]);
   return jsonResponse({ id, ...body }, 201);
 }
 
@@ -666,8 +687,9 @@ async function adminUpsertAlias(
   await requireProductEnvironment(env, body.product_id, body.environment_id);
   const id = randomId("alias");
   const now = nowSeconds();
-  await env.DB.prepare(
-    `INSERT INTO aliases
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO aliases
       (id, product_id, environment_id, alias, endpoint, route_id, allow_reasoning, allow_images,
        allow_structured_json, max_input_tokens, max_output_tokens, input_cost_microcents_per_million,
        output_cost_microcents_per_million, created_at, updated_at)
@@ -684,8 +706,7 @@ async function adminUpsertAlias(
        policy_version = aliases.policy_version + 1,
        enabled = 1,
        updated_at = excluded.updated_at`,
-  )
-    .bind(
+    ).bind(
       id,
       body.product_id,
       body.environment_id,
@@ -701,15 +722,15 @@ async function adminUpsertAlias(
       body.output_cost_microcents_per_million,
       now,
       now,
-    )
-    .run();
-  await audit(
-    env,
-    actorHash,
-    "upsert",
-    "alias",
-    `${body.environment_id}:${body.endpoint}:${body.alias}`,
-  );
+    ),
+    auditStatement(
+      env,
+      actorHash,
+      "upsert",
+      "alias",
+      `${body.environment_id}:${body.endpoint}:${body.alias}`,
+    ),
+  ]);
   return jsonResponse(body);
 }
 
@@ -722,13 +743,13 @@ async function adminCreateEntitlement(
   await requireProductEnvironment(env, body.product_id, body.environment_id);
   const id = randomId("ent");
   const now = nowSeconds();
-  await env.DB.prepare(
-    `INSERT INTO entitlements
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO entitlements
       (id, product_id, environment_id, tenant_id, principal_id, source, capabilities_json, status,
        expires_at, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
-  )
-    .bind(
+    ).bind(
       id,
       body.product_id,
       body.environment_id,
@@ -739,9 +760,9 @@ async function adminCreateEntitlement(
       body.expires_at,
       now,
       now,
-    )
-    .run();
-  await audit(env, actorHash, "create", "entitlement", id);
+    ),
+    auditStatement(env, actorHash, "create", "entitlement", id),
+  ]);
   return jsonResponse({ id, ...body, status: "active" }, 201);
 }
 
@@ -791,8 +812,14 @@ async function adminCreateServiceCredential(
       now,
       now,
     ),
+    auditStatement(
+      env,
+      actorHash,
+      "create",
+      "service_credential",
+      credential.id,
+    ),
   ]);
-  await audit(env, actorHash, "create", "service_credential", credential.id);
   return jsonResponse(
     {
       id: credential.id,
@@ -814,13 +841,13 @@ async function adminCreateAccessCode(
   const credential = createOpaqueCredential("access_code");
   const salt = randomSecret(16);
   const now = nowSeconds();
-  await env.DB.prepare(
-    `INSERT INTO access_codes
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO access_codes
       (id, product_id, environment_id, tenant_id, secret_salt, secret_hash, capabilities_json,
        expires_at, max_activations, max_failed_attempts, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  )
-    .bind(
+    ).bind(
       credential.id,
       body.product_id,
       body.environment_id,
@@ -833,9 +860,9 @@ async function adminCreateAccessCode(
       body.max_failed_attempts,
       now,
       now,
-    )
-    .run();
-  await audit(env, actorHash, "create", "access_code", credential.id);
+    ),
+    auditStatement(env, actorHash, "create", "access_code", credential.id),
+  ]);
   return jsonResponse(
     { id: credential.id, access_code: credential.value, warning: "shown once" },
     201,
@@ -849,50 +876,82 @@ async function adminRevoke(
 ): Promise<Response> {
   const body = await parseBody(request, revokeSchema);
   const now = nowSeconds();
-  let changes = 0;
+  const auditId = randomId("audit");
+  let results: D1Result<unknown>[];
   if (body.resource_type === "token_grant") {
-    const result = await env.DB.prepare(
-      "UPDATE token_grants SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
-    )
-      .bind(now, body.resource_id)
-      .run();
-    changes = result.meta.changes ?? 0;
+    results = await env.DB.batch([
+      env.DB.prepare(
+        "UPDATE token_grants SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
+      ).bind(now, body.resource_id),
+      auditStatement(
+        env,
+        actorHash,
+        "revoke",
+        body.resource_type,
+        body.resource_id,
+        { id: auditId, onlyIfChanged: true },
+      ),
+    ]);
   } else if (body.resource_type === "entitlement") {
-    const result = await env.DB.prepare(
-      `UPDATE entitlements SET status = 'revoked', updated_at = ? WHERE id = ? AND status = 'active'`,
-    )
-      .bind(now, body.resource_id)
-      .run();
-    changes = result.meta.changes ?? 0;
+    results = await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE entitlements SET status = 'revoked', updated_at = ? WHERE id = ? AND status = 'active'`,
+      ).bind(now, body.resource_id),
+      auditStatement(
+        env,
+        actorHash,
+        "revoke",
+        body.resource_type,
+        body.resource_id,
+        { id: auditId, onlyIfChanged: true },
+      ),
+    ]);
   } else if (body.resource_type === "access_code") {
-    const results = await env.DB.batch([
+    results = await env.DB.batch([
       env.DB.prepare(
         "UPDATE access_codes SET disabled = 1, updated_at = ? WHERE id = ? AND disabled = 0",
       ).bind(now, body.resource_id),
+      auditStatement(
+        env,
+        actorHash,
+        "revoke",
+        body.resource_type,
+        body.resource_id,
+        { id: auditId, onlyIfChanged: true },
+      ),
       env.DB.prepare(
-        "UPDATE activations SET revoked_at = ? WHERE access_code_id = ? AND revoked_at IS NULL",
-      ).bind(now, body.resource_id),
+        `UPDATE activations SET revoked_at = ?
+          WHERE access_code_id = ? AND revoked_at IS NULL
+            AND EXISTS (SELECT 1 FROM admin_audit WHERE id = ?)`,
+      ).bind(now, body.resource_id, auditId),
       env.DB.prepare(
         `UPDATE entitlements SET status = 'revoked', updated_at = ?
-          WHERE source = 'access_code' AND source_ref = ? AND status = 'active'`,
-      ).bind(now, body.resource_id),
+          WHERE source = 'access_code' AND source_ref = ? AND status = 'active'
+            AND EXISTS (SELECT 1 FROM admin_audit WHERE id = ?)`,
+      ).bind(now, body.resource_id, auditId),
     ]);
-    changes = results[0]?.meta.changes ?? 0;
   } else {
-    const results = await env.DB.batch([
+    results = await env.DB.batch([
       env.DB.prepare(
         "UPDATE service_credentials SET disabled = 1 WHERE id = ? AND disabled = 0",
       ).bind(body.resource_id),
+      auditStatement(
+        env,
+        actorHash,
+        "revoke",
+        body.resource_type,
+        body.resource_id,
+        { id: auditId, onlyIfChanged: true },
+      ),
       env.DB.prepare(
         `UPDATE entitlements SET status = 'revoked', updated_at = ?
-          WHERE source = 'service' AND source_ref = ? AND status = 'active'`,
-      ).bind(now, body.resource_id),
+          WHERE source = 'service' AND source_ref = ? AND status = 'active'
+            AND EXISTS (SELECT 1 FROM admin_audit WHERE id = ?)`,
+      ).bind(now, body.resource_id, auditId),
     ]);
-    changes = results[0]?.meta.changes ?? 0;
   }
-  if (changes === 0)
+  if ((results[0]?.meta.changes ?? 0) === 0)
     throw new HttpError(404, "not_found", "active resource not found");
-  await audit(env, actorHash, "revoke", body.resource_type, body.resource_id);
   return jsonResponse({ revoked: true, ...body });
 }
 
@@ -903,20 +962,21 @@ async function adminKillSwitch(
 ): Promise<Response> {
   const body = await parseBody(request, killSwitchSchema);
   const table = body.resource_type === "product" ? "products" : "environments";
-  const result = await env.DB.prepare(
-    `UPDATE ${table} SET kill_switch = ?, updated_at = ? WHERE id = ?`,
-  )
-    .bind(Number(body.enabled), nowSeconds(), body.resource_id)
-    .run();
-  if ((result.meta.changes ?? 0) === 0)
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE ${table} SET kill_switch = ?, updated_at = ? WHERE id = ?`,
+    ).bind(Number(body.enabled), nowSeconds(), body.resource_id),
+    auditStatement(
+      env,
+      actorHash,
+      body.enabled ? "kill" : "restore",
+      body.resource_type,
+      body.resource_id,
+      { onlyIfChanged: true },
+    ),
+  ]);
+  if ((results[0]?.meta.changes ?? 0) === 0)
     throw new HttpError(404, "not_found", "resource not found");
-  await audit(
-    env,
-    actorHash,
-    body.enabled ? "kill" : "restore",
-    body.resource_type,
-    body.resource_id,
-  );
   return jsonResponse(body);
 }
 
@@ -944,13 +1004,25 @@ async function adminDevIssue(
   const now = nowSeconds();
   const ttlSeconds = body.ttl_seconds ?? 900;
   const entitlementId = randomId("ent");
-  await env.DB.prepare(
-    `INSERT INTO entitlements
+  const grant = await prepareGrant(env, {
+    productId: body.product_id,
+    environmentId: body.environment_id,
+    tenantId: body.tenant_id,
+    principalId: body.principal_id,
+    audience: row.audience,
+    capabilities: body.capabilities,
+    tokenType: "dev",
+    ttlSeconds: Math.min(ttlSeconds, row.token_ttl_seconds),
+    entitlementId,
+    entitlementExpiresAt: now + ttlSeconds,
+  });
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO entitlements
       (id, product_id, environment_id, tenant_id, principal_id, source, capabilities_json, status,
        expires_at, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, 'dev', ?, 'active', ?, ?, ?)`,
-  )
-    .bind(
+    ).bind(
       entitlementId,
       body.product_id,
       body.environment_id,
@@ -960,23 +1032,11 @@ async function adminDevIssue(
       now + ttlSeconds,
       now,
       now,
-    )
-    .run();
-  await audit(env, actorHash, "dev_issue", "entitlement", entitlementId);
-  return jsonResponse(
-    await mintAndStoreGrant(env, {
-      productId: body.product_id,
-      environmentId: body.environment_id,
-      tenantId: body.tenant_id,
-      principalId: body.principal_id,
-      audience: row.audience,
-      capabilities: body.capabilities,
-      tokenType: "dev",
-      ttlSeconds: Math.min(ttlSeconds, row.token_ttl_seconds),
-      entitlementId,
-      entitlementExpiresAt: now + ttlSeconds,
-    }),
-  );
+    ),
+    grant.statement,
+    auditStatement(env, actorHash, "dev_issue", "entitlement", entitlementId),
+  ]);
+  return jsonResponse(grant.response);
 }
 
 export async function handleControlPlane(

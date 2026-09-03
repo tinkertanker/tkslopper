@@ -26,6 +26,38 @@ LEFT JOIN environments AS environment
 WHERE environment.id IS NULL
 HAVING COUNT(*) > 0;
 
+SELECT 'activations_access_code_identity' AS violation, COUNT(*) AS row_count
+FROM activations AS activation
+LEFT JOIN access_codes AS code
+  ON code.id = activation.access_code_id AND code.tenant_id = activation.tenant_id
+WHERE code.id IS NULL
+HAVING COUNT(*) > 0;
+
+SELECT 'activations_access_code_principal_unique' AS violation,
+       SUM(duplicate_count - 1) AS row_count
+FROM (
+  SELECT COUNT(*) AS duplicate_count
+  FROM activations
+  GROUP BY access_code_id, tenant_id, principal_id
+  HAVING COUNT(*) > 1
+)
+HAVING SUM(duplicate_count - 1) > 0;
+
+SELECT 'entitlements_access_code_identity' AS violation, COUNT(*) AS row_count
+FROM entitlements AS entitlement
+LEFT JOIN access_codes AS code
+  ON code.id = entitlement.source_ref
+ AND code.product_id = entitlement.product_id
+ AND code.environment_id = entitlement.environment_id
+ AND code.tenant_id = entitlement.tenant_id
+LEFT JOIN activations AS activation
+  ON activation.access_code_id = entitlement.source_ref
+ AND activation.tenant_id = entitlement.tenant_id
+ AND activation.principal_id = entitlement.principal_id
+WHERE entitlement.source = 'access_code'
+  AND (code.id IS NULL OR activation.id IS NULL)
+HAVING COUNT(*) > 0;
+
 SELECT 'token_grants_product_environment' AS violation, COUNT(*) AS row_count
 FROM token_grants AS child
 LEFT JOIN environments AS environment

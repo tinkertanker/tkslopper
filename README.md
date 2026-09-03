@@ -55,9 +55,10 @@ Prerequisites: Node.js 22+, pnpm 10+, and a Cloudflare account only if you later
 
 ```bash
 pnpm install
-cp .dev.vars.example apps/control-plane/.dev.vars
-cp .dev.vars.example apps/gateway/.dev.vars
-# Replace every blank/placeholder with independent random local values.
+cp apps/control-plane/.dev.vars.example apps/control-plane/.dev.vars
+cp apps/gateway/.dev.vars.example apps/gateway/.dev.vars
+# Generate one TOKEN_SIGNING_SECRET and put that same value in both files.
+# Generate independent values for every other required secret.
 pnpm migration:check
 pnpm dev:migrate
 pnpm dev:control-plane
@@ -72,7 +73,7 @@ export TKSLOPPER_ADMIN_TOKEN='the same local ADMIN_TOKEN from .dev.vars'
 pnpm e2e:local
 ```
 
-It creates isolated random local products for Vibbit, Tapplet, and Playground Pal; exchanges service grants; exercises Chat, Responses, structured JSON, canonical JPEG, large-context, kill-switch, and revocation paths; and prints no credential values. See the [product integration contracts](docs/integrations.md).
+It creates isolated random local products named for Vibbit, Tapplet, and Playground Pal; exchanges service grants; exercises the normalized schema-smoke fixtures plus kill-switch and revocation paths; and prints no credential values. These fixtures are not source-exact product conformance. See the [product integration contracts](docs/integrations.md).
 
 The checked-in fixture provider works only when `DEPLOYMENT_ENV` is `development` or `test`; it cannot run in production. Set `ENABLE_DEV_ISSUER=true` only in a local control-plane `.dev.vars` when using the admin-only test issuer.
 
@@ -95,7 +96,7 @@ pnpm check
 pnpm audit --audit-level=high
 ```
 
-`pnpm check` runs format, lint, type checking, unit/integration/contract/adversarial tests, migration application, OpenAPI validation, Worker dry-runs, and public-repository hygiene checks. CI also scans the full Git history with Gitleaks.
+`pnpm check` runs format, lint, type checking, unit/integration/contract/adversarial tests, migration application, OpenAPI validation, real local-Workers request-cancellation conformance, Worker dry-runs, and public-repository hygiene checks. CI also scans the full Git history with Gitleaks.
 
 ## Deployment
 

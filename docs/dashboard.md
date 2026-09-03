@@ -6,7 +6,7 @@ The browser clears the token field when submitting and retains the value only fo
 
 ## Included data
 
-- separate product and environment enabled/kill-switch state;
+- at most 100 products and 250 environments per response, with explicit truncation flags, including separate enabled/kill-switch state;
 - policy limits and counts of active aliases/entitlements plus grants that satisfy the gateway's current entitlement, source, and parent-policy checks;
 - 24-hour finalized attempt/failure counts and accounted token/microcent aggregates, represented as decimal strings to preserve 64-bit precision;
 - the latest 50 metadata-only provider-attempt records, including live and stale intents;

@@ -4,8 +4,10 @@ import {
   callProvider,
   logSafeEvent,
   parseProviderRoutes,
+  prepareProvider,
   type ParsedGatewayRequest,
   type ProviderError,
+  type ProviderRoute,
 } from "@tkslopper/shared";
 
 const request: ParsedGatewayRequest = {
@@ -16,28 +18,41 @@ const request: ParsedGatewayRequest = {
   },
 };
 
+function preparedProvider(
+  route: ProviderRoute,
+  deploymentEnvironment = "test",
+) {
+  return prepareProvider({
+    route,
+    deploymentEnvironment,
+    getSecret: () => "public-fixture-upstream-value",
+  });
+}
+
 describe("provider contract", () => {
   it("rejects control bindings as provider credentials", () => {
-    expect(() =>
-      parseProviderRoutes(
-        JSON.stringify({
-          route: {
-            id: "route",
-            adapter: "openai-compatible",
-            provider: "custom",
-            profile: "custom",
-            model: "physical-model-v1",
-            baseUrl: "https://provider.example.invalid",
-            credentialBinding: "TOKEN_SIGNING_SECRET",
-            endpoints: ["chat"],
-            supportsImages: false,
-            supportsReasoning: false,
-            supportsStructuredJson: false,
-            timeoutMs: 5000,
-          },
-        }),
-      ),
-    ).toThrow();
+    for (const credentialBinding of ["TOKEN_SIGNING_SECRET", "DB", "QUOTA"]) {
+      expect(() =>
+        parseProviderRoutes(
+          JSON.stringify({
+            route: {
+              id: "route",
+              adapter: "openai-compatible",
+              provider: "custom",
+              profile: "custom",
+              model: "physical-model-v1",
+              baseUrl: "https://provider.example.invalid",
+              credentialBinding,
+              endpoints: ["chat"],
+              supportsImages: false,
+              supportsReasoning: false,
+              supportsStructuredJson: false,
+              timeoutMs: 5000,
+            },
+          }),
+        ),
+      ).toThrow();
+    }
   });
 
   it("separates the physical provider from its adapter and applies a trusted OpenRouter profile", async () => {
@@ -84,11 +99,10 @@ describe("provider contract", () => {
         ...request,
         body: { ...request.body, reasoning_effort: "high" },
       },
-      route,
-      deploymentEnvironment: "test",
+      prepared: preparedProvider(route),
       maxResponseBytes: 10_000,
       signal: new AbortController().signal,
-      getSecret: () => "public-fixture-upstream-value",
+      onDispatch: () => undefined,
       fetcher,
     });
 
@@ -105,7 +119,7 @@ describe("provider contract", () => {
     expect(route.adapter).toBe("openai-compatible");
   });
 
-  it("keeps the fixture provider out of production", async () => {
+  it("keeps the fixture provider out of production", () => {
     const route = parseProviderRoutes(
       JSON.stringify({
         fixture: {
@@ -122,18 +136,17 @@ describe("provider contract", () => {
         },
       }),
     ).get("fixture")!;
-    await expect(
-      callProvider({
-        request,
+    expect(() =>
+      prepareProvider({
         route,
         deploymentEnvironment: "production",
-        maxResponseBytes: 10_000,
-        signal: new AbortController().signal,
         getSecret: () => undefined,
       }),
-    ).rejects.toMatchObject({
-      errorClass: "provider_unavailable",
-    } satisfies Partial<ProviderError>);
+    ).toThrow(
+      expect.objectContaining({
+        errorClass: "provider_unavailable",
+      } satisfies Partial<ProviderError>),
+    );
   });
 
   it("replaces aliases with the configured model and makes exactly one physical call", async () => {
@@ -179,11 +192,14 @@ describe("provider contract", () => {
     );
     const result = await callProvider({
       request,
-      route,
-      deploymentEnvironment: "test",
+      prepared: prepareProvider({
+        route,
+        deploymentEnvironment: "test",
+        getSecret: () => upstreamSecret,
+      }),
       maxResponseBytes: 10_000,
       signal: new AbortController().signal,
-      getSecret: () => upstreamSecret,
+      onDispatch: () => undefined,
       fetcher,
     });
     expect(fetcher).toHaveBeenCalledTimes(1);
@@ -257,11 +273,10 @@ describe("provider contract", () => {
     );
     const result = await callProvider({
       request: responsesRequest,
-      route,
-      deploymentEnvironment: "test",
+      prepared: preparedProvider(route),
       maxResponseBytes: 10_000,
       signal: new AbortController().signal,
-      getSecret: () => "public-fixture-upstream-value",
+      onDispatch: () => undefined,
       fetcher,
     });
     expect(fetcher).toHaveBeenCalledTimes(1);
@@ -300,11 +315,10 @@ describe("provider contract", () => {
     const sentinel = "UPSTREAM_PRIVATE_ERROR_SENTINEL";
     const operation = callProvider({
       request,
-      route,
-      deploymentEnvironment: "test",
+      prepared: preparedProvider(route),
       maxResponseBytes: 10_000,
       signal: new AbortController().signal,
-      getSecret: () => "public-fixture-upstream-value",
+      onDispatch: () => undefined,
       fetcher: vi
         .fn<typeof fetch>()
         .mockResolvedValue(new Response(sentinel, { status: 400 })),
@@ -339,11 +353,10 @@ describe("provider contract", () => {
     const invoke = (response: Response, maxResponseBytes = 10_000) =>
       callProvider({
         request,
-        route,
-        deploymentEnvironment: "test",
+        prepared: preparedProvider(route),
         maxResponseBytes,
         signal: new AbortController().signal,
-        getSecret: () => "public-fixture-upstream-value",
+        onDispatch: () => undefined,
         fetcher: vi.fn<typeof fetch>().mockResolvedValue(response),
       });
     await expect(
@@ -356,6 +369,24 @@ describe("provider contract", () => {
     ).rejects.toMatchObject({
       errorClass: "provider_protocol",
     } satisfies Partial<ProviderError>);
+    let oversizedBodyCancelled = false;
+    const oversizedBody = new ReadableStream({
+      cancel() {
+        oversizedBodyCancelled = true;
+      },
+    });
+    await expect(
+      invoke(
+        new Response(oversizedBody, {
+          status: 200,
+          headers: { "content-length": "100" },
+        }),
+        10,
+      ),
+    ).rejects.toMatchObject({
+      errorClass: "provider_protocol",
+    } satisfies Partial<ProviderError>);
+    expect(oversizedBodyCancelled).toBe(true);
     await expect(
       invoke(
         Response.json({

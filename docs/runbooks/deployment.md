@@ -41,9 +41,10 @@ Cloudflare does not reveal uploaded secret values. Before provisioning, compare 
 1. Back up D1 and apply migrations using the exact reviewed artifact.
 2. Configure operator-only Cloudflare Access (or equivalent) for both dashboard paths, then deploy the control Worker with no public product enabled. Do not expose the dashboard without this ingress gate.
 3. Deploy the gateway Worker with fixture routes removed and production `DEPLOYMENT_ENV`; fixture routes fail closed in production but must not be production policy.
-4. Create products/environments/aliases through the admin workflow. Keep environment kill switches on.
-5. Run synthetic token exchange, revocation, alias isolation, quota, upstream deadline, and metadata-only logging checks.
-6. Follow the [canary plan](../canary-plan.md). Enable one environment only after acceptance evidence is recorded.
+4. Confirm the gateway configuration retains `enable_request_signal`, every compatible route's dedicated credential binding passes `/healthz`, and the real-Workers disconnect conformance gate passes.
+5. Create products/environments/aliases through the admin workflow. Keep environment kill switches on.
+6. Run synthetic token exchange, revocation, alias isolation, quota, upstream deadline, client-disconnect cancellation, and metadata-only logging checks.
+7. Follow the [canary plan](../canary-plan.md). Enable one environment only after acceptance evidence is recorded.
 
 ## Never do during deployment
 

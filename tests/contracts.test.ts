@@ -103,7 +103,7 @@ describe("credentials and grants", () => {
   });
 });
 
-describe("golden product request contracts", () => {
+describe("normalized product request schema smoke", () => {
   it("requires an explicit positive integer version on every capability alias", () => {
     expect(capabilitySchema.safeParse("text.chat.v1").success).toBe(true);
     expect(capabilitySchema.safeParse("text.chat").success).toBe(false);

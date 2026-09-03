@@ -10,6 +10,7 @@ import {
 import {
   costMicrocents,
   handleGateway,
+  identityScope,
   type GatewayEnv,
 } from "../apps/gateway/src";
 
@@ -19,7 +20,12 @@ beforeEach(async () => {
   const timestamp = now();
   const quota = env.QUOTA.get(
     env.QUOTA.idFromName(
-      "prod_vibbit:env_vibbit:tenant_fixture:principal_fixture",
+      identityScope(
+        "prod_vibbit",
+        "env_vibbit",
+        "tenant_fixture",
+        "principal_fixture",
+      ),
     ),
   );
   await runInDurableObject(quota, async (_instance, durableState) => {
@@ -191,7 +197,12 @@ async function quotaState(): Promise<{
 }> {
   const stub = env.QUOTA.get(
     env.QUOTA.idFromName(
-      "prod_vibbit:env_vibbit:tenant_fixture:principal_fixture",
+      identityScope(
+        "prod_vibbit",
+        "env_vibbit",
+        "tenant_fixture",
+        "principal_fixture",
+      ),
     ),
   );
   const state = await runInDurableObject(
@@ -217,6 +228,22 @@ function abortableProviderFetch(onStart?: () => void) {
       if (signal?.aborted) abort();
       else signal?.addEventListener("abort", abort, { once: true });
     });
+  });
+}
+
+function providerChatResponse(usage?: Record<string, unknown>): Response {
+  return Response.json({
+    id: "chatcmpl_accounting_fixture",
+    object: "chat.completion",
+    model: "physical-fixture-v1",
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content: "fixture response" },
+        finish_reason: "stop",
+      },
+    ],
+    ...(usage === undefined ? {} : { usage }),
   });
 }
 
@@ -417,7 +444,7 @@ describe("gateway integration and isolation", () => {
     await expect(response.json()).resolves.toMatchObject({
       error: { code: "authorization_failed" },
     });
-    expect(prepareCalls).toBe(1);
+    expect(prepareCalls).toBe(2);
   });
 
   it("prevents idempotency replay without storing the response payload", async () => {
@@ -453,6 +480,131 @@ describe("gateway integration and isolation", () => {
 });
 
 describe("Stage 0 failure-path accounting", () => {
+  it("uses an unambiguous identity tuple for quota and idempotency scopes", () => {
+    expect(
+      identityScope("product", "environment", "tenant:a", "principal"),
+    ).not.toBe(
+      identityScope("product", "environment", "tenant", "a:principal"),
+    );
+  });
+
+  it("rejects a pre-aborted request before quota or attempt admission", async () => {
+    const token = await grant();
+    const controller = new AbortController();
+    controller.abort("synthetic_client_disconnect");
+    const response = await handleGateway(
+      chatRequest(
+        token,
+        { "idempotency-key": ["pre", "aborted", "fixture", "0001"].join("-") },
+        undefined,
+        controller.signal,
+      ),
+      env,
+    );
+    expect(response.status).toBe(499);
+    const persisted = await env.DB.prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM provider_attempts) AS attempts,
+         (SELECT COUNT(*) FROM idempotency_keys) AS idempotency`,
+    ).first<{ attempts: number; idempotency: number }>();
+    expect(persisted).toEqual({ attempts: 0, idempotency: 0 });
+  });
+
+  it("accounts zero and stores no attempt when intent persistence fails before dispatch", async () => {
+    await env.DB.prepare(
+      `CREATE TRIGGER fail_attempt_start
+       BEFORE INSERT ON provider_attempts
+       BEGIN SELECT RAISE(ABORT, 'synthetic attempt start failure'); END`,
+    ).run();
+    try {
+      const token = await grant();
+      const response = await SELF.fetch(
+        chatRequest(token, { "idempotency-key": "start-failure-fixture-0001" }),
+      );
+      expect(response.status).toBe(500);
+      expect(
+        (
+          await env.DB.prepare(
+            "SELECT COUNT(*) AS count FROM provider_attempts",
+          ).first<{ count: number }>()
+        )?.count,
+      ).toBe(0);
+      const quota = await quotaState();
+      expect(quota.reservations).toEqual({});
+      expect(quota.reservedTodayMicrocents).toBe(0);
+      expect(quota.spentTodayMicrocents).toBe(0);
+    } finally {
+      await env.DB.prepare("DROP TRIGGER fail_attempt_start").run();
+    }
+  });
+
+  it.each([
+    {
+      name: "complete zero usage",
+      usage: { prompt_tokens: 0, completion_tokens: 0 },
+      expectedInput: 0,
+      expectedOutput: 0,
+      exposesUsage: true,
+    },
+    {
+      name: "partial usage",
+      usage: { prompt_tokens: 5 },
+      expectedInput: 5,
+      expectedOutput: 100,
+      exposesUsage: false,
+    },
+    {
+      name: "missing usage",
+      usage: undefined,
+      expectedInput: undefined,
+      expectedOutput: 100,
+      exposesUsage: false,
+    },
+  ])(
+    "accounts $name without misrepresenting public usage",
+    async ({ usage, expectedInput, expectedOutput, exposesUsage }) => {
+      const token = await grant();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>().mockResolvedValue(providerChatResponse(usage)),
+      );
+      try {
+        const response = await handleGateway(
+          chatRequest(token),
+          upstreamEnv(5000),
+        );
+        expect(response.status).toBe(200);
+        const body = await response.json<Record<string, unknown>>();
+        if (exposesUsage) {
+          expect(body.usage).toEqual({
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+          });
+        } else {
+          expect(body).not.toHaveProperty("usage");
+        }
+        const attempt = await env.DB.prepare(
+          `SELECT input_tokens, output_tokens, cost_microcents
+             FROM provider_attempts`,
+        ).first<{
+          input_tokens: number;
+          output_tokens: number;
+          cost_microcents: number;
+        }>();
+        expect(attempt?.output_tokens).toBe(expectedOutput);
+        if (expectedInput === undefined)
+          expect(attempt?.input_tokens).toBeGreaterThan(0);
+        else expect(attempt?.input_tokens).toBe(expectedInput);
+        const quota = await quotaState();
+        expect(quota.reservations).toEqual({});
+        expect(quota.spentTodayMicrocents).toBe(attempt?.cost_microcents);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
   it("aborts one provider call at its deadline and finalizes conservative accounting", async () => {
     const token = await grant();
     const providerFetch = abortableProviderFetch();
@@ -707,6 +859,27 @@ describe("gateway configuration", () => {
         })
       ).status,
     ).toBe(500);
+  });
+
+  it("fails health when a compatible route credential is absent, short, or reuses signing material", async () => {
+    const healthRequest = () =>
+      new Request("https://gateway.example.invalid/healthz");
+    const configured = upstreamEnv(5000);
+    for (const upstreamKey of [
+      undefined,
+      "too-short",
+      gatewayEnv.TOKEN_SIGNING_SECRET,
+    ]) {
+      expect(
+        (
+          await handleGateway(healthRequest(), {
+            ...configured,
+            UPSTREAM_KEY: upstreamKey,
+          })
+        ).status,
+      ).toBe(500);
+    }
+    expect((await handleGateway(healthRequest(), configured)).status).toBe(200);
   });
 });
 

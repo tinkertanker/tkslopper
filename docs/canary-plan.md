@@ -4,9 +4,9 @@ No stage authorizes production deployment.
 
 ## Stage 0: local/CI fixture
 
-Exercise service exchange, access-code activation bounds, revocation, kill switches, all golden request fixtures, cross-product alias denial, idempotency conflict, quota/concurrency/budget denial, deadlines, one-attempt accounting, and payload-leakage assertions.
+Exercise service exchange, access-code activation bounds, revocation, kill switches, all normalized schema-smoke fixtures, cross-product alias denial, idempotency conflict, quota/concurrency/budget denial, deadlines, one-attempt accounting, and payload-leakage assertions.
 
-`pnpm check` executes the named Stage 0 failure gates: provider deadline abort, client-cancellation abort, one physical call, conservative timeout/cancellation accounting, attempt-finalization fault, quota-completion fault with one bounded retry, stale-attempt detection, 24-hour idempotency bounds, and conservative reservation expiry. No remote provider is used.
+`pnpm check` executes the named Stage 0 failure gates: provider deadline abort, real local-Workers client-disconnect cancellation, one physical call, conservative timeout/cancellation accounting, attempt-finalization fault, quota-completion fault with one bounded retry, stale-attempt detection, 24-hour idempotency bounds, and conservative reservation expiry. No remote provider is used.
 
 `pnpm check` is the CI gate. With both local Workers running against the shared `.wrangler/local` state, `pnpm e2e:local` additionally proves the public control-plane→gateway flow for all three products without a remote provider.
 

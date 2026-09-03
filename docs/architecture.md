@@ -30,7 +30,7 @@ The control plane owns durable authorization facts and the metadata-only operati
 3. The body is strict-parsed only after authentication and the environment-specific byte limit is known. The public `model` value is a capability alias.
 4. D1 resolves `(product, environment, endpoint, alias)` to policy and a trusted route ID. Route configuration supplies the physical provider/model and secret binding.
 5. A principal-keyed Durable Object atomically reserves RPM, TPM, concurrency, and daily microcent budget. After admission, the gateway persists a metadata-only attempt intent before making exactly one provider call with a composed deadline/cancellation signal.
-6. Before returning non-streaming bytes, the gateway finalizes that attempt row and completes the reservation. A crash can leave an explicit `attempt_started` row for reconciliation, but cannot produce an unrecorded provider call. The gateway never logs request or response payloads.
+6. Before returning non-streaming bytes, the gateway completes the reservation and then finalizes that attempt row. A crash can leave an explicit `attempt_started` row for reconciliation, but cannot produce an unrecorded provider call. The gateway never logs request or response payloads.
 
 ## Consistency model
 

@@ -1,0 +1,7 @@
+# TOKEN_SIGNING_SECRET must use the same local value in both Workers.
+TOKEN_SIGNING_SECRET=
+
+# Generate separate local values for each control-plane-only secret.
+CREDENTIAL_PEPPER=
+ADMIN_TOKEN=
+DASHBOARD_TOKEN=
