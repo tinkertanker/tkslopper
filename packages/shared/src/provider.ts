@@ -317,11 +317,16 @@ type ProviderChatChoice = z.infer<
 >["choices"][number];
 
 function normalizeChatChoice(choice: ProviderChatChoice): ChatCompletionChoice {
-  const refusal = choice.message.refusal || null;
-  if (refusal !== null || choice.finish_reason === "content_filter") {
+  const providerRefusal = choice.message.refusal;
+  const hasRefusal = providerRefusal !== undefined && providerRefusal !== null;
+  if (hasRefusal || choice.finish_reason === "content_filter") {
     return {
       index: choice.index,
-      message: { role: choice.message.role, content: null, refusal },
+      message: {
+        role: choice.message.role,
+        content: null,
+        refusal: providerRefusal || null,
+      },
       finish_reason: "content_filter",
     };
   }

@@ -284,6 +284,7 @@ components:
           then:
             properties:
               message:
+                type: object
                 properties:
                   content: { type: string, minLength: 1 }
                   refusal: { type: "null" }
@@ -293,6 +294,7 @@ components:
           then:
             properties:
               message:
+                type: object
                 properties:
                   refusal: { type: "null" }
         - if:
@@ -301,6 +303,7 @@ components:
           then:
             properties:
               message:
+                type: object
                 properties:
                   content: { type: "null" }
         - if:
@@ -309,6 +312,7 @@ components:
           then:
             properties:
               message:
+                type: object
                 properties:
                   refusal: { type: "null" }
     ChatAssistantMessage:

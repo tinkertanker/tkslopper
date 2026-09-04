@@ -6,6 +6,8 @@ function malformed(): never {
   throw new Error("chat completion response is malformed");
 }
 
+// This dependency-free helper validates the fields needed to safely consume
+// choice 0. Use the published schema when whole-envelope validation is needed.
 export function requireCompleteChatText(value: unknown): string {
   if (!isObject(value) || !Array.isArray(value.choices)) malformed();
   const choices: unknown[] = value.choices;

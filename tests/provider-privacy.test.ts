@@ -272,6 +272,48 @@ describe("provider contract", () => {
       },
     },
     {
+      name: "empty provider refusal",
+      choice: {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: "provider text must not escape",
+          refusal: "",
+        },
+        finish_reason: "stop",
+      },
+      expected: {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: null,
+          refusal: null,
+        },
+        finish_reason: "content_filter",
+      },
+    },
+    {
+      name: "whitespace provider refusal during truncation",
+      choice: {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: "partial provider text must not escape",
+          refusal: " ",
+        },
+        finish_reason: "length",
+      },
+      expected: {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: null,
+          refusal: " ",
+        },
+        finish_reason: "content_filter",
+      },
+    },
+    {
       name: "filtered output",
       choice: {
         index: 0,
