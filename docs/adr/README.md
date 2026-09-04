@@ -10,3 +10,4 @@
 - [0008: Multi-product isolation](0008-multi-product-isolation.md)
 - [0009: Public repository security](0009-public-repository-security.md)
 - [0010: Metadata-only operations dashboard](0010-operations-dashboard.md)
+- [0011: Buffered Chat completion outcomes](0011-buffered-chat-outcomes.md)

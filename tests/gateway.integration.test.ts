@@ -13,6 +13,7 @@ import {
   identityScope,
   type GatewayEnv,
 } from "../apps/gateway/src";
+import vibbitChatResponse from "./fixtures/vibbit-chat-response.json";
 
 const now = (): number => Math.floor(Date.now() / 1000);
 
@@ -260,10 +261,7 @@ describe("gateway integration and isolation", () => {
     );
     expect(response.status).toBe(200);
     expect(response.headers.get("x-tkslopper-request-id")).toMatch(/^req_/u);
-    await expect(response.json()).resolves.toMatchObject({
-      model: "text.chat.v1",
-      object: "chat.completion",
-    });
+    await expect(response.json()).resolves.toEqual(vibbitChatResponse);
     const attempt = await env.DB.prepare(
       "SELECT status_code, error_class, input_tokens, output_tokens FROM provider_attempts",
     ).first<{
@@ -282,6 +280,52 @@ describe("gateway integration and isolation", () => {
       "SYNTHETIC_PRIVATE_PROMPT_SENTINEL",
     );
     expect(JSON.stringify(attempt)).not.toContain("fixture response");
+  });
+
+  it("returns HTTP 200 with an explicit incomplete outcome when provider completion is unconfirmed", async () => {
+    const token = await grant();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        Response.json({
+          id: "chatcmpl_incomplete_fixture",
+          object: "chat.completion",
+          model: "physical-fixture-v1",
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: "unconfirmed fixture response",
+              },
+            },
+          ],
+        }),
+      ),
+    );
+    try {
+      const response = await handleGateway(
+        chatRequest(token, { "idempotency-key": "incomplete-fixture-0001" }),
+        upstreamEnv(5000),
+      );
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        model: "text.chat.v1",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "unconfirmed fixture response",
+              refusal: null,
+            },
+            finish_reason: null,
+          },
+        ],
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("rejects attribution overrides and cross-product aliases", async () => {

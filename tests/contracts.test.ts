@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   capabilitySchema,
+  chatCompletionResponseSchema,
   chatRequestSchema,
   createOpaqueCredential,
   hashCredential,
@@ -13,6 +14,7 @@ import {
   verifyGrant,
   type GrantClaims,
 } from "@tkslopper/shared";
+import { requireCompleteChatText } from "../examples/chat-completion";
 
 import playgroundPalLongContext from "./fixtures/playground-pal-long-context.json";
 import playgroundPalChat from "./fixtures/playground-pal-chat.json";
@@ -23,6 +25,7 @@ import tappletModeration from "./fixtures/tapplet-moderation.json";
 import tappletStrictJson from "./fixtures/tapplet-strict-json.json";
 import vibbitChat from "./fixtures/vibbit-chat.json";
 import vibbitChatRepair from "./fixtures/vibbit-chat-repair.json";
+import vibbitChatResponse from "./fixtures/vibbit-chat-response.json";
 import vibbitResponses from "./fixtures/vibbit-responses.json";
 
 describe("credentials and grants", () => {
@@ -100,6 +103,105 @@ describe("credentials and grants", () => {
         now + 301,
       ),
     ).toBeUndefined();
+  });
+});
+
+describe("buffered Chat completion contract", () => {
+  it("accepts the complete Vibbit golden response and extracts its text", () => {
+    expect(chatCompletionResponseSchema.parse(vibbitChatResponse)).toEqual(
+      vibbitChatResponse,
+    );
+    expect(requireCompleteChatText(vibbitChatResponse)).toBe(
+      "fixture response",
+    );
+  });
+
+  it.each([
+    {
+      name: "truncation",
+      message: {
+        role: "assistant",
+        content: "Synthetic partial response.",
+        refusal: null,
+      },
+      finishReason: "length",
+      error: "chat completion was truncated",
+    },
+    {
+      name: "refusal or filtering",
+      message: {
+        role: "assistant",
+        content: null,
+        refusal: "Synthetic safety refusal.",
+      },
+      finishReason: "content_filter",
+      error: "chat completion was refused or filtered",
+    },
+    {
+      name: "incompleteness",
+      message: { role: "assistant", content: null, refusal: null },
+      finishReason: null,
+      error: "chat completion was incomplete",
+    },
+  ])(
+    "keeps $name distinct from complete text",
+    ({ message, finishReason, error }) => {
+      const response = {
+        ...vibbitChatResponse,
+        choices: [
+          {
+            index: 0,
+            message,
+            finish_reason: finishReason,
+          },
+        ],
+      };
+      expect(chatCompletionResponseSchema.safeParse(response).success).toBe(
+        true,
+      );
+      expect(() => requireCompleteChatText(response)).toThrow(error);
+    },
+  );
+
+  it.each([
+    {
+      name: "missing finish reason",
+      choice: {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: "Synthetic text.",
+          refusal: null,
+        },
+      },
+    },
+    {
+      name: "unknown finish reason",
+      choice: {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: "Synthetic text.",
+          refusal: null,
+        },
+        finish_reason: "end_turn",
+      },
+    },
+    {
+      name: "null content marked complete",
+      choice: {
+        index: 0,
+        message: { role: "assistant", content: null, refusal: null },
+        finish_reason: "stop",
+      },
+    },
+  ])("rejects a malformed public result with $name", ({ choice }) => {
+    expect(
+      chatCompletionResponseSchema.safeParse({
+        ...vibbitChatResponse,
+        choices: [choice],
+      }).success,
+    ).toBe(false);
   });
 });
 

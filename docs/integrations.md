@@ -30,7 +30,9 @@ The repository's [service-to-service](../examples/service-to-service.ts) and [di
 
 Vibbit currently sends physical model IDs and provider-specific `reasoning` on some routes. Its new adapter must send aliases and only portable fields. Each semantic repair preserves `system,user,assistant,user` order and uses a new idempotency key. The tkslopper route deadline must remain below Vibbit's 60-second provider-attempt/browser envelope; no gateway transport retry/fallback is allowed.
 
-**Blockers:** [#10](https://github.com/tinkertanker/tkslopper/issues/10) must define complete versus truncated/refused/null Chat results. The observed public deployment materially differs from the audited repository (provider list/defaults, class-code behavior, teacher route, and CORS); deploy or identify a known revision and capture sanitized request-shape evidence before migration.
+**Buffered Chat result:** HTTP 200 can carry a complete, truncated, refused/filtered, or incomplete choice. Vibbit may accept text only when `finish_reason` is `stop` and assistant `content` is non-empty. It must handle `length` as truncation, `content_filter` as refusal/filtering, and `null` as incomplete; partial content in a non-complete choice is not a final result. See [ADR 0011](adr/0011-buffered-chat-outcomes.md) and the [complete-result client helper](../examples/chat-completion.ts).
+
+**Remaining blocker:** The observed public deployment materially differs from the audited repository (provider list/defaults, class-code behavior, teacher route, and CORS); deploy or identify a known revision and capture sanitized request-shape evidence before migration.
 
 ## Tapplet
 

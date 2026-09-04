@@ -8,6 +8,7 @@ import tappletStrictJson from "../tests/fixtures/tapplet-strict-json.json";
 import vibbitChat from "../tests/fixtures/vibbit-chat.json";
 import vibbitChatRepair from "../tests/fixtures/vibbit-chat-repair.json";
 import vibbitResponses from "../tests/fixtures/vibbit-responses.json";
+import { requireCompleteChatText } from "../examples/chat-completion";
 import { validateLocalOrigin } from "./local-origin";
 
 type JsonObject = Record<string, unknown>;
@@ -181,6 +182,7 @@ async function createProductFlow(options: {
     ) {
       throw new Error(`${fixture.name} did not preserve alias provenance`);
     }
+    if (fixture.endpoint === "chat") requireCompleteChatText(body);
     console.log(`PASS ${fixture.name}`);
   }
 

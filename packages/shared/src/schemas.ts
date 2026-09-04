@@ -100,6 +100,72 @@ export const chatRequestSchema = z
     },
   );
 
+export const chatCompletionFinishReasonSchema = z
+  .enum(["stop", "length", "content_filter"])
+  .nullable();
+
+export const chatCompletionChoiceSchema = z
+  .object({
+    index: z.number().int().nonnegative(),
+    message: z
+      .object({
+        role: z.literal("assistant"),
+        content: z.string().nullable(),
+        refusal: z.string().min(1).nullable(),
+      })
+      .strict(),
+    finish_reason: chatCompletionFinishReasonSchema,
+  })
+  .strict()
+  .superRefine((choice, context) => {
+    const { content, refusal } = choice.message;
+    if (
+      choice.finish_reason === "stop" &&
+      (content === null || content.length === 0 || refusal !== null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "a complete Chat choice requires non-empty content",
+      });
+    }
+    if (choice.finish_reason === "length" && refusal !== null) {
+      context.addIssue({
+        code: "custom",
+        message: "a truncated Chat choice cannot contain a refusal",
+      });
+    }
+    if (choice.finish_reason === "content_filter" && content !== null) {
+      context.addIssue({
+        code: "custom",
+        message: "a refused Chat choice cannot contain assistant content",
+      });
+    }
+    if (choice.finish_reason === null && refusal !== null) {
+      context.addIssue({
+        code: "custom",
+        message: "an incomplete Chat choice cannot contain a refusal",
+      });
+    }
+  });
+
+export const chatCompletionResponseSchema = z
+  .object({
+    id: z.string().min(1),
+    object: z.literal("chat.completion"),
+    created: z.number().int().nonnegative().optional(),
+    model: capabilitySchema,
+    choices: z.array(chatCompletionChoiceSchema).min(1),
+    usage: z
+      .object({
+        prompt_tokens: z.number().int().nonnegative(),
+        completion_tokens: z.number().int().nonnegative(),
+        total_tokens: z.number().int().nonnegative(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
 const responseContentPartSchema = z.discriminatedUnion("type", [
   z
     .object({ type: z.literal("input_text"), text: z.string().max(2_000_000) })
@@ -161,6 +227,13 @@ export const responsesRequestSchema = z
   .strict();
 
 export type ChatRequest = z.infer<typeof chatRequestSchema>;
+export type ChatCompletionFinishReason = z.infer<
+  typeof chatCompletionFinishReasonSchema
+>;
+export type ChatCompletionChoice = z.infer<typeof chatCompletionChoiceSchema>;
+export type ChatCompletionResponse = z.infer<
+  typeof chatCompletionResponseSchema
+>;
 export type ResponsesRequest = z.infer<typeof responsesRequestSchema>;
 export type Endpoint = "chat" | "responses";
 

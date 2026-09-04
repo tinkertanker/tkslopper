@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { readBoundedBytes } from "./http";
-import type { ParsedGatewayRequest } from "./schemas";
+import type { ChatCompletionChoice, ParsedGatewayRequest } from "./schemas";
 
 const reservedCredentialBindings = new Set([
   "ADMIN_TOKEN",
@@ -35,7 +35,7 @@ const providerChatResponseSchema = z
                 refusal: z.string().nullable().optional(),
               })
               .passthrough(),
-            finish_reason: z.string().nullable(),
+            finish_reason: z.string().nullable().optional(),
           })
           .passthrough(),
       )
@@ -312,6 +312,43 @@ function normalizeUsage(
   };
 }
 
+type ProviderChatChoice = z.infer<
+  typeof providerChatResponseSchema
+>["choices"][number];
+
+function normalizeChatChoice(choice: ProviderChatChoice): ChatCompletionChoice {
+  const providerRefusal = choice.message.refusal;
+  const hasRefusal = providerRefusal !== undefined && providerRefusal !== null;
+  if (hasRefusal || choice.finish_reason === "content_filter") {
+    return {
+      index: choice.index,
+      message: {
+        role: choice.message.role,
+        content: null,
+        refusal: providerRefusal || null,
+      },
+      finish_reason: "content_filter",
+    };
+  }
+  const finishReason =
+    choice.finish_reason === "length"
+      ? "length"
+      : choice.finish_reason === "stop" &&
+          typeof choice.message.content === "string" &&
+          choice.message.content.length > 0
+        ? "stop"
+        : null;
+  return {
+    index: choice.index,
+    message: {
+      role: choice.message.role,
+      content: choice.message.content,
+      refusal: null,
+    },
+    finish_reason: finishReason,
+  };
+}
+
 function projectProviderBody(
   parsed: unknown,
   endpoint: "chat" | "responses",
@@ -327,17 +364,7 @@ function projectProviderBody(
         object: body.object,
         ...(body.created === undefined ? {} : { created: body.created }),
         model: body.model,
-        choices: body.choices.map((choice) => ({
-          index: choice.index,
-          message: {
-            role: choice.message.role,
-            content: choice.message.content,
-            ...(choice.message.refusal === undefined
-              ? {}
-              : { refusal: choice.message.refusal }),
-          },
-          finish_reason: choice.finish_reason,
-        })),
+        choices: body.choices.map(normalizeChatChoice),
         ...(usage.inputTokens === undefined || usage.outputTokens === undefined
           ? {}
           : {
@@ -429,7 +456,11 @@ function fixtureResult(
         choices: [
           {
             index: 0,
-            message: { role: "assistant", content: "fixture response" },
+            message: {
+              role: "assistant",
+              content: "fixture response",
+              refusal: null,
+            },
             finish_reason: "stop",
           },
         ],
