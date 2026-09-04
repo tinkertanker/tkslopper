@@ -19,7 +19,7 @@ This register separates repository decisions from choices that require an accoun
 
 These block any provider or product connection.
 
-1. [Identity-tuple integrity (#4)](https://github.com/tinkertanker/tkslopper/issues/4): enforce product/environment consistency in D1 and every writer/reader. Before editing the initial migration, privately prove no remote D1 consumed the old migration; otherwise use a forward migration after a read-only preflight.
+1. [Identity-tuple integrity (#4)](https://github.com/tinkertanker/tkslopper/issues/4): enforce product/environment consistency in D1 and every writer/reader. Keep the published initial migration immutable; fresh databases apply both migrations, while a database that already recorded `0001` requires a clean read-only preflight before the guarded forward migration.
 2. [Deadline, cancellation, and accounting recovery (#5)](https://github.com/tinkertanker/tkslopper/issues/5): execute abort, client-cancellation, finalization-failure, quota-completion-failure, and stale-attempt recovery tests.
 3. [Dependency update isolation (#6)](https://github.com/tinkertanker/tkslopper/issues/6): keep major upgrades independently reviewable. Do not merge the current TypeScript 7/ESLint 10 or Zod 4 bot PRs without intentional migrations.
 4. [Repository and CI governance (#7)](https://github.com/tinkertanker/tkslopper/issues/7): enable a verified private vulnerability channel, protect `main`, require checks/review, and pin external CI inputs. These GitHub settings require repository-admin action.

@@ -10,14 +10,16 @@ This runbook is documentation, not deployment authorization.
 4. Select Cloudflare accounts, D1 database, Worker names/routes, Durable Object jurisdiction, provider projects, retention, owner, and rollback contacts outside this public repository.
 5. Replace placeholder database IDs and non-secret route configuration in private deployment configuration. Do not commit account IDs or private values here.
 
-The initial migration includes product/environment and grant/entitlement identity constraints because this public scaffold has no deployed D1. If an operator discovers a database created from an earlier copy, do not silently rewrite ownership or reapply an edited migration. First run the read-only preflight against the private deployment configuration:
+The published `0001_initial.sql` is retained unchanged so its migration identity remains valid for any pre-release D1 that already recorded it. `0002_pre_release_integrity.sql` upgrades both new and existing databases to the constrained schema. A fresh empty database can apply both migrations normally. Before applying `0002` to a database that already recorded `0001`, run the read-only preflight against the private deployment configuration:
 
 ```bash
 pnpm wrangler d1 execute <database-name> --remote --config <private-config> \
   --file db/preflight/identity_integrity.sql
 ```
 
-An empty result is required; any reported violation/count blocks migration and requires an owner-reviewed forward migration. `pnpm migration:check` parses machine-readable Wrangler results, requires every preflight result set to be empty, and exercises a dirty-state fixture to prove the gate fails closed. Running a remote preflight, like every remote operation in this runbook, requires separate authorization and the same machine-enforced empty-result check rather than reliance on Wrangler's process status alone.
+An empty result is required. The forward migration repeats the same identity checks and aborts atomically before rebuilding any table if the database is dirty. Any reported violation/count therefore blocks migration and requires an owner-reviewed data-remediation plan; do not bypass the guard. Legacy provider attempts receive `stale_after = created_at`, conservatively making any unresolved `attempt_started` row eligible for reconciliation immediately after upgrade.
+
+`pnpm migration:check` parses machine-readable Wrangler results, requires every preflight result set to be empty, applies the published `0001` and then introduces `0002` against representative retained data, verifies the resulting schema/data/foreign keys, and proves a dirty legacy upgrade fails and rolls back without partial objects. Running a remote preflight, like every remote operation in this runbook, requires separate authorization and the same machine-enforced empty-result check rather than reliance on Wrangler's process status alone.
 
 ## Secrets
 
