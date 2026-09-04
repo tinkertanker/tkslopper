@@ -5,6 +5,7 @@ declare global {
     interface Env extends GatewayEnv {
       TEST_MIGRATIONS: string;
       ADMIN_TOKEN: string;
+      DASHBOARD_TOKEN: string;
       CREDENTIAL_PEPPER: string;
       ENABLE_DEV_ISSUER: string;
     }

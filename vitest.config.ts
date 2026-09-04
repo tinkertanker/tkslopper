@@ -10,6 +10,7 @@ const testBindings = {
     "public-fixture-signing-material-at-least-32-bytes",
   CREDENTIAL_PEPPER: "public-fixture-pepper-material-at-least-32-bytes",
   ADMIN_TOKEN: "public-fixture-admin-token-at-least-32-bytes",
+  DASHBOARD_TOKEN: "public-fixture-dashboard-token-at-least-32-bytes",
   ENABLE_DEV_ISSUER: "true",
   DEPLOYMENT_ENV: "test",
 };

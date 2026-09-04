@@ -1,7 +1,12 @@
 {
   "model": "text.response.v1",
-  "instructions": "Synthetic fixture instruction.",
-  "input": "Return one complete fixture response.",
-  "max_output_tokens": 256,
+  "input": [
+    {
+      "role": "system",
+      "content": "SYNTHETIC_SYSTEM: Return one JSON object with feedback and code."
+    },
+    { "role": "user", "content": "USER_REQUEST:\nShow a heart" }
+  ],
+  "max_output_tokens": 3072,
   "stream": false
 }

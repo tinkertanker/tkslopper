@@ -1,4 +1,5 @@
 import {
+  DATABASE_SCHEMA_VERSION,
   HttpError,
   ProviderError,
   bearerToken,
@@ -9,6 +10,7 @@ import {
   jsonResponse,
   logSafeEvent,
   parseProviderRoutes,
+  prepareProvider,
   pseudonymize,
   randomId,
   readJsonBody,
@@ -18,11 +20,13 @@ import {
   zodMessage,
   type Endpoint,
   type ParsedGatewayRequest,
+  type PreparedProvider,
   type ProviderRoute,
   type SafeRequestEvent,
 } from "@tkslopper/shared";
 
 import {
+  QUOTA_PROTOCOL_VERSION,
   QuotaCoordinator,
   type QuotaAcquireRequest,
   type QuotaCompleteRequest,
@@ -53,9 +57,21 @@ type GrantPolicyRow = {
   entitlement_status: string | null;
   entitlement_source: string | null;
   entitlement_expires_at: number | null;
+  entitlement_product_id: string | null;
+  entitlement_environment_id: string | null;
+  entitlement_tenant_id: string | null;
+  entitlement_principal_id: string | null;
+  service_credential_id: string | null;
+  service_credential_disabled: number | null;
+  service_credential_expires_at: number | null;
   access_code_disabled: number | null;
   access_code_expires_at: number | null;
+  access_code_product_id: string | null;
+  access_code_environment_id: string | null;
+  access_code_tenant_id: string | null;
   activation_id: string | null;
+  activation_tenant_id: string | null;
+  activation_principal_id: string | null;
   activation_revoked_at: number | null;
   product_enabled: number;
   product_kill_switch: number;
@@ -108,19 +124,43 @@ function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
 
+function hasBindingMethods(value: unknown, methods: string[]): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const binding = value as Record<string, unknown>;
+  return methods.every((method) => typeof binding[method] === "function");
+}
+
 function isConfigured(env: GatewayEnv): boolean {
+  const maxBodyBytes = Number(env.MAX_BODY_BYTES);
   if (
+    !hasBindingMethods(env.DB, ["prepare"]) ||
+    !hasBindingMethods(env.QUOTA, ["idFromName", "get"]) ||
     typeof env.TOKEN_SIGNING_SECRET !== "string" ||
-    env.TOKEN_SIGNING_SECRET.length < 32
+    env.TOKEN_SIGNING_SECRET.length < 32 ||
+    !["development", "test", "production"].includes(env.DEPLOYMENT_ENV) ||
+    !Number.isSafeInteger(maxBodyBytes) ||
+    maxBodyBytes < 1024 ||
+    maxBodyBytes > 10_485_760
   )
     return false;
   try {
     if (new URL(env.TOKEN_ISSUER).protocol !== "https:") return false;
     const routes = parseProviderRoutes(env.PROVIDER_ROUTES_JSON);
-    return !(
-      env.DEPLOYMENT_ENV === "production" &&
-      [...routes.values()].some(({ provider }) => provider === "fixture")
-    );
+    if (routes.size === 0) return false;
+    for (const route of routes.values()) {
+      if (route.adapter === "fixture") {
+        if (env.DEPLOYMENT_ENV === "production") return false;
+        continue;
+      }
+      const credential = env[route.credentialBinding];
+      if (
+        typeof credential !== "string" ||
+        credential.length < 16 ||
+        credential === env.TOKEN_SIGNING_SECRET
+      )
+        return false;
+    }
+    return true;
   } catch {
     return false;
   }
@@ -179,9 +219,16 @@ async function authenticate(
     `SELECT g.id AS grant_id, g.product_id, g.environment_id, g.tenant_id, g.principal_id, g.audience,
             g.capabilities_json, g.expires_at AS grant_expires_at, g.revoked_at,
             n.status AS entitlement_status, n.source AS entitlement_source,
-            n.expires_at AS entitlement_expires_at,
+            n.expires_at AS entitlement_expires_at, n.product_id AS entitlement_product_id,
+            n.environment_id AS entitlement_environment_id, n.tenant_id AS entitlement_tenant_id,
+            n.principal_id AS entitlement_principal_id,
+            s.id AS service_credential_id, s.disabled AS service_credential_disabled,
+            s.expires_at AS service_credential_expires_at,
             c.disabled AS access_code_disabled, c.expires_at AS access_code_expires_at,
-            a.id AS activation_id, a.revoked_at AS activation_revoked_at,
+            c.product_id AS access_code_product_id, c.environment_id AS access_code_environment_id,
+            c.tenant_id AS access_code_tenant_id,
+            a.id AS activation_id, a.tenant_id AS activation_tenant_id,
+            a.principal_id AS activation_principal_id, a.revoked_at AS activation_revoked_at,
             p.enabled AS product_enabled, p.kill_switch AS product_kill_switch,
             e.enabled AS environment_enabled, e.kill_switch AS environment_kill_switch,
             e.policy_version AS environment_policy_version, e.rpm_limit, e.tpm_limit,
@@ -190,8 +237,17 @@ async function authenticate(
        JOIN products p ON p.id = g.product_id
        JOIN environments e ON e.id = g.environment_id AND e.product_id = g.product_id
        LEFT JOIN entitlements n ON n.id = g.entitlement_id
+       LEFT JOIN service_credentials s ON n.source = 'service' AND s.id = n.source_ref
+                                      AND s.product_id = g.product_id
+                                      AND s.environment_id = g.environment_id
+                                      AND s.tenant_id = g.tenant_id
+                                      AND s.principal_id = g.principal_id
        LEFT JOIN access_codes c ON n.source = 'access_code' AND c.id = n.source_ref
-       LEFT JOIN activations a ON n.source = 'access_code' AND a.access_code_id = n.source_ref
+                               AND c.product_id = g.product_id
+                               AND c.environment_id = g.environment_id
+                               AND c.tenant_id = g.tenant_id
+       LEFT JOIN activations a ON n.source = 'access_code' AND a.access_code_id = c.id
+                              AND a.tenant_id = g.tenant_id
                               AND a.principal_id = g.principal_id
       WHERE g.jti_hash = ?`,
   )
@@ -205,16 +261,30 @@ async function authenticate(
     policy.entitlement_status !== "active" ||
     (policy.entitlement_expires_at !== null &&
       policy.entitlement_expires_at <= now) ||
+    (policy.entitlement_source === "service" &&
+      (policy.service_credential_id === null ||
+        policy.service_credential_disabled !== 0 ||
+        (policy.service_credential_expires_at !== null &&
+          policy.service_credential_expires_at <= now))) ||
     (policy.entitlement_source === "access_code" &&
       (policy.access_code_disabled !== 0 ||
         policy.access_code_expires_at === null ||
         policy.access_code_expires_at <= now ||
+        policy.access_code_product_id !== policy.product_id ||
+        policy.access_code_environment_id !== policy.environment_id ||
+        policy.access_code_tenant_id !== policy.tenant_id ||
         policy.activation_id === null ||
+        policy.activation_tenant_id !== policy.tenant_id ||
+        policy.activation_principal_id !== policy.principal_id ||
         policy.activation_revoked_at !== null)) ||
     policy.product_enabled !== 1 ||
     policy.product_kill_switch === 1 ||
     policy.environment_enabled !== 1 ||
-    policy.environment_kill_switch === 1
+    policy.environment_kill_switch === 1 ||
+    policy.entitlement_product_id !== policy.product_id ||
+    policy.entitlement_environment_id !== policy.environment_id ||
+    policy.entitlement_tenant_id !== policy.tenant_id ||
+    policy.entitlement_principal_id !== policy.principal_id
   ) {
     throw new HttpError(403, "authorization_failed", "grant is not active");
   }
@@ -262,11 +332,19 @@ function parseGatewayRequest(
   return { endpoint, body: parsed.data };
 }
 
+export function identityScope(
+  productId: string,
+  environmentId: string,
+  tenantId: string,
+  principalId: string,
+): string {
+  return JSON.stringify([productId, environmentId, tenantId, principalId]);
+}
+
 async function acquireIdempotency(
   request: Request,
   env: GatewayEnv,
   context: RequestContext,
-  requestHash: string,
 ): Promise<void> {
   const key = request.headers.get("idempotency-key");
   if (!key) return;
@@ -282,23 +360,27 @@ async function acquireIdempotency(
     throw new HttpError(500, "internal_error", "request context is incomplete");
   const now = nowSeconds();
   const scopeHash = await pseudonymize(
-    `${policy.product_id}:${policy.environment_id}:${policy.tenant_id}:${policy.principal_id}`,
+    identityScope(
+      policy.product_id,
+      policy.environment_id,
+      policy.tenant_id,
+      policy.principal_id,
+    ),
     env.TOKEN_SIGNING_SECRET,
   );
   const keyHash = await pseudonymize(key, env.TOKEN_SIGNING_SECRET);
   const result = await env.DB.prepare(
     `INSERT INTO idempotency_keys
-      (scope_hash, key_hash, request_hash, request_id, status, created_at, expires_at)
-     VALUES (?, ?, ?, ?, 'started', ?, ?)
+      (scope_hash, key_hash, request_id, status, created_at, expires_at)
+     VALUES (?, ?, ?, 'started', ?, ?)
      ON CONFLICT(scope_hash, key_hash) DO UPDATE SET
-       request_hash = excluded.request_hash,
        request_id = excluded.request_id,
        status = 'started',
        created_at = excluded.created_at,
        expires_at = excluded.expires_at
      WHERE idempotency_keys.expires_at <= excluded.created_at`,
   )
-    .bind(scopeHash, keyHash, requestHash, context.requestId, now, now + 86_400)
+    .bind(scopeHash, keyHash, context.requestId, now, now + 86_400)
     .run();
   if ((result.meta.changes ?? 0) !== 1) {
     throw new HttpError(
@@ -320,7 +402,12 @@ async function finishIdempotency(
   if (!key || !policy) return;
   const [scopeHash, keyHash] = await Promise.all([
     pseudonymize(
-      `${policy.product_id}:${policy.environment_id}:${policy.tenant_id}:${policy.principal_id}`,
+      identityScope(
+        policy.product_id,
+        policy.environment_id,
+        policy.tenant_id,
+        policy.principal_id,
+      ),
       env.TOKEN_SIGNING_SECRET,
     ),
     pseudonymize(key, env.TOKEN_SIGNING_SECRET),
@@ -346,13 +433,72 @@ async function quotaCall(
   policy: GrantPolicyRow,
   body: QuotaAcquireRequest | QuotaCompleteRequest,
 ): Promise<Response> {
-  const scope = `${policy.product_id}:${policy.environment_id}:${policy.tenant_id}:${policy.principal_id}`;
+  const scope = identityScope(
+    policy.product_id,
+    policy.environment_id,
+    policy.tenant_id,
+    policy.principal_id,
+  );
   const stub = env.QUOTA.get(env.QUOTA.idFromName(scope));
-  return stub.fetch("https://quota.internal/", {
+  return await stub.fetch("https://quota.internal/", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+async function quotaCallWithRetry(
+  env: GatewayEnv,
+  policy: GrantPolicyRow,
+  body: QuotaAcquireRequest | QuotaCompleteRequest,
+): Promise<Response> {
+  let lastResponse: Response | undefined;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await quotaCall(env, policy, body);
+      if (response.ok || response.status < 500) return response;
+      lastResponse = response;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (lastResponse) return lastResponse;
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("quota coordinator call failed");
+}
+
+async function quotaCompletionSucceeded(
+  response: Response | undefined,
+): Promise<boolean> {
+  if (!response?.ok) return false;
+  try {
+    const body = await response.json<{
+      completed?: unknown;
+      found?: unknown;
+      knownCompleted?: unknown;
+    }>();
+    return (
+      body.completed === true &&
+      (body.found === true || body.knownCompleted === true)
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function quotaAcquisitionSucceeded(response: Response): Promise<boolean> {
+  if (!response.ok) return false;
+  try {
+    const body = await response.json<{
+      acquired?: unknown;
+      existing?: unknown;
+    }>();
+    return body.acquired === true && typeof body.existing === "boolean";
+  } catch {
+    return false;
+  }
 }
 
 async function recordAttemptStart(
@@ -384,12 +530,13 @@ async function recordAttemptStart(
   ) {
     throw new HttpError(500, "internal_error", "request context is incomplete");
   }
+  const createdAt = nowSeconds();
   await env.DB.prepare(
     `INSERT INTO provider_attempts
       (id, request_id, attempt_number, product_id, environment_id, tenant_hash, principal_hash,
        alias, policy_version, route_id, provider, resolved_model, endpoint, status_code, error_class,
-       latency_ms, input_tokens, output_tokens, cost_microcents, created_at)
-     VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       latency_ms, input_tokens, output_tokens, cost_microcents, created_at, stale_after)
+     VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       randomId("attempt"),
@@ -410,7 +557,8 @@ async function recordAttemptStart(
       values.inputTokens,
       values.outputTokens,
       values.costMicrocents,
-      nowSeconds(),
+      createdAt,
+      createdAt + Math.ceil(route.timeoutMs / 1000) + 30,
     )
     .run();
 }
@@ -452,6 +600,18 @@ async function recordAttempt(
   }
 }
 
+async function discardAttemptIntent(
+  env: GatewayEnv,
+  context: RequestContext,
+): Promise<void> {
+  await env.DB.prepare(
+    `DELETE FROM provider_attempts
+      WHERE request_id = ? AND attempt_number = 1 AND error_class = 'attempt_started'`,
+  )
+    .bind(context.requestId)
+    .run();
+}
+
 function safeEvent(
   context: RequestContext,
   values: Omit<SafeRequestEvent, "requestId" | "latencyMs">,
@@ -484,7 +644,11 @@ async function handleInference(
     endpoint,
     providerAttempted: false,
   };
-  let quotaAcquired = false;
+  let quotaMayBeAcquired = false;
+  let quotaCompletionExhausted = false;
+  let quotaReservationUnresolved = false;
+  let completionTokens = 0;
+  let completionCost = 0;
   let reservedTokens = 0;
   let reservedCost = 0;
   try {
@@ -605,12 +769,25 @@ async function handleInference(
       );
     }
     context.route = route;
-    await acquireIdempotency(
-      request,
-      env,
-      context,
-      await sha256(`${endpoint}:${inspection.alias}:${context.requestId}`),
-    );
+    let preparedProvider: PreparedProvider;
+    try {
+      preparedProvider = prepareProvider({
+        route,
+        deploymentEnvironment: env.DEPLOYMENT_ENV,
+        getSecret: (binding) =>
+          typeof env[binding] === "string" ? env[binding] : undefined,
+      });
+    } catch (error) {
+      if (error instanceof ProviderError) {
+        throw new HttpError(
+          503,
+          "provider_unavailable",
+          "capability route is unavailable",
+        );
+      }
+      throw error;
+    }
+    await acquireIdempotency(request, env, context);
 
     const reservedInputTokens = inspection.hasImages
       ? aliasPolicy.max_input_tokens
@@ -625,7 +802,8 @@ async function handleInference(
         inspection.maxOutputTokens,
         aliasPolicy.output_cost_microcents_per_million,
       );
-    const quotaResponse = await quotaCall(env, policy, {
+    quotaMayBeAcquired = true;
+    const quotaResponse = await quotaCallWithRetry(env, policy, {
       operation: "acquire",
       requestId: context.requestId,
       reservationTtlSeconds: Math.ceil(route.timeoutMs / 1000) + 30,
@@ -637,8 +815,16 @@ async function handleInference(
         concurrency: policy.concurrency_limit,
         dailyBudgetMicrocents: policy.daily_budget_microcents,
       },
-    });
-    if (!quotaResponse.ok) {
+    }).catch(() => undefined);
+    if (!quotaResponse?.ok) {
+      if (!quotaResponse || quotaResponse.status >= 500) {
+        throw new HttpError(
+          503,
+          "internal_error",
+          "quota accounting admission failed",
+        );
+      }
+      quotaMayBeAcquired = false;
       const reason = (await quotaResponse.json<{ reason?: string }>()).reason;
       const budget = reason === "budget";
       throw new HttpError(
@@ -649,7 +835,13 @@ async function handleInference(
           : "rate or concurrency limit exceeded",
       );
     }
-    quotaAcquired = true;
+    if (!(await quotaAcquisitionSucceeded(quotaResponse))) {
+      throw new HttpError(
+        503,
+        "internal_error",
+        "quota accounting admission failed",
+      );
+    }
 
     await recordAttemptStart(env, context, {
       inputTokens: reservedInputTokens,
@@ -662,28 +854,29 @@ async function handleInference(
       () => controller.abort("deadline"),
       route.timeoutMs,
     );
-    const abortFromClient = (): void => controller.abort("client_disconnected");
-    request.signal.addEventListener("abort", abortFromClient, { once: true });
     try {
-      context.providerAttempted = true;
       const result = await callProvider({
         request: parsedRequest,
-        route,
-        deploymentEnvironment: env.DEPLOYMENT_ENV,
+        prepared: preparedProvider,
         maxResponseBytes: Math.min(maxBody, 8_388_608),
         signal: controller.signal,
-        getSecret: (binding) =>
-          typeof env[binding] === "string" ? env[binding] : undefined,
+        onDispatch: () => {
+          context.providerAttempted = true;
+          completionTokens = reservedTokens;
+          completionCost = reservedCost;
+        },
       });
       if (
-        result.usage.inputTokens > aliasPolicy.max_input_tokens ||
-        result.usage.outputTokens > inspection.maxOutputTokens
+        (result.usage.inputTokens !== undefined &&
+          result.usage.inputTokens > aliasPolicy.max_input_tokens) ||
+        (result.usage.outputTokens !== undefined &&
+          result.usage.outputTokens > inspection.maxOutputTokens)
       ) {
         throw new ProviderError("provider_protocol", 502, result.latencyMs);
       }
-      const inputTokens = result.usage.inputTokens || reservedInputTokens;
+      const inputTokens = result.usage.inputTokens ?? reservedInputTokens;
       const outputTokens =
-        result.usage.outputTokens || inspection.maxOutputTokens;
+        result.usage.outputTokens ?? inspection.maxOutputTokens;
       const actualCost =
         costMicrocents(
           inputTokens,
@@ -693,6 +886,24 @@ async function handleInference(
           outputTokens,
           aliasPolicy.output_cost_microcents_per_million,
         );
+      completionTokens = inputTokens + outputTokens;
+      completionCost = actualCost;
+      const completion = await quotaCallWithRetry(env, policy, {
+        operation: "complete",
+        requestId: context.requestId,
+        actualTokens: completionTokens,
+        actualCostMicrocents: completionCost,
+      }).catch(() => undefined);
+      if (!(await quotaCompletionSucceeded(completion))) {
+        quotaCompletionExhausted = true;
+        quotaReservationUnresolved = true;
+        throw new HttpError(
+          503,
+          "internal_error",
+          "quota accounting completion failed",
+        );
+      }
+      quotaMayBeAcquired = false;
       await recordAttempt(env, context, {
         statusCode: result.status,
         errorClass: null,
@@ -701,19 +912,6 @@ async function handleInference(
         outputTokens,
         costMicrocents: actualCost,
       });
-      const completion = await quotaCall(env, policy, {
-        operation: "complete",
-        requestId: context.requestId,
-        actualTokens: inputTokens + outputTokens,
-        actualCostMicrocents: actualCost,
-      });
-      if (!completion.ok)
-        throw new HttpError(
-          503,
-          "internal_error",
-          "quota accounting completion failed",
-        );
-      quotaAcquired = false;
       await finishIdempotency(request, env, context, "completed");
       logSafeEvent(
         safeEvent(context, {
@@ -729,31 +927,51 @@ async function handleInference(
       });
     } catch (error) {
       if (!(error instanceof ProviderError)) throw error;
-      await recordAttempt(env, context, {
-        statusCode: error.status,
-        errorClass: error.errorClass,
-        latencyMs: error.latencyMs,
-        inputTokens: reservedInputTokens,
-        outputTokens: inspection.maxOutputTokens,
-        costMicrocents: reservedCost,
-      });
-      const completion = await quotaCall(env, policy, {
+      const providerAttempted = context.providerAttempted;
+      completionTokens = providerAttempted ? reservedTokens : 0;
+      completionCost = providerAttempted ? reservedCost : 0;
+      const completion = await quotaCallWithRetry(env, policy, {
         operation: "complete",
         requestId: context.requestId,
-        actualTokens: reservedTokens,
-        actualCostMicrocents: reservedCost,
-      });
-      quotaAcquired = !completion.ok;
+        actualTokens: completionTokens,
+        actualCostMicrocents: completionCost,
+      }).catch(() => undefined);
+      if (!(await quotaCompletionSucceeded(completion))) {
+        quotaCompletionExhausted = true;
+        quotaReservationUnresolved = true;
+        throw new HttpError(
+          503,
+          "internal_error",
+          "quota accounting completion failed",
+        );
+      }
+      quotaMayBeAcquired = false;
+      if (providerAttempted) {
+        await recordAttempt(env, context, {
+          statusCode: error.status,
+          errorClass: error.errorClass,
+          latencyMs: error.latencyMs,
+          inputTokens: reservedInputTokens,
+          outputTokens: inspection.maxOutputTokens,
+          costMicrocents: reservedCost,
+        });
+      } else {
+        await discardAttemptIntent(env, context);
+      }
       await finishIdempotency(request, env, context, "failed");
       const status = error.errorClass === "provider_timeout" ? 504 : 502;
       logSafeEvent(
         safeEvent(context, {
           status,
           errorClass: error.errorClass,
-          inputTokens: reservedInputTokens,
-          outputTokens: inspection.maxOutputTokens,
-          costMicrocents: reservedCost,
-          attempts: 1,
+          ...(providerAttempted
+            ? {
+                inputTokens: reservedInputTokens,
+                outputTokens: inspection.maxOutputTokens,
+                costMicrocents: reservedCost,
+              }
+            : {}),
+          attempts: providerAttempted ? 1 : 0,
         }),
       );
       return errorResponse(
@@ -764,16 +982,21 @@ async function handleInference(
       );
     } finally {
       clearTimeout(timeout);
-      request.signal.removeEventListener("abort", abortFromClient);
     }
   } catch (error) {
-    if (quotaAcquired && context.policy) {
-      await quotaCall(env, context.policy, {
+    if (quotaMayBeAcquired && !quotaCompletionExhausted && context.policy) {
+      const completion = await quotaCallWithRetry(env, context.policy, {
         operation: "complete",
         requestId: context.requestId,
-        actualTokens: reservedTokens,
-        actualCostMicrocents: reservedCost,
+        actualTokens: completionTokens,
+        actualCostMicrocents: completionCost,
       }).catch(() => undefined);
+      if (await quotaCompletionSucceeded(completion))
+        quotaMayBeAcquired = false;
+      else quotaReservationUnresolved = true;
+    }
+    if (!context.providerAttempted && !quotaReservationUnresolved) {
+      await discardAttemptIntent(env, context).catch(() => undefined);
     }
     await finishIdempotency(request, env, context, "failed").catch(
       () => undefined,
@@ -784,6 +1007,9 @@ async function handleInference(
           status: error.status,
           errorClass: error.code,
           attempts: context.providerAttempted ? 1 : 0,
+          ...(quotaReservationUnresolved
+            ? { quotaReservationState: "unresolved" as const }
+            : {}),
         }),
       );
       return errorResponse(
@@ -798,6 +1024,9 @@ async function handleInference(
         status: 500,
         errorClass: "internal_error",
         attempts: context.providerAttempted ? 1 : 0,
+        ...(quotaReservationUnresolved
+          ? { quotaReservationState: "unresolved" as const }
+          : {}),
       }),
     );
     return errorResponse(
@@ -817,6 +1046,36 @@ export async function handleGateway(
     return errorResponse(500, "internal_error", "gateway is not configured");
   const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === "/healthz") {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort("deadline"), 2000);
+    try {
+      const quota = env.QUOTA.get(env.QUOTA.idFromName("readiness-probe"));
+      const [schema, quotaResponse] = await Promise.all([
+        env.DB.prepare(
+          "SELECT value FROM schema_metadata WHERE key = 'schema_version'",
+        ).first<{ value: string }>(),
+        quota.fetch("https://quota.internal/healthz", {
+          signal: controller.signal,
+        }),
+      ]);
+      const quotaBody = quotaResponse.ok
+        ? await quotaResponse.json<{
+            status?: unknown;
+            protocolVersion?: unknown;
+          }>()
+        : undefined;
+      if (
+        schema?.value !== DATABASE_SCHEMA_VERSION ||
+        quotaBody?.status !== "ok" ||
+        quotaBody.protocolVersion !== QUOTA_PROTOCOL_VERSION
+      ) {
+        throw new Error("readiness dependency is incompatible");
+      }
+    } catch {
+      return errorResponse(500, "internal_error", "gateway is not ready");
+    } finally {
+      clearTimeout(timeout);
+    }
     return jsonResponse({
       status: "ok",
       component: "gateway",

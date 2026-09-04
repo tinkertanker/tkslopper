@@ -1,0 +1,21 @@
+{
+  "model": "text.chat.v1",
+  "max_tokens": 3072,
+  "messages": [
+    {
+      "role": "system",
+      "content": "SYNTHETIC_SYSTEM: Return one JSON object with feedback and code."
+    },
+    { "role": "user", "content": "USER_REQUEST:\nShow a heart" },
+    {
+      "role": "assistant",
+      "content": "{\"feedback\":[\"I need to correct that.\"],\"code\":\"\"}"
+    },
+    {
+      "role": "user",
+      "content": "Your previous reply had empty code. Return a complete synthetic MakeCode program as JSON only."
+    }
+  ],
+  "temperature": 0.1,
+  "stream": false
+}

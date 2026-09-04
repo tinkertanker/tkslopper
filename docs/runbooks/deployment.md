@@ -10,6 +10,17 @@ This runbook is documentation, not deployment authorization.
 4. Select Cloudflare accounts, D1 database, Worker names/routes, Durable Object jurisdiction, provider projects, retention, owner, and rollback contacts outside this public repository.
 5. Replace placeholder database IDs and non-secret route configuration in private deployment configuration. Do not commit account IDs or private values here.
 
+The published `0001_initial.sql` is retained unchanged so its migration identity remains valid for any pre-release D1 that already recorded it. `0002_pre_release_integrity.sql` upgrades both new and existing databases to the constrained schema. A fresh empty database can apply both migrations normally. Before applying `0002` to a database that already recorded `0001`, run the read-only preflight against the private deployment configuration:
+
+```bash
+pnpm wrangler d1 execute <database-name> --remote --config <private-config> \
+  --file db/preflight/identity_integrity.sql
+```
+
+An empty result is required. The forward migration repeats the same identity checks and aborts atomically before rebuilding any table if the database is dirty. Any reported violation/count therefore blocks migration and requires an owner-reviewed data-remediation plan; do not bypass the guard. Legacy provider attempts receive `stale_after = created_at`, conservatively making any unresolved `attempt_started` row eligible for reconciliation immediately after upgrade.
+
+`pnpm migration:check` parses machine-readable Wrangler results, requires every preflight result set to be empty, applies the published `0001` and then introduces `0002` against representative retained data, verifies the resulting schema/data/foreign keys, and proves a dirty legacy upgrade fails and rolls back without partial objects. Running a remote preflight, like every remote operation in this runbook, requires separate authorization and the same machine-enforced empty-result check rather than reliance on Wrangler's process status alone.
+
 ## Secrets
 
 Generate independent values. Never reuse an admin token as a signing key or pepper.
@@ -19,19 +30,23 @@ wrangler secret put TOKEN_SIGNING_SECRET --config apps/control-plane/wrangler.js
 wrangler secret put TOKEN_SIGNING_SECRET --config apps/gateway/wrangler.jsonc
 wrangler secret put CREDENTIAL_PEPPER --config apps/control-plane/wrangler.jsonc
 wrangler secret put ADMIN_TOKEN --config apps/control-plane/wrangler.jsonc
+wrangler secret put DASHBOARD_TOKEN --config apps/control-plane/wrangler.jsonc
 wrangler secret put UPSTREAM_API_KEY --config apps/gateway/wrangler.jsonc
 ```
 
-The same signing value must be supplied to both Workers in the HS256 v1 design. Provider route `credentialBinding` names must correspond to gateway secrets. Confirm secrets with binding metadata only; never print their values.
+The same signing value must be supplied to both Workers in the HS256 v1 design. The dashboard token must be independent from the write-capable admin token and all other secrets. Provider route `credentialBinding` names must correspond to gateway secrets.
+
+Cloudflare does not reveal uploaded secret values. Before provisioning, compare one-way fingerprints inside the authorized private secret-management environment and require the dashboard fingerprint to differ from the admin token, signing secret, credential pepper, and every provider secret. The only expected cross-Worker duplicate is the signing secret. Record only the pass/fail result, not values or fingerprints. The control Worker also fails closed when the dashboard token equals any secret bound to that Worker. Confirm uploaded secrets with binding metadata only; never print their values.
 
 ## Order
 
 1. Back up D1 and apply migrations using the exact reviewed artifact.
-2. Deploy the control Worker with no public product enabled.
+2. Configure operator-only Cloudflare Access (or equivalent) for both dashboard paths, then deploy the control Worker with no public product enabled. Do not expose the dashboard without this ingress gate.
 3. Deploy the gateway Worker with fixture routes removed and production `DEPLOYMENT_ENV`; fixture routes fail closed in production but must not be production policy.
-4. Create products/environments/aliases through the admin workflow. Keep environment kill switches on.
-5. Run synthetic token exchange, revocation, alias isolation, quota, upstream deadline, and metadata-only logging checks.
-6. Follow the [canary plan](../canary-plan.md). Enable one environment only after acceptance evidence is recorded.
+4. Confirm every compatible route's dedicated credential binding and both core bindings pass the bounded `/healthz` readiness probe. Both Workers require the exact reviewed D1 schema marker; gateway readiness also reaches a quota Durable Object stub, performs a side-effect-free storage read, and requires the exact quota protocol version. Do not claim buffered client-disconnect cancellation or a `499` response; the checked Workers runtime does not signal disconnects before this non-streaming gateway returns headers.
+5. Create products/environments/aliases through the admin workflow. Keep environment kill switches on.
+6. Run synthetic token exchange, revocation, alias isolation, quota, upstream deadline, and metadata-only logging checks.
+7. Follow the [canary plan](../canary-plan.md). Enable one environment only after acceptance evidence is recorded.
 
 ## Never do during deployment
 

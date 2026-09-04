@@ -6,16 +6,16 @@
       "content": [
         {
           "type": "input_text",
-          "text": "Classify this public-safe one-pixel fixture."
+          "text": "Classify this synthetic classroom image. Reply first with SAFE or UNSAFE, then one short reason."
         },
         {
           "type": "input_image",
-          "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB",
+          "image_url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAUDBAQEAwUEBAQFBQUGBwwIBwcHBw8LCwkMEQ8SEhEPERETFhwXExQaFRERGCEYGh0dHx8fExciJCIeJBweHx7/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACP/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AZb//2Q==",
           "detail": "low"
         }
       ]
     }
   ],
-  "max_output_tokens": 128,
+  "max_output_tokens": 500,
   "stream": false
 }

@@ -4,9 +4,15 @@ import { readBoundedBytes } from "./http";
 import type { ParsedGatewayRequest } from "./schemas";
 
 const reservedCredentialBindings = new Set([
+  "ADMIN_TOKEN",
+  "CREDENTIAL_PEPPER",
+  "DASHBOARD_TOKEN",
+  "DB",
   "DEPLOYMENT_ENV",
+  "ENABLE_DEV_ISSUER",
   "MAX_BODY_BYTES",
   "PROVIDER_ROUTES_JSON",
+  "QUOTA",
   "TOKEN_ISSUER",
   "TOKEN_SIGNING_SECRET",
 ]);
@@ -90,67 +96,125 @@ const providerResponsesResponseSchema = z
   })
   .passthrough();
 
-const routeSchema = z
+const routeFields = {
+  id: z.string().min(1).max(100),
+  model: z.string().min(1).max(200),
+  endpoints: z.array(z.enum(["chat", "responses"])).min(1),
+  supportsImages: z.boolean(),
+  supportsReasoning: z.boolean(),
+  supportsStructuredJson: z.boolean(),
+  timeoutMs: z.number().int().min(1000).max(120_000),
+};
+
+const fixtureRouteSchema = z
   .object({
-    id: z.string().min(1).max(100),
-    provider: z.enum(["openai-compatible", "fixture"]),
-    model: z.string().min(1).max(200),
-    baseUrl: z.string().url().optional(),
-    credentialBinding: z
-      .string()
-      .regex(/^[A-Z][A-Z0-9_]*$/u)
-      .optional(),
-    endpoints: z.array(z.enum(["chat", "responses"])).min(1),
-    supportsImages: z.boolean(),
-    supportsReasoning: z.boolean(),
-    supportsStructuredJson: z.boolean(),
-    timeoutMs: z.number().int().min(1000).max(120_000),
+    ...routeFields,
+    adapter: z.literal("fixture"),
+    provider: z.literal("fixture"),
+    profile: z.literal("fixture"),
   })
-  .strict()
+  .strict();
+
+const compatibleRouteSchema = z
+  .object({
+    ...routeFields,
+    adapter: z.literal("openai-compatible"),
+    provider: z.enum([
+      "openai",
+      "openrouter",
+      "opencode",
+      "deepseek",
+      "custom",
+    ]),
+    profile: z.enum([
+      "openai",
+      "openrouter",
+      "opencode-go",
+      "opencode-zen",
+      "deepseek",
+      "custom",
+    ]),
+    baseUrl: z.string().url(),
+    credentialBinding: z.string().regex(/^[A-Z][A-Z0-9_]*$/u),
+    attribution: z
+      .object({
+        referer: z.string().url(),
+        title: z
+          .string()
+          .min(1)
+          .max(100)
+          .refine((value) => !/[\r\n]/u.test(value)),
+        titleHeader: z.enum(["x-title", "x-openrouter-title"]),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+const routeSchema = z
+  .discriminatedUnion("adapter", [fixtureRouteSchema, compatibleRouteSchema])
   .superRefine((route, context) => {
-    if (
-      route.provider === "openai-compatible" &&
-      (!route.baseUrl || !route.credentialBinding)
-    ) {
-      context.addIssue({
-        code: "custom",
-        message:
-          "openai-compatible routes require baseUrl and credentialBinding",
-      });
-    }
-    if (
-      route.provider === "openai-compatible" &&
-      route.baseUrl &&
-      !route.baseUrl.startsWith("https://")
-    ) {
+    if (route.adapter === "fixture") return;
+    if (!route.baseUrl.startsWith("https://")) {
       context.addIssue({
         code: "custom",
         message: "provider baseUrl must use HTTPS",
       });
     }
-    if (route.provider === "openai-compatible" && route.baseUrl) {
-      const baseUrl = new URL(route.baseUrl);
-      if (
-        baseUrl.username ||
-        baseUrl.password ||
-        baseUrl.search ||
-        baseUrl.hash
-      ) {
-        context.addIssue({
-          code: "custom",
-          message:
-            "provider baseUrl must not embed credentials, query parameters, or fragments",
-        });
-      }
-    }
+    const baseUrl = new URL(route.baseUrl);
     if (
-      route.credentialBinding &&
-      reservedCredentialBindings.has(route.credentialBinding)
+      baseUrl.username ||
+      baseUrl.password ||
+      baseUrl.search ||
+      baseUrl.hash
     ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "provider baseUrl must not embed credentials, query parameters, or fragments",
+      });
+    }
+    if (reservedCredentialBindings.has(route.credentialBinding)) {
       context.addIssue({
         code: "custom",
         message: "provider route must use a dedicated credential binding",
       });
+    }
+    const providerForProfile = {
+      openai: "openai",
+      openrouter: "openrouter",
+      "opencode-go": "opencode",
+      "opencode-zen": "opencode",
+      deepseek: "deepseek",
+      custom: "custom",
+    }[route.profile];
+    if (route.provider !== providerForProfile) {
+      context.addIssue({
+        code: "custom",
+        message: "provider must match the selected route profile",
+      });
+    }
+    if (route.attribution && route.profile !== "openrouter") {
+      context.addIssue({
+        code: "custom",
+        message:
+          "attribution headers are supported only by OpenRouter profiles",
+      });
+    }
+    if (route.attribution) {
+      const referer = new URL(route.attribution.referer);
+      if (
+        referer.protocol !== "https:" ||
+        referer.username ||
+        referer.password ||
+        referer.search ||
+        referer.hash
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "provider attribution referer must be a safe HTTPS URL",
+        });
+      }
     }
   });
 
@@ -169,7 +233,33 @@ export function parseProviderRoutes(
   return routes;
 }
 
-export type NormalizedUsage = { inputTokens: number; outputTokens: number };
+export type NormalizedUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+};
+
+export type PreparedProvider = {
+  route: ProviderRoute;
+  credential: string | null;
+};
+
+export function prepareProvider(options: {
+  route: ProviderRoute;
+  deploymentEnvironment: string;
+  getSecret: (binding: string) => string | undefined;
+}): PreparedProvider {
+  if (options.route.adapter === "fixture") {
+    if (!["development", "test"].includes(options.deploymentEnvironment)) {
+      throw new ProviderError("provider_unavailable", 503, 0);
+    }
+    return { route: options.route, credential: null };
+  }
+  const credential = options.getSecret(options.route.credentialBinding);
+  if (!credential || credential.length < 16) {
+    throw new ProviderError("provider_unavailable", 503, 0);
+  }
+  return { route: options.route, credential };
+}
 
 export type ProviderResult = {
   status: number;
@@ -192,10 +282,14 @@ export class ProviderError extends Error {
   }
 }
 
-function numericUsage(value: unknown): number {
+function abortedProviderError(latencyMs: number) {
+  return new ProviderError("provider_timeout", 504, latencyMs);
+}
+
+function numericUsage(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
     ? value
-    : 0;
+    : undefined;
 }
 
 function normalizeUsage(
@@ -206,52 +300,55 @@ function normalizeUsage(
     typeof body.usage === "object" && body.usage !== null
       ? (body.usage as Record<string, unknown>)
       : {};
-  if (endpoint === "chat") {
-    return {
-      inputTokens: numericUsage(usage.prompt_tokens),
-      outputTokens: numericUsage(usage.completion_tokens),
-    };
-  }
+  const inputTokens = numericUsage(
+    endpoint === "chat" ? usage.prompt_tokens : usage.input_tokens,
+  );
+  const outputTokens = numericUsage(
+    endpoint === "chat" ? usage.completion_tokens : usage.output_tokens,
+  );
   return {
-    inputTokens: numericUsage(usage.input_tokens),
-    outputTokens: numericUsage(usage.output_tokens),
+    ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(outputTokens === undefined ? {} : { outputTokens }),
   };
 }
 
 function projectProviderBody(
   parsed: unknown,
   endpoint: "chat" | "responses",
-): Record<string, unknown> | undefined {
+): Pick<ProviderResult, "body" | "usage"> | undefined {
   if (endpoint === "chat") {
     const validated = providerChatResponseSchema.safeParse(parsed);
     if (!validated.success) return undefined;
     const body = validated.data;
     const usage = normalizeUsage(body, endpoint);
     return {
-      id: body.id,
-      object: body.object,
-      ...(body.created === undefined ? {} : { created: body.created }),
-      model: body.model,
-      choices: body.choices.map((choice) => ({
-        index: choice.index,
-        message: {
-          role: choice.message.role,
-          content: choice.message.content,
-          ...(choice.message.refusal === undefined
-            ? {}
-            : { refusal: choice.message.refusal }),
-        },
-        finish_reason: choice.finish_reason,
-      })),
-      ...(body.usage === undefined
-        ? {}
-        : {
-            usage: {
-              prompt_tokens: usage.inputTokens,
-              completion_tokens: usage.outputTokens,
-              total_tokens: usage.inputTokens + usage.outputTokens,
-            },
-          }),
+      body: {
+        id: body.id,
+        object: body.object,
+        ...(body.created === undefined ? {} : { created: body.created }),
+        model: body.model,
+        choices: body.choices.map((choice) => ({
+          index: choice.index,
+          message: {
+            role: choice.message.role,
+            content: choice.message.content,
+            ...(choice.message.refusal === undefined
+              ? {}
+              : { refusal: choice.message.refusal }),
+          },
+          finish_reason: choice.finish_reason,
+        })),
+        ...(usage.inputTokens === undefined || usage.outputTokens === undefined
+          ? {}
+          : {
+              usage: {
+                prompt_tokens: usage.inputTokens,
+                completion_tokens: usage.outputTokens,
+                total_tokens: usage.inputTokens + usage.outputTokens,
+              },
+            }),
+      },
+      usage,
     };
   }
   const validated = providerResponsesResponseSchema.safeParse(parsed);
@@ -259,48 +356,51 @@ function projectProviderBody(
   const body = validated.data;
   const usage = normalizeUsage(body, endpoint);
   return {
-    id: body.id,
-    object: body.object,
-    ...(body.created_at === undefined ? {} : { created_at: body.created_at }),
-    model: body.model,
-    status: body.status,
-    ...(body.incomplete_details === undefined
-      ? {}
-      : {
-          incomplete_details:
-            body.incomplete_details === null
-              ? null
-              : { reason: body.incomplete_details.reason ?? null },
-        }),
-    output: body.output.map((item) =>
-      item.type === "message"
-        ? {
-            id: item.id,
-            type: item.type,
-            role: item.role,
-            ...(item.status === undefined ? {} : { status: item.status }),
-            content: item.content.map((content) =>
-              content.type === "output_text"
-                ? { type: content.type, text: content.text, annotations: [] }
-                : { type: content.type, refusal: content.refusal },
-            ),
-          }
+    body: {
+      id: body.id,
+      object: body.object,
+      ...(body.created_at === undefined ? {} : { created_at: body.created_at }),
+      model: body.model,
+      status: body.status,
+      ...(body.incomplete_details === undefined
+        ? {}
         : {
-            id: item.id,
-            type: item.type,
-            ...(item.status === undefined ? {} : { status: item.status }),
-            summary: item.summary.map(({ type, text }) => ({ type, text })),
-          },
-    ),
-    ...(body.usage === undefined
-      ? {}
-      : {
-          usage: {
-            input_tokens: usage.inputTokens,
-            output_tokens: usage.outputTokens,
-            total_tokens: usage.inputTokens + usage.outputTokens,
-          },
-        }),
+            incomplete_details:
+              body.incomplete_details === null
+                ? null
+                : { reason: body.incomplete_details.reason ?? null },
+          }),
+      output: body.output.map((item) =>
+        item.type === "message"
+          ? {
+              id: item.id,
+              type: item.type,
+              role: item.role,
+              ...(item.status === undefined ? {} : { status: item.status }),
+              content: item.content.map((content) =>
+                content.type === "output_text"
+                  ? { type: content.type, text: content.text, annotations: [] }
+                  : { type: content.type, refusal: content.refusal },
+              ),
+            }
+          : {
+              id: item.id,
+              type: item.type,
+              ...(item.status === undefined ? {} : { status: item.status }),
+              summary: item.summary.map(({ type, text }) => ({ type, text })),
+            },
+      ),
+      ...(usage.inputTokens === undefined || usage.outputTokens === undefined
+        ? {}
+        : {
+            usage: {
+              input_tokens: usage.inputTokens,
+              output_tokens: usage.outputTokens,
+              total_tokens: usage.inputTokens + usage.outputTokens,
+            },
+          }),
+    },
+    usage,
   };
 }
 
@@ -364,35 +464,48 @@ function fixtureResult(
   };
 }
 
+function compatibleRequestBody(
+  request: ParsedGatewayRequest,
+  route: Extract<ProviderRoute, { adapter: "openai-compatible" }>,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    ...request.body,
+    model: route.model,
+    stream: false,
+  };
+  if (
+    request.endpoint === "chat" &&
+    route.profile === "openrouter" &&
+    request.body.reasoning_effort
+  ) {
+    delete body.reasoning_effort;
+    body.reasoning = { effort: request.body.reasoning_effort };
+  }
+  return body;
+}
+
 export async function callProvider(options: {
   request: ParsedGatewayRequest;
-  route: ProviderRoute;
-  deploymentEnvironment: string;
+  prepared: PreparedProvider;
   maxResponseBytes: number;
   signal: AbortSignal;
-  getSecret: (binding: string) => string | undefined;
+  onDispatch: () => void;
   fetcher?: typeof fetch;
 }): Promise<ProviderResult> {
   const startedAt = Date.now();
-  const { request, route } = options;
+  const { request } = options;
+  const { route, credential } = options.prepared;
   if (!route.endpoints.includes(request.endpoint)) {
     throw new ProviderError("provider_protocol", 500, Date.now() - startedAt);
   }
-  if (route.provider === "fixture") {
-    if (!["development", "test"].includes(options.deploymentEnvironment)) {
-      throw new ProviderError(
-        "provider_unavailable",
-        503,
-        Date.now() - startedAt,
-      );
-    }
+  if (options.signal.aborted)
+    throw abortedProviderError(Date.now() - startedAt);
+  if (route.adapter === "fixture") {
+    options.onDispatch();
     return fixtureResult(request, route, Date.now() - startedAt);
   }
 
-  const secret = route.credentialBinding
-    ? options.getSecret(route.credentialBinding)
-    : undefined;
-  if (!secret || secret.length < 16 || !route.baseUrl)
+  if (!credential)
     throw new ProviderError(
       "provider_unavailable",
       503,
@@ -400,16 +513,23 @@ export async function callProvider(options: {
     );
   const path =
     request.endpoint === "chat" ? "/v1/chat/completions" : "/v1/responses";
-  const upstreamBody = { ...request.body, model: route.model, stream: false };
+  const upstreamBody = compatibleRequestBody(request, route);
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${credential}`,
+    "content-type": "application/json",
+  };
+  if (route.attribution) {
+    headers["http-referer"] = route.attribution.referer;
+    headers[route.attribution.titleHeader] = route.attribution.title;
+  }
   try {
+    options.onDispatch();
     const response = await (options.fetcher ?? fetch)(
       `${route.baseUrl.replace(/\/$/u, "")}${path}`,
       {
         method: "POST",
-        headers: {
-          authorization: `Bearer ${secret}`,
-          "content-type": "application/json",
-        },
+        redirect: "manual",
+        headers,
         body: JSON.stringify(upstreamBody),
         signal: options.signal,
       },
@@ -424,6 +544,7 @@ export async function callProvider(options: {
     }
     const declaredLength = Number(response.headers.get("content-length") ?? 0);
     if (declaredLength > options.maxResponseBytes) {
+      await response.body?.cancel().catch(() => undefined);
       throw new ProviderError("provider_protocol", 502, Date.now() - startedAt);
     }
     const bytes = await readBoundedBytes(
@@ -438,23 +559,25 @@ export async function callProvider(options: {
     } catch {
       throw new ProviderError("provider_protocol", 502, Date.now() - startedAt);
     }
-    const body = projectProviderBody(parsed, request.endpoint);
-    if (!body || containsSecret(body, secret))
+    const projected = projectProviderBody(parsed, request.endpoint);
+    if (
+      !projected ||
+      projected.body.model !== route.model ||
+      containsSecret(projected.body, credential)
+    )
       throw new ProviderError("provider_protocol", 502, Date.now() - startedAt);
     return {
       status: response.status,
-      body,
-      usage: normalizeUsage(body, request.endpoint),
+      ...projected,
       latencyMs: Date.now() - startedAt,
     };
   } catch (error) {
     if (error instanceof ProviderError) throw error;
-    const errorClass = options.signal.aborted
-      ? "provider_timeout"
-      : "provider_unavailable";
+    if (options.signal.aborted)
+      throw abortedProviderError(Date.now() - startedAt);
     throw new ProviderError(
-      errorClass,
-      errorClass === "provider_timeout" ? 504 : 503,
+      "provider_unavailable",
+      503,
       Date.now() - startedAt,
     );
   }

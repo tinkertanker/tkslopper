@@ -204,6 +204,7 @@ components:
         type: string
         minLength: 8
         maxLength: 128
+        pattern: "^[!-~]{8,128}$"
   headers:
     RequestId:
       description: Pseudorandom request identifier safe to use for metadata lookup
@@ -241,7 +242,8 @@ components:
   schemas:
     CapabilityAlias:
       type: string
-      pattern: "^[a-z][a-z0-9._:-]{1,99}$"
+      pattern: "^[a-z][a-z0-9._:-]*\\.v[1-9][0-9]*$"
+      maxLength: 100
       examples: [text.chat.v1]
     JsonSchemaName:
       type: string
@@ -370,6 +372,10 @@ components:
                   additionalProperties: false
                   required: [type]
                   properties: { type: { const: text } }
+                - type: object
+                  additionalProperties: false
+                  required: [type]
+                  properties: { type: { const: json_object } }
                 - type: object
                   additionalProperties: false
                   required: [type, name, schema]

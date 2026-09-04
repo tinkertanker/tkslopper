@@ -18,6 +18,7 @@ export type SafeRequestEvent = {
   outputTokens?: number | undefined;
   costMicrocents?: number | undefined;
   attempts: 0 | 1;
+  quotaReservationState?: "unresolved" | undefined;
 };
 
 export function logSafeEvent(event: SafeRequestEvent): void {

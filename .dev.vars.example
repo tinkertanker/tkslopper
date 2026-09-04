@@ -1,9 +1,0 @@
-# Copy to each app's .dev.vars (which is ignored) and replace every value.
-# Generate independent values with: openssl rand -base64 32
-TOKEN_SIGNING_SECRET=replace-me
-CREDENTIAL_PEPPER=replace-me
-ADMIN_TOKEN=replace-me
-
-# OpenAI-compatible routes reference secret binding names from PROVIDER_ROUTES_JSON.
-# Add only the bindings used by your private route configuration.
-UPSTREAM_API_KEY=replace-me

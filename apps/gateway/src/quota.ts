@@ -6,6 +6,12 @@ type Reservation = {
   dayKey: string;
 };
 
+type CompletionReceipt = {
+  actualTokens: number;
+  actualCostMicrocents: number;
+  expiresAt: number;
+};
+
 type QuotaState = {
   minuteKey: string;
   requestsThisMinute: number;
@@ -14,7 +20,12 @@ type QuotaState = {
   spentTodayMicrocents: number;
   reservedTodayMicrocents: number;
   reservations: Record<string, Reservation>;
+  completionReceipts: Record<string, CompletionReceipt>;
 };
+
+const COMPLETION_RECEIPT_TTL_SECONDS = 300;
+const MAX_COMPLETION_RECEIPTS = 512;
+export const QUOTA_PROTOCOL_VERSION = "1";
 
 export type QuotaAcquireRequest = {
   operation: "acquire";
@@ -54,37 +65,83 @@ function freshState(now: number): QuotaState {
     spentTodayMicrocents: 0,
     reservedTodayMicrocents: 0,
     reservations: {},
+    completionReceipts: {},
   };
 }
 
-function normalizeState(state: QuotaState, now: number): void {
+function normalizeState(state: QuotaState, now: number): boolean {
+  let changed = false;
+  state.completionReceipts ??= {};
   const currentMinute = minuteKey(now);
   const currentDay = dayKey(now);
   if (state.minuteKey !== currentMinute) {
     state.minuteKey = currentMinute;
     state.requestsThisMinute = 0;
     state.tokensThisMinute = 0;
+    changed = true;
   }
   if (state.dayKey !== currentDay) {
     state.dayKey = currentDay;
     state.spentTodayMicrocents = 0;
     state.reservedTodayMicrocents = 0;
+    changed = true;
   }
   for (const [requestId, reservation] of Object.entries(state.reservations)) {
-    if (reservation.expiresAt > now) continue;
-    if (reservation.minuteKey === state.minuteKey) {
-      state.tokensThisMinute = Math.max(
-        0,
-        state.tokensThisMinute - reservation.estimatedTokens,
-      );
+    if (state.completionReceipts[requestId]) {
+      if (reservation.minuteKey === state.minuteKey) {
+        state.requestsThisMinute = Math.max(0, state.requestsThisMinute - 1);
+        state.tokensThisMinute = Math.max(
+          0,
+          state.tokensThisMinute - reservation.estimatedTokens,
+        );
+      }
+      if (reservation.dayKey === state.dayKey) {
+        state.reservedTodayMicrocents = Math.max(
+          0,
+          state.reservedTodayMicrocents - reservation.reservedCostMicrocents,
+        );
+      }
+      delete state.reservations[requestId];
+      changed = true;
+      continue;
     }
+    if (reservation.expiresAt > now) continue;
     if (reservation.dayKey === state.dayKey) {
       state.reservedTodayMicrocents = Math.max(
         0,
         state.reservedTodayMicrocents - reservation.reservedCostMicrocents,
       );
+      state.spentTodayMicrocents += reservation.reservedCostMicrocents;
     }
     delete state.reservations[requestId];
+    changed = true;
+  }
+  for (const [requestId, receipt] of Object.entries(state.completionReceipts)) {
+    if (receipt.expiresAt > now) continue;
+    delete state.completionReceipts[requestId];
+    changed = true;
+  }
+  return changed;
+}
+
+function storeCompletionReceipt(
+  state: QuotaState,
+  request: QuotaCompleteRequest,
+  now: number,
+): void {
+  state.completionReceipts[request.requestId] = {
+    actualTokens: request.actualTokens,
+    actualCostMicrocents: request.actualCostMicrocents,
+    expiresAt: now + COMPLETION_RECEIPT_TTL_SECONDS,
+  };
+  const receipts = Object.entries(state.completionReceipts);
+  if (receipts.length <= MAX_COMPLETION_RECEIPTS) return;
+  receipts.sort((left, right) => left[1].expiresAt - right[1].expiresAt);
+  for (const [requestId] of receipts.slice(
+    0,
+    receipts.length - MAX_COMPLETION_RECEIPTS,
+  )) {
+    delete state.completionReceipts[requestId];
   }
 }
 
@@ -143,6 +200,14 @@ export class QuotaCoordinator implements DurableObject {
   constructor(private readonly state: DurableObjectState) {}
 
   async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/healthz") {
+      await this.state.storage.get("readiness-probe");
+      return Response.json({
+        status: "ok",
+        protocolVersion: QUOTA_PROTOCOL_VERSION,
+      });
+    }
     if (request.method !== "POST")
       return Response.json({ error: "method_not_allowed" }, { status: 405 });
     let body: unknown;
@@ -158,13 +223,15 @@ export class QuotaCoordinator implements DurableObject {
 
   private async acquire(request: QuotaAcquireRequest): Promise<Response> {
     const now = Math.floor(Date.now() / 1000);
-    let denial:
-      "duplicate" | "rpm" | "tpm" | "concurrency" | "budget" | undefined;
+    let denial: "rpm" | "tpm" | "concurrency" | "budget" | undefined;
+    let existing = false;
+    let completed = false;
     await this.state.storage.transaction(async (transaction) => {
       const state =
         (await transaction.get<QuotaState>("quota")) ?? freshState(now);
-      normalizeState(state, now);
-      if (state.reservations[request.requestId]) denial = "duplicate";
+      let changed = normalizeState(state, now);
+      if (state.reservations[request.requestId]) existing = true;
+      else if (state.completionReceipts[request.requestId]) completed = true;
       else if (state.requestsThisMinute + 1 > request.limits.rpm)
         denial = "rpm";
       else if (
@@ -195,26 +262,46 @@ export class QuotaCoordinator implements DurableObject {
           minuteKey: state.minuteKey,
           dayKey: state.dayKey,
         };
-        await transaction.put("quota", state);
+        changed = true;
       }
+      if (changed) await transaction.put("quota", state);
     });
+    if (completed)
+      return Response.json(
+        { acquired: false, reason: "request_completed" },
+        { status: 409 },
+      );
     if (denial)
       return Response.json(
         { acquired: false, reason: denial },
         { status: denial === "budget" ? 402 : 429 },
       );
-    return Response.json({ acquired: true });
+    return Response.json({ acquired: true, existing });
   }
 
   private async complete(request: QuotaCompleteRequest): Promise<Response> {
     const now = Math.floor(Date.now() / 1000);
     let found = false;
+    let knownCompleted = false;
+    let mismatch = false;
     await this.state.storage.transaction(async (transaction) => {
       const state =
         (await transaction.get<QuotaState>("quota")) ?? freshState(now);
-      normalizeState(state, now);
+      let changed = normalizeState(state, now);
+      const receipt = state.completionReceipts[request.requestId];
+      if (receipt) {
+        mismatch =
+          receipt.actualTokens !== request.actualTokens ||
+          receipt.actualCostMicrocents !== request.actualCostMicrocents;
+        knownCompleted = !mismatch;
+        if (changed) await transaction.put("quota", state);
+        return;
+      }
       const reservation = state.reservations[request.requestId];
-      if (!reservation) return;
+      if (!reservation) {
+        if (changed) await transaction.put("quota", state);
+        return;
+      }
       found = true;
       if (reservation.minuteKey === state.minuteKey) {
         state.tokensThisMinute = Math.max(
@@ -232,8 +319,20 @@ export class QuotaCoordinator implements DurableObject {
         state.spentTodayMicrocents += request.actualCostMicrocents;
       }
       delete state.reservations[request.requestId];
+      storeCompletionReceipt(state, request, now);
+      changed = true;
       await transaction.put("quota", state);
     });
-    return Response.json({ completed: found }, { status: found ? 200 : 404 });
+    if (mismatch)
+      return Response.json(
+        { completed: false, reason: "completion_mismatch" },
+        { status: 409 },
+      );
+    if (!found && !knownCompleted)
+      return Response.json(
+        { completed: false, reason: "unknown_reservation" },
+        { status: 404 },
+      );
+    return Response.json({ completed: true, found, knownCompleted });
   }
 }

@@ -1,0 +1,5 @@
+# TOKEN_SIGNING_SECRET must use the same local value in both Workers.
+TOKEN_SIGNING_SECRET=
+
+# Add only dedicated provider-key bindings referenced by private route configuration.
+UPSTREAM_API_KEY=

@@ -10,7 +10,13 @@ Persist an attempt intent in D1 before every physical provider call, then finali
 
 ## Failure behavior
 
-Admission or accounting uncertainty fails closed. Reservations have bounded expiries to recover from Worker termination. Minute token reservations adjust to actual usage on completion; daily spend never decreases on a completed physical attempt. A stale `attempt_started` row is an explicit reconciliation signal after termination between intent and finalization.
+Admission or accounting uncertainty fails closed. Reservations have bounded expiries to recover concurrency after Worker termination. An expired reservation conservatively converts reserved cost to spent cost and retains its estimated minute tokens; it never silently releases possibly incurred spend. Minute token reservations adjust to actual usage on explicit completion. Daily spend never decreases on a completed or ambiguous physical attempt.
+
+Provider route credentials are validated before quota admission. A proven pre-dispatch failure attempts to complete any possibly acquired reservation with zero; admission and completion calls are idempotent and receive one bounded retry so a single lost acknowledgement does not strand a known-zero reservation. The Durable Object retains bounded, short-lived receipts for exact completed values so a matching retry can distinguish a known completion from an unknown or expired reservation. A conflicting retry fails closed. If cleanup cannot confirm either the active reservation or a matching receipt, the request returns `503`, retains any attempt intent, emits `quotaReservationState: "unresolved"`, and bounded expiry remains conservatively chargeable. Otherwise only a dispatched or ambiguous provider attempt is charged.
+
+The gateway aborts the provider at its configured deadline (`504`, `provider_timeout`), conservatively completes the reservation because the provider outcome may be ambiguous, finalizes attempt provenance, and retains failed idempotency state for 24 hours. The current Workers runtime does not signal a client disconnect while this non-streaming gateway is still buffering the upstream response, so the gateway does not claim pre-response disconnect cancellation or return a synthetic `499`. A runtime-supported design remains tracked by issue #5.
+
+Every attempt intent stores `stale_after` as its route deadline plus reservation grace. D1 attempt finalization occurs only after confirmed Durable Object completion, so a row exposed by `stale_provider_attempts` is an explicit reconciliation signal for termination or accounting failure between intent and finalization. A first completion arriving after reservation expiry remains stale rather than being acknowledged as exact accounting.
 
 ## Consequences
 

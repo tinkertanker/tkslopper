@@ -2,7 +2,7 @@
 
 ## Boundaries
 
-The control plane owns durable authorization facts. The gateway owns one physical inference attempt and its admission/accounting. Product systems own all semantic behavior.
+The control plane owns durable authorization facts and the metadata-only operations view. The gateway owns one physical inference attempt and its admission/accounting. Product systems own all semantic behavior.
 
 ```diagram
 ┌─────────────────────────────┐          ┌──────────────────────────────┐
@@ -29,8 +29,8 @@ The control plane owns durable authorization facts. The gateway owns one physica
 2. The gateway verifies the signature and expiry, then loads the JTI, entitlement, product, environment, and kill-switch state from D1. Any disagreement fails closed.
 3. The body is strict-parsed only after authentication and the environment-specific byte limit is known. The public `model` value is a capability alias.
 4. D1 resolves `(product, environment, endpoint, alias)` to policy and a trusted route ID. Route configuration supplies the physical provider/model and secret binding.
-5. A principal-keyed Durable Object atomically reserves RPM, TPM, concurrency, and daily microcent budget. After admission, the gateway persists a metadata-only attempt intent before making exactly one provider call with a composed deadline/cancellation signal.
-6. Before returning non-streaming bytes, the gateway finalizes that attempt row and completes the reservation. A crash can leave an explicit `attempt_started` row for reconciliation, but cannot produce an unrecorded provider call. The gateway never logs request or response payloads.
+5. A principal-keyed Durable Object atomically reserves RPM, TPM, concurrency, and daily microcent budget. After admission, the gateway persists a metadata-only attempt intent before making exactly one provider call with a deadline signal.
+6. Before returning non-streaming bytes, the gateway completes the reservation and then finalizes that attempt row. A crash can leave an explicit `attempt_started` row for reconciliation, but cannot produce an unrecorded provider call. The gateway never logs request or response payloads.
 
 ## Consistency model
 
@@ -43,6 +43,10 @@ The control plane owns durable authorization facts. The gateway owns one physica
 ## Provider replacement seam
 
 `ParsedGatewayRequest`, `ProviderRoute`, `ProviderResult`, normalized usage, and `ProviderError` form the data-plane seam. A future LiteLLM adapter can replace `callProvider` without moving entitlement, token, alias, or quota ownership.
+
+## Operations view
+
+The control Worker serves the read-only [operations dashboard](dashboard.md) because it already owns D1 policy, attempt, and audit metadata. A separate dashboard bearer credential cannot call write-capable admin routes. Live per-principal quota state remains inside Durable Objects and is deliberately not made enumerable for the dashboard.
 
 ## Extension seams
 

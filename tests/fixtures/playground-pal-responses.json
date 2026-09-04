@@ -1,0 +1,12 @@
+{
+  "model": "long-context.response.v1",
+  "instructions": "Synthetic system instruction.",
+  "input": [
+    { "role": "user", "content": "Synthetic earlier question." },
+    { "role": "assistant", "content": "Synthetic earlier answer." },
+    { "role": "user", "content": "Synthetic current request." }
+  ],
+  "max_output_tokens": 4096,
+  "reasoning": { "effort": "high" },
+  "stream": false
+}

@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export const DATABASE_SCHEMA_VERSION = "2026-09-03.pre-release.3";
+
 export const identifierSchema = z
   .string()
   .min(2)
@@ -9,7 +11,7 @@ export const capabilitySchema = z
   .string()
   .min(2)
   .max(100)
-  .regex(/^[a-z][a-z0-9._:-]*$/u);
+  .regex(/^[a-z][a-z0-9._:-]*\.v[1-9][0-9]*$/u);
 export const capabilitiesSchema = z
   .array(capabilitySchema)
   .min(1)
@@ -141,6 +143,7 @@ export const responsesRequestSchema = z
       .object({
         format: z.union([
           z.object({ type: z.literal("text") }).strict(),
+          z.object({ type: z.literal("json_object") }).strict(),
           z
             .object({
               type: z.literal("json_schema"),
@@ -206,7 +209,9 @@ export function inspectGatewayRequest(request: ParsedGatewayRequest): {
     reasoningEffort = request.body.reasoning_effort;
   } else {
     requestedOutput = request.body.max_output_tokens ?? 1024;
-    hasStructuredJson = request.body.text?.format.type === "json_schema";
+    hasStructuredJson =
+      request.body.text?.format.type === "json_schema" ||
+      request.body.text?.format.type === "json_object";
     reasoningEffort = request.body.reasoning?.effort;
   }
   return {
@@ -301,7 +306,7 @@ export const entitlementCreateSchema = z
     environment_id: identifierSchema,
     tenant_id: identifierSchema,
     principal_id: identifierSchema,
-    source: z.enum(["service", "dev", "stripe", "storekit", "contract"]),
+    source: z.enum(["dev", "stripe", "storekit", "contract"]),
     capabilities: capabilitiesSchema,
     expires_at: z.number().int().positive().nullable().default(null),
   })
