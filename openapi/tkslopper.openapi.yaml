@@ -44,22 +44,18 @@ paths:
                   stream: false
       responses:
         "200":
-          description: Complete buffered result; model is the requested alias
+          description: >-
+            Buffered result; model is the requested alias. HTTP 200 may be
+            complete, truncated, refused/filtered, or incomplete. A full-result
+            client must require finish_reason=stop and non-empty assistant
+            content; every other finish_reason is non-complete.
           headers:
             x-tkslopper-request-id:
               $ref: "#/components/headers/RequestId"
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
-                required: [id, object, model, choices]
-                properties:
-                  id: { type: string }
-                  object: { const: chat.completion }
-                  model: { $ref: "#/components/schemas/CapabilityAlias" }
-                  choices: { type: array, minItems: 1, items: { type: object } }
-                  usage: { $ref: "#/components/schemas/ChatUsage" }
+                $ref: "#/components/schemas/ChatCompletionResponse"
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "402": { $ref: "#/components/responses/Error" }
@@ -250,6 +246,88 @@ components:
       minLength: 2
       maxLength: 100
       pattern: "^[a-zA-Z0-9][a-zA-Z0-9._:-]*$"
+    ChatCompletionResponse:
+      type: object
+      additionalProperties: false
+      required: [id, object, model, choices]
+      properties:
+        id: { type: string, minLength: 1 }
+        object: { const: chat.completion }
+        created: { type: integer, minimum: 0 }
+        model: { $ref: "#/components/schemas/CapabilityAlias" }
+        choices:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/ChatCompletionChoice" }
+        usage: { $ref: "#/components/schemas/ChatUsage" }
+    ChatCompletionChoice:
+      type: object
+      additionalProperties: false
+      required: [index, message, finish_reason]
+      description: >-
+        A normalized buffered outcome. stop is complete and requires non-empty
+        content with null refusal. length is truncated and may carry partial
+        content. content_filter is refused/filtered, always has null content,
+        and may carry refusal text. null is incomplete and may carry
+        unconfirmed partial content. Clients must not treat any value other
+        than stop as complete.
+      properties:
+        index: { type: integer, minimum: 0 }
+        message: { $ref: "#/components/schemas/ChatAssistantMessage" }
+        finish_reason:
+          type: [string, "null"]
+          enum: [stop, length, content_filter, null]
+      allOf:
+        - if:
+            properties:
+              finish_reason: { const: stop }
+          then:
+            properties:
+              message:
+                properties:
+                  content: { type: string, minLength: 1 }
+                  refusal: { type: "null" }
+        - if:
+            properties:
+              finish_reason: { const: length }
+          then:
+            properties:
+              message:
+                properties:
+                  refusal: { type: "null" }
+        - if:
+            properties:
+              finish_reason: { const: content_filter }
+          then:
+            properties:
+              message:
+                properties:
+                  content: { type: "null" }
+        - if:
+            properties:
+              finish_reason: { type: "null" }
+          then:
+            properties:
+              message:
+                properties:
+                  refusal: { type: "null" }
+    ChatAssistantMessage:
+      type: object
+      additionalProperties: false
+      required: [role, content, refusal]
+      properties:
+        role: { const: assistant }
+        content:
+          type: [string, "null"]
+          description: >-
+            Complete text only when finish_reason is stop. Partial text may be
+            present for length or null; content_filter always emits null.
+        refusal:
+          type: [string, "null"]
+          minLength: 1
+          description: >-
+            Provider refusal text when available. Non-null refusal is always
+            normalized to finish_reason=content_filter and content=null.
     ChatRequest:
       type: object
       additionalProperties: false
@@ -448,7 +526,8 @@ components:
         ttl_seconds: { type: integer, minimum: 60, maximum: 3600 }
     ChatUsage:
       type: object
-      additionalProperties: true
+      additionalProperties: false
+      required: [prompt_tokens, completion_tokens, total_tokens]
       properties:
         prompt_tokens: { type: integer, minimum: 0 }
         completion_tokens: { type: integer, minimum: 0 }

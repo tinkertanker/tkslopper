@@ -1,3 +1,5 @@
+import { requireCompleteChatText } from "./chat-completion";
+
 export {};
 
 const controlPlaneUrl = process.env.TKSLOPPER_CONTROL_PLANE_URL;
@@ -45,4 +47,5 @@ const inference = await fetch(`${gatewayUrl}/v1/chat/completions`, {
 });
 if (!inference.ok)
   throw new Error(`inference failed with HTTP ${inference.status}`);
-console.log(await inference.json());
+const completion: unknown = await inference.json();
+console.log(requireCompleteChatText(completion));

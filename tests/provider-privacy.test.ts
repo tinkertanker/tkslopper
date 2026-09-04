@@ -215,6 +215,165 @@ describe("provider contract", () => {
     expect(JSON.stringify(result.body)).not.toContain(upstreamSecret);
   });
 
+  it.each([
+    {
+      name: "complete text",
+      choice: {
+        index: 0,
+        message: { role: "assistant", content: "complete fixture response" },
+        finish_reason: "stop",
+      },
+      expected: {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: "complete fixture response",
+          refusal: null,
+        },
+        finish_reason: "stop",
+      },
+    },
+    {
+      name: "truncated text",
+      choice: {
+        index: 0,
+        message: { role: "assistant", content: "partial fixture response" },
+        finish_reason: "length",
+      },
+      expected: {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: "partial fixture response",
+          refusal: null,
+        },
+        finish_reason: "length",
+      },
+    },
+    {
+      name: "provider refusal",
+      choice: {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: "provider text must not escape",
+          refusal: "Synthetic safety refusal.",
+        },
+        finish_reason: "stop",
+      },
+      expected: {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: null,
+          refusal: "Synthetic safety refusal.",
+        },
+        finish_reason: "content_filter",
+      },
+    },
+    {
+      name: "filtered output",
+      choice: {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: "filtered provider text must not escape",
+        },
+        finish_reason: "content_filter",
+      },
+      expected: {
+        index: 0,
+        message: { role: "assistant", content: null, refusal: null },
+        finish_reason: "content_filter",
+      },
+    },
+    {
+      name: "null content",
+      choice: {
+        index: 0,
+        message: { role: "assistant", content: null },
+        finish_reason: "stop",
+      },
+      expected: {
+        index: 0,
+        message: { role: "assistant", content: null, refusal: null },
+        finish_reason: null,
+      },
+    },
+    {
+      name: "missing finish reason",
+      choice: {
+        index: 0,
+        message: { role: "assistant", content: "unconfirmed fixture response" },
+      },
+      expected: {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: "unconfirmed fixture response",
+          refusal: null,
+        },
+        finish_reason: null,
+      },
+    },
+    {
+      name: "unknown provider finish reason",
+      choice: {
+        index: 0,
+        message: { role: "assistant", content: "unconfirmed fixture response" },
+        finish_reason: "end_turn",
+      },
+      expected: {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: "unconfirmed fixture response",
+          refusal: null,
+        },
+        finish_reason: null,
+      },
+    },
+  ])(
+    "normalizes $name without presenting it as another outcome",
+    async ({ choice, expected }) => {
+      const route = parseProviderRoutes(
+        JSON.stringify({
+          route: {
+            id: "route",
+            adapter: "openai-compatible",
+            provider: "custom",
+            profile: "custom",
+            model: "physical-model-v1",
+            baseUrl: "https://provider.example.invalid",
+            credentialBinding: "UPSTREAM_KEY",
+            endpoints: ["chat"],
+            supportsImages: false,
+            supportsReasoning: false,
+            supportsStructuredJson: false,
+            timeoutMs: 5000,
+          },
+        }),
+      ).get("route")!;
+      const result = await callProvider({
+        request,
+        prepared: preparedProvider(route),
+        maxResponseBytes: 10_000,
+        signal: new AbortController().signal,
+        onDispatch: () => undefined,
+        fetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          Response.json({
+            id: "chatcmpl_outcome_fixture",
+            object: "chat.completion",
+            model: "physical-model-v1",
+            choices: [choice],
+          }),
+        ),
+      });
+
+      expect(result.body).toMatchObject({ choices: [expected] });
+    },
+  );
+
   it("preserves the supported Responses subset and projects normalized output", async () => {
     const responsesRequest: ParsedGatewayRequest = {
       endpoint: "responses",

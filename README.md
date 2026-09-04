@@ -35,7 +35,7 @@ See [the architecture overview](docs/architecture.md), [threat model](docs/threa
 - selected text, image-input, strict JSON, token-limit, temperature, and explicitly enabled reasoning-effort fields
 - no tools, audio, files, fine-tuning, assistants, batches, arbitrary provider/model selection, retry, fallback, or cache API
 
-This is intentionally a narrow, versioned OpenAI-compatible shape. It is not advertised as full OpenAI API compatibility. See [the OpenAPI specification](openapi/tkslopper.openapi.yaml).
+This is intentionally a narrow, versioned OpenAI-compatible shape. It is not advertised as full OpenAI API compatibility. A buffered Chat HTTP 200 can be complete, truncated, refused/filtered, or incomplete; full-result consumers must require `finish_reason: "stop"` and non-empty content. See [the OpenAPI specification](openapi/tkslopper.openapi.yaml) and [buffered Chat outcome decision](docs/adr/0011-buffered-chat-outcomes.md).
 
 Example capability aliases (policy data, not hard-coded product behavior):
 
