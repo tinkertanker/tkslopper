@@ -328,6 +328,79 @@ describe("gateway integration and isolation", () => {
     }
   });
 
+  it("derives Cloudflare metadata from authenticated policy and ignores caller gateway headers", async () => {
+    const token = await grant();
+    const bindings = upstreamEnv(5000);
+    const routes = JSON.parse(bindings.PROVIDER_ROUTES_JSON) as Record<
+      string,
+      Record<string, unknown>
+    >;
+    for (const route of Object.values(routes)) {
+      route.provider = "openai";
+      route.profile = "openai";
+      route.gateway = {
+        accountId: "0".repeat(32),
+        gatewayId: "synthetic",
+        credentialBinding: "AIG_KEY",
+      };
+    }
+    const gatewayEnv = {
+      ...bindings,
+      PROVIDER_ROUTES_JSON: JSON.stringify(routes),
+      AIG_KEY: "public-fixture-gateway-credential",
+    };
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(providerChatResponse());
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      const response = await handleGateway(
+        chatRequest(token, {
+          "cf-aig-metadata": '{"principal":"spoofed"}',
+          "cf-aig-collect-log-payload": "true",
+          "cf-aig-max-attempts": "5",
+        }),
+        gatewayEnv,
+      );
+      expect(response.status).toBe(200);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      const headers = new Headers(fetcher.mock.calls[0]?.[1]?.headers);
+      expect(headers.get("cf-aig-collect-log-payload")).toBe("false");
+      expect(headers.get("cf-aig-max-attempts")).toBe("1");
+      const metadata = JSON.parse(headers.get("cf-aig-metadata")!) as Record<
+        string,
+        unknown
+      >;
+      expect(Object.keys(metadata)).toHaveLength(5);
+      expect(metadata).toEqual({
+        product_id: "prod_vibbit",
+        environment_id: "env_vibbit",
+        request_id: response.headers.get("x-tkslopper-request-id"),
+        tenant: expect.any(String) as unknown,
+        principal: expect.any(String) as unknown,
+      });
+      expect(metadata.principal).toEqual(expect.any(String));
+      expect(metadata.principal).not.toBe("");
+      expect(JSON.stringify(metadata)).not.toMatch(
+        /spoofed|principal_fixture|tenant_fixture|SYNTHETIC_PRIVATE_PROMPT/u,
+      );
+
+      for (const value of [
+        "",
+        bindings.TOKEN_SIGNING_SECRET,
+        bindings.UPSTREAM_KEY,
+      ]) {
+        const health = await handleGateway(
+          new Request("https://gateway.invalid/healthz"),
+          { ...gatewayEnv, AIG_KEY: value },
+        );
+        expect(health.status).toBe(500);
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("rejects attribution overrides and cross-product aliases", async () => {
     const token = await grant();
     expect(

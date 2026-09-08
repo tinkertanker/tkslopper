@@ -2,6 +2,8 @@
 
 **Status:** Accepted
 
+The inference transport decision is extended by [ADR 0012](0012-managed-inference-transport.md): pinned AI SDK packages and optional Cloudflare AI Gateway now replace handwritten compatible dispatch. Classroom policy and exact quota storage remain Workers/D1/Durable Objects; no LiteLLM/Postgres/Redis deployment is introduced.
+
 ## Decision
 
 Use TypeScript Workers for the public boundary, D1 for control/policy state, and a principal-keyed Durable Object only for exact reservation and concurrency serialization. Do not use LiteLLM, Postgres, Redis, or Queue in v1.

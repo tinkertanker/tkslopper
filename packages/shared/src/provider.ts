@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { callAiSdkTransport } from "./ai-sdk-transport";
 import { readBoundedBytes } from "./http";
 import type { ChatCompletionChoice, ParsedGatewayRequest } from "./schemas";
 
@@ -136,6 +137,14 @@ const compatibleRouteSchema = z
     ]),
     baseUrl: z.string().url(),
     credentialBinding: z.string().regex(/^[A-Z][A-Z0-9_]*$/u),
+    gateway: z
+      .object({
+        accountId: z.string().regex(/^[a-f0-9]{32}$/u),
+        gatewayId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/u),
+        credentialBinding: z.string().regex(/^[A-Z][A-Z0-9_]*$/u),
+      })
+      .strict()
+      .optional(),
     attribution: z
       .object({
         referer: z.string().url(),
@@ -178,6 +187,18 @@ const routeSchema = z
       context.addIssue({
         code: "custom",
         message: "provider route must use a dedicated credential binding",
+      });
+    }
+    if (
+      route.gateway &&
+      (reservedCredentialBindings.has(route.gateway.credentialBinding) ||
+        route.gateway.credentialBinding === route.credentialBinding ||
+        !["openai", "openrouter", "deepseek"].includes(route.profile))
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "gateway requires a supported provider and dedicated credential",
       });
     }
     const providerForProfile = {
@@ -241,6 +262,7 @@ export type NormalizedUsage = {
 export type PreparedProvider = {
   route: ProviderRoute;
   credential: string | null;
+  gatewayCredential?: string;
 };
 
 export function prepareProvider(options: {
@@ -257,6 +279,18 @@ export function prepareProvider(options: {
   const credential = options.getSecret(options.route.credentialBinding);
   if (!credential || credential.length < 16) {
     throw new ProviderError("provider_unavailable", 503, 0);
+  }
+  if (options.route.gateway) {
+    const gatewayCredential = options.getSecret(
+      options.route.gateway.credentialBinding,
+    );
+    if (
+      !gatewayCredential ||
+      gatewayCredential.length < 16 ||
+      gatewayCredential === credential
+    )
+      throw new ProviderError("provider_unavailable", 503, 0);
+    return { route: options.route, credential, gatewayCredential };
   }
   return { route: options.route, credential };
 }
@@ -495,32 +529,13 @@ function fixtureResult(
   };
 }
 
-function compatibleRequestBody(
-  request: ParsedGatewayRequest,
-  route: Extract<ProviderRoute, { adapter: "openai-compatible" }>,
-): Record<string, unknown> {
-  const body: Record<string, unknown> = {
-    ...request.body,
-    model: route.model,
-    stream: false,
-  };
-  if (
-    request.endpoint === "chat" &&
-    route.profile === "openrouter" &&
-    request.body.reasoning_effort
-  ) {
-    delete body.reasoning_effort;
-    body.reasoning = { effort: request.body.reasoning_effort };
-  }
-  return body;
-}
-
 export async function callProvider(options: {
   request: ParsedGatewayRequest;
   prepared: PreparedProvider;
   maxResponseBytes: number;
   signal: AbortSignal;
   onDispatch: () => void;
+  metadata?: Record<string, string | number>;
   fetcher?: typeof fetch;
 }): Promise<ProviderResult> {
   const startedAt = Date.now();
@@ -542,9 +557,10 @@ export async function callProvider(options: {
       503,
       Date.now() - startedAt,
     );
-  const path =
-    request.endpoint === "chat" ? "/v1/chat/completions" : "/v1/responses";
-  const upstreamBody = compatibleRequestBody(request, route);
+  const baseURL = route.gateway
+    ? `https://gateway.ai.cloudflare.com/v1/${route.gateway.accountId}/${route.gateway.gatewayId}/${route.provider}`
+    : `${route.baseUrl.replace(/\/$/u, "")}/v1`;
+  const path = request.endpoint === "chat" ? "/chat/completions" : "/responses";
   const headers: Record<string, string> = {
     authorization: `Bearer ${credential}`,
     "content-type": "application/json",
@@ -553,40 +569,112 @@ export async function callProvider(options: {
     headers["http-referer"] = route.attribution.referer;
     headers[route.attribution.titleHeader] = route.attribution.title;
   }
+  if (route.gateway) {
+    if (!options.prepared.gatewayCredential)
+      throw new ProviderError("provider_unavailable", 503, 0);
+    headers["cf-aig-authorization"] =
+      `Bearer ${options.prepared.gatewayCredential}`;
+    headers["cf-aig-collect-log"] = "true";
+    headers["cf-aig-collect-log-payload"] = "false";
+    headers["cf-aig-skip-cache"] = "true";
+    headers["cf-aig-max-attempts"] = "1";
+    headers["cf-aig-request-timeout"] = String(route.timeoutMs);
+    headers["cf-aig-metadata"] = JSON.stringify(options.metadata ?? {});
+  }
   try {
-    options.onDispatch();
-    const response = await (options.fetcher ?? fetch)(
-      `${route.baseUrl.replace(/\/$/u, "")}${path}`,
-      {
-        method: "POST",
-        redirect: "manual",
-        headers,
-        body: JSON.stringify(upstreamBody),
-        signal: options.signal,
-      },
-    );
-    if (!response.ok) {
-      await response.body?.cancel().catch(() => undefined);
-      throw new ProviderError(
-        "provider_rejected",
-        response.status,
-        Date.now() - startedAt,
-      );
-    }
-    const declaredLength = Number(response.headers.get("content-length") ?? 0);
-    if (declaredLength > options.maxResponseBytes) {
-      await response.body?.cancel().catch(() => undefined);
-      throw new ProviderError("provider_protocol", 502, Date.now() - startedAt);
-    }
-    const bytes = await readBoundedBytes(
-      response.body,
-      options.maxResponseBytes,
-    );
-    if (!bytes)
+    let dispatched = false;
+    let captured: { status: number; bytes: Uint8Array } | undefined;
+    let transportError: Error | undefined;
+    const boundedFetch: typeof fetch = async (url, init) => {
+      try {
+        if (
+          dispatched ||
+          (typeof url === "string"
+            ? url
+            : url instanceof URL
+              ? url.href
+              : url.url) !== `${baseURL}${path}` ||
+          init?.method !== "POST"
+        )
+          throw new ProviderError(
+            "provider_protocol",
+            502,
+            Date.now() - startedAt,
+          );
+        if (options.signal.aborted)
+          throw abortedProviderError(Date.now() - startedAt);
+        dispatched = true;
+        options.onDispatch();
+        const response = await (options.fetcher ?? fetch)(url, {
+          ...init,
+          headers,
+          redirect: "manual",
+          signal: options.signal,
+        });
+        if (!response.ok) {
+          await response.body?.cancel().catch(() => undefined);
+          throw new ProviderError(
+            "provider_rejected",
+            response.status,
+            Date.now() - startedAt,
+          );
+        }
+        const declaredLength = Number(
+          response.headers.get("content-length") ?? 0,
+        );
+        if (declaredLength > options.maxResponseBytes) {
+          await response.body?.cancel().catch(() => undefined);
+          throw new ProviderError(
+            "provider_protocol",
+            502,
+            Date.now() - startedAt,
+          );
+        }
+        const bytes = await readBoundedBytes(
+          response.body,
+          options.maxResponseBytes,
+        );
+        if (!bytes)
+          throw new ProviderError(
+            "provider_protocol",
+            502,
+            Date.now() - startedAt,
+          );
+        if (options.signal.aborted)
+          throw abortedProviderError(Date.now() - startedAt);
+        captured = { status: response.status, bytes };
+        return new Response(bytes, {
+          status: response.status,
+          headers: { "content-type": "application/json" },
+        });
+      } catch (error) {
+        transportError =
+          error instanceof Error
+            ? error
+            : new Error("provider transport failed");
+        throw transportError;
+      }
+    };
+    await callAiSdkTransport({
+      request,
+      profile: route.profile,
+      model: route.model,
+      baseURL,
+      apiKey: credential,
+      headers,
+      fetcher: boundedFetch,
+      signal: options.signal,
+    }).catch(() => {
+      // SDK response schemas are narrower than our public contract (notably
+      // Responses refusal and partial usage). Only a fully captured successful
+      // body can be independently accepted below; never retry or log SDK errors.
+    });
+    if (transportError) throw transportError;
+    if (!captured)
       throw new ProviderError("provider_protocol", 502, Date.now() - startedAt);
     let parsed: unknown;
     try {
-      parsed = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+      parsed = JSON.parse(new TextDecoder().decode(captured.bytes)) as unknown;
     } catch {
       throw new ProviderError("provider_protocol", 502, Date.now() - startedAt);
     }
@@ -594,11 +682,13 @@ export async function callProvider(options: {
     if (
       !projected ||
       projected.body.model !== route.model ||
-      containsSecret(projected.body, credential)
+      containsSecret(projected.body, credential) ||
+      (options.prepared.gatewayCredential &&
+        containsSecret(projected.body, options.prepared.gatewayCredential))
     )
       throw new ProviderError("provider_protocol", 502, Date.now() - startedAt);
     return {
-      status: response.status,
+      status: captured.status,
       ...projected,
       latencyMs: Date.now() - startedAt,
     };
