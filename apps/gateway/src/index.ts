@@ -159,6 +159,16 @@ function isConfigured(env: GatewayEnv): boolean {
         credential === env.TOKEN_SIGNING_SECRET
       )
         return false;
+      if (route.gateway) {
+        const gatewayCredential = env[route.gateway.credentialBinding];
+        if (
+          typeof gatewayCredential !== "string" ||
+          gatewayCredential.length < 16 ||
+          gatewayCredential === credential ||
+          gatewayCredential === env.TOKEN_SIGNING_SECRET
+        )
+          return false;
+      }
     }
     return true;
   } catch {
@@ -860,6 +870,15 @@ async function handleInference(
         prepared: preparedProvider,
         maxResponseBytes: Math.min(maxBody, 8_388_608),
         signal: controller.signal,
+        // Cloudflare retains at most five entries. D1 supplies policy/route
+        // provenance through the shared request ID.
+        metadata: {
+          request_id: context.requestId,
+          product_id: policy.product_id,
+          environment_id: policy.environment_id,
+          tenant: context.tenantHash ?? "",
+          principal: context.principalHash ?? "",
+        },
         onDispatch: () => {
           context.providerAttempted = true;
           completionTokens = reservedTokens;

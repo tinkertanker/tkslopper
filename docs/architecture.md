@@ -42,7 +42,7 @@ The control plane owns durable authorization facts and the metadata-only operati
 
 ## Provider replacement seam
 
-`ParsedGatewayRequest`, `ProviderRoute`, `ProviderResult`, normalized usage, and `ProviderError` form the data-plane seam. A future LiteLLM adapter can replace `callProvider` without moving entitlement, token, alias, or quota ownership.
+`ParsedGatewayRequest`, `ProviderRoute`, `ProviderResult`, normalized usage, and `ProviderError` form the data-plane seam. Compatible routes use pinned AI SDK provider packages, with optional Cloudflare AI Gateway BYOK routing. Public validation and exact admission/accounting stay here; Cloudflare supplies observed usage and metadata-only request exploration. Direct SDK routing is explicit configuration rollback, never automatic fallback. See [ADR 0012](adr/0012-managed-inference-transport.md) and the [changeover runbook](runbooks/ai-gateway-changeover.md).
 
 ## Operations view
 

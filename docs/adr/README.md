@@ -11,3 +11,4 @@
 - [0009: Public repository security](0009-public-repository-security.md)
 - [0010: Metadata-only operations dashboard](0010-operations-dashboard.md)
 - [0011: Buffered Chat completion outcomes](0011-buffered-chat-outcomes.md)
+- [0012: AI SDK and Cloudflare AI Gateway](0012-managed-inference-transport.md)

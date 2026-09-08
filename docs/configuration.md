@@ -23,6 +23,8 @@ The checked-in Wrangler files are development fixtures only. Placeholder resourc
 
 ## Provider adapter contract v1
 
+Compatible transport now uses pinned AI SDK packages. Add the optional private `gateway` object to route through Cloudflare AI Gateway with separate provider and gateway credentials, backend-derived metadata and payload logging disabled. See [configuration and hosted acceptance](runbooks/ai-gateway-changeover.md). The existing direct base URL is used only when `gateway` is omitted; there is no automatic fallback or Unified Billing mode.
+
 The implemented production seam and initial launch family is `openai-compatible`; `fixture` is restricted to development/test. Trusted profiles cover official OpenAI, OpenRouter, OpenCode Go/Zen, direct DeepSeek, and deployment-approved compatible URLs. This is not a universal compatibility claim, and callers cannot supply a URL.
 
 1. A route declares Chat and/or Responses, image/reasoning/structured-JSON support, physical model, HTTPS base URL, timeout, and a dedicated secret binding.
