@@ -1054,6 +1054,12 @@ export async function handleControlPlane(
   const url = new URL(request.url);
   try {
     ensureConfiguration(env);
+    if (request.method === "GET" && url.pathname === "/") {
+      return new Response(null, {
+        status: 302,
+        headers: { location: "/dashboard", "cache-control": "no-store" },
+      });
+    }
     if (request.method === "GET" && url.pathname === "/healthz") {
       const schema = await env.DB.prepare(
         "SELECT value FROM schema_metadata WHERE key = 'schema_version'",
