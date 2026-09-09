@@ -68,6 +68,21 @@ async function admin(path: string, body: unknown): Promise<Response> {
 }
 
 describe("operations dashboard", () => {
+  it("redirects the root to the protected dashboard without forwarding query parameters", async () => {
+    for (const path of [
+      "/",
+      "/?next=https://untrusted.invalid&token=ignored",
+    ]) {
+      const response = await handleControlPlane(get(path), controlEnv);
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toBe("/dashboard");
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(await response.text()).toBe("");
+    }
+    const response = await handleControlPlane(request("/", {}), controlEnv);
+    expect(response.status).toBe(404);
+  });
+
   it("serves an inert same-origin shell without exposing configuration", async () => {
     const response = await handleControlPlane(get("/dashboard"), controlEnv);
 
