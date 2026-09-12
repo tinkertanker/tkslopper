@@ -189,6 +189,10 @@ async function stageForwardMigration(
     forwardMigration,
     join(migrationsDirectory, "0002_pre_release_integrity.sql"),
   );
+  await copyFile(
+    resolve("db/migrations/0003_dashboard_admins.sql"),
+    join(migrationsDirectory, "0003_dashboard_admins.sql"),
+  );
 }
 
 async function checkCurrentSchema(rootDirectory: string): Promise<void> {
@@ -375,6 +379,7 @@ async function checkLegacyUpgrade(rootDirectory: string): Promise<void> {
        (SELECT COUNT(*) FROM idempotency_keys) AS idempotency_keys,
        (SELECT COUNT(*) FROM provider_attempts) AS provider_attempts,
        (SELECT COUNT(*) FROM admin_audit) AS admin_audit,
+       (SELECT COUNT(*) FROM dashboard_admins) AS dashboard_admins,
        (SELECT COUNT(*) FROM pragma_table_info('idempotency_keys')
          WHERE name = 'request_hash') AS request_hash_columns,
        (SELECT request_id FROM idempotency_keys
@@ -423,6 +428,7 @@ async function checkLegacyUpgrade(rootDirectory: string): Promise<void> {
     idempotency_keys: 1,
     provider_attempts: 2,
     admin_audit: 1,
+    dashboard_admins: 0,
     request_hash_columns: 0,
     idempotency_request_id: "legacy-request",
     stale_after_offset: 0,

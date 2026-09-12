@@ -2,6 +2,12 @@
 
 **Status:** Accepted. Supersedes ADR 0010's dashboard bearer authentication.
 
+**Extension:** Named D1 admin grants now authorize a separate same-origin browser
+write surface and admin-only actor visibility. Access login alone still grants
+no write role. See [named admins](../dashboard.md#named-admins) for authorization,
+bootstrap, migration, audit retention, and rollback; the original read-only
+rollout below remains historical context.
+
 The dashboard uses Cloudflare Access login without a second shared token. The
 Worker checks the platform-verified `ctx.access` audience against private
 `DASHBOARD_ACCESS_AUD` and requires a human email identity. It does not trust
