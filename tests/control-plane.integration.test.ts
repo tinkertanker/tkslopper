@@ -175,13 +175,31 @@ describe("operations dashboard", () => {
       "#audit th, #audit td { overflow-wrap: anywhere; white-space: normal; vertical-align: top; }",
     );
     expect(html).toContain("Oldest 50 past route deadline plus grace");
-    expect(html).toContain('{ label: "Status", value: "display_status" }');
+    expect(html).toContain(
+      '{ label: "Status", value: "display_status", pill: "status" }',
+    );
     expect(html).not.toContain("__CSP_NONCE__");
     expect(html).not.toContain(String(env.ADMIN_TOKEN));
     expect(html).not.toContain(String(env.DASHBOARD_TOKEN));
     expect(html).not.toContain('id="token"');
     expect(html).toContain('id="refresh"');
     expect(html).toContain('credentials: "same-origin"');
+  });
+
+  it("ships every section as a nav-addressable view, with admin gated", async () => {
+    const html = await (
+      await handleControlPlane(get("/dashboard"), controlEnv)
+    ).text();
+
+    for (const view of ["overview", "attempts", "stale", "activity", "admin"]) {
+      expect(html).toContain(`data-view="${view}"`);
+    }
+    // Administration is never in the served markup as visible; only a session says otherwise.
+    expect(html).toContain('<li id="nav-admin" hidden>');
+    expect(html).toContain('<section id="admin-panel" hidden>');
+    expect(html).toContain(
+      'class="nav-item" data-view="overview" aria-current="page"',
+    );
   });
 
   it("fails closed when any control-plane role secrets are reused", async () => {
