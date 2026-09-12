@@ -8,6 +8,13 @@
     "DEPLOYMENT_ENV": "development",
     "TOKEN_ISSUER": "https://control.local.tkslopper.invalid",
     "ENABLE_DEV_ISSUER": "false",
+    "DASHBOARD_ACCESS_AUD": "local-dashboard",
+  },
+  "access": {
+    "dev": {
+      "aud": "local-dashboard",
+      "identity": { "email": "operator@example.invalid" },
+    },
   },
   "d1_databases": [
     {

@@ -28,15 +28,16 @@ import {
   zodMessage,
   type GrantClaims,
 } from "@tkslopper/shared";
-import type { ZodType } from "zod";
+import { z, type ZodType } from "zod";
 import { dashboardOverview, dashboardPage } from "./dashboard";
+import { adminSession, requireBrowserAdmin } from "./admin-access";
 
 export type ControlPlaneEnv = {
   DB: D1Database;
   TOKEN_SIGNING_SECRET: string;
   CREDENTIAL_PEPPER: string;
   ADMIN_TOKEN: string;
-  DASHBOARD_TOKEN: string;
+  DASHBOARD_ACCESS_AUD?: string;
   TOKEN_ISSUER: string;
   DEPLOYMENT_ENV: string;
   ENABLE_DEV_ISSUER: string;
@@ -109,7 +110,6 @@ function ensureConfiguration(env: ControlPlaneEnv): void {
     env.TOKEN_SIGNING_SECRET,
     env.CREDENTIAL_PEPPER,
     env.ADMIN_TOKEN,
-    env.DASHBOARD_TOKEN,
   ];
   if (
     typeof env.DB !== "object" ||
@@ -121,8 +121,6 @@ function ensureConfiguration(env: ControlPlaneEnv): void {
     env.CREDENTIAL_PEPPER.length < 32 ||
     typeof env.ADMIN_TOKEN !== "string" ||
     env.ADMIN_TOKEN.length < 32 ||
-    typeof env.DASHBOARD_TOKEN !== "string" ||
-    env.DASHBOARD_TOKEN.length < 32 ||
     new Set(roleSecrets).size !== roleSecrets.length ||
     !["development", "test", "production"].includes(env.DEPLOYMENT_ENV) ||
     !["true", "false"].includes(env.ENABLE_DEV_ISSUER) ||
@@ -1047,9 +1045,62 @@ async function adminDevIssue(
   return jsonResponse(grant.response);
 }
 
+async function adminSetMember(
+  request: Request,
+  env: ControlPlaneEnv,
+  actorHash: string,
+): Promise<Response> {
+  const body = await parseBody(
+    request,
+    z
+      .object({
+        email: z.string().trim().toLowerCase().email().max(254),
+        enabled: z.boolean(),
+      })
+      .strict(),
+  );
+  const timestamp = nowSeconds();
+  const statement = body.enabled
+    ? env.DB.prepare(
+        `INSERT INTO dashboard_admins (id, email, actor_hash, enabled, created_at, updated_at)
+        VALUES (?, ?, ?, 1, ?, ?) ON CONFLICT(email) DO UPDATE SET enabled = 1, updated_at = excluded.updated_at`,
+      ).bind(
+        randomId("admin"),
+        body.email,
+        await sha256(randomSecret(32)),
+        timestamp,
+        timestamp,
+      )
+    : env.DB.prepare(
+        `UPDATE dashboard_admins SET enabled = 0, updated_at = ?
+        WHERE email = ? AND enabled = 1 AND (SELECT COUNT(*) FROM dashboard_admins WHERE enabled = 1) > 1`,
+      ).bind(timestamp, body.email);
+  const result = await env.DB.batch([
+    statement,
+    env.DB.prepare(
+      `INSERT INTO admin_audit (id, action, resource_type, resource_id, actor_hash, created_at)
+      SELECT ?, ?, 'dashboard_admin', id, ?, ? FROM dashboard_admins WHERE email = ? AND changes() > 0`,
+    ).bind(
+      randomId("audit"),
+      body.enabled ? "admin_grant" : "admin_revoke",
+      actorHash,
+      timestamp,
+      body.email,
+    ),
+  ]);
+  if (!result[0]?.meta.changes)
+    throw new HttpError(
+      409,
+      "conflict",
+      "Admin is already disabled, does not exist, or is the last enabled admin.",
+    );
+  return jsonResponse(body);
+}
+
 export async function handleControlPlane(
   request: Request,
   env: ControlPlaneEnv,
+  ctx?: Pick<ExecutionContext, "access">,
 ): Promise<Response> {
   const url = new URL(request.url);
   try {
@@ -1062,9 +1113,13 @@ export async function handleControlPlane(
     }
     if (request.method === "GET" && url.pathname === "/healthz") {
       const schema = await env.DB.prepare(
-        "SELECT value FROM schema_metadata WHERE key = 'schema_version'",
-      ).first<{ value: string }>();
-      if (schema?.value !== DATABASE_SCHEMA_VERSION)
+        `SELECT value, EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'dashboard_admins') AS admin_schema
+         FROM schema_metadata WHERE key = 'schema_version'`,
+      ).first<{ value: string; admin_schema: number }>();
+      if (
+        schema?.value !== DATABASE_SCHEMA_VERSION ||
+        schema.admin_schema !== 1
+      )
         throw new HttpError(
           500,
           "internal_error",
@@ -1076,7 +1131,10 @@ export async function handleControlPlane(
       return dashboardPage();
     }
     if (request.method === "GET" && url.pathname === "/admin/v1/dashboard") {
-      return await dashboardOverview(request, env);
+      return await dashboardOverview(env, ctx?.access);
+    }
+    if (request.method === "GET" && url.pathname === "/dashboard/api/session") {
+      return await adminSession(env, ctx?.access);
     }
     if (request.method === "POST" && url.pathname === "/v1/token") {
       return await exchangeServiceCredential(request, env);
@@ -1084,9 +1142,20 @@ export async function handleControlPlane(
     if (request.method === "POST" && url.pathname === "/v1/activations") {
       return await activateAccessCode(request, env);
     }
-    if (request.method === "POST" && url.pathname.startsWith("/admin/v1/")) {
-      const actorHash = await requireAdmin(request, env);
-      switch (url.pathname) {
+    const browserAdmin = url.pathname.startsWith("/dashboard/api/");
+    if (
+      request.method === "POST" &&
+      (browserAdmin || url.pathname.startsWith("/admin/v1/"))
+    ) {
+      const actorHash = browserAdmin
+        ? await requireBrowserAdmin(request, env, ctx?.access)
+        : await requireAdmin(request, env);
+      const adminPath = browserAdmin
+        ? url.pathname.replace("/dashboard/api/", "/admin/v1/")
+        : url.pathname;
+      switch (adminPath) {
+        case "/admin/v1/admins":
+          return await adminSetMember(request, env, actorHash);
         case "/admin/v1/products":
           return await adminCreateProduct(request, env, actorHash);
         case "/admin/v1/environments":

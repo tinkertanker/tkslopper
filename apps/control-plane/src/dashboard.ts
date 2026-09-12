@@ -1,14 +1,9 @@
-import {
-  HttpError,
-  bearerToken,
-  jsonResponse,
-  randomSecret,
-  sha256,
-} from "@tkslopper/shared";
+import { jsonResponse, randomSecret } from "@tkslopper/shared";
+import { requireAccessEmail } from "./admin-access";
 
 export type DashboardEnv = {
   DB: D1Database;
-  DASHBOARD_TOKEN: string;
+  DASHBOARD_ACCESS_AUD?: string;
 };
 
 type ProductRow = {
@@ -294,13 +289,20 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         align-items: center;
         margin-top: 24px;
       }
-      input, button {
+      input, button, select {
         min-height: 44px;
         border: 1px solid var(--line);
         border-radius: 10px;
         font: inherit;
       }
-      input { width: 100%; padding: 0 14px; border: 2px solid var(--muted); background: var(--card); color: var(--ink); }
+      input, select { width: 100%; padding: 0 14px; border: 2px solid var(--muted); background: var(--card); color: var(--ink); }
+      .admin-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin: 16px 0; }
+      .admin-fields label { display: grid; gap: 6px; min-width: 0; }
+      .admin-body { min-width: 0; }
+      #admin-panel .section-head { flex-wrap: wrap; }
+      #admin-identity { overflow-wrap: anywhere; min-width: 0; }
+      .admin-body pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+      select:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
       button {
         padding: 0 18px;
         border-color: var(--accent);
@@ -398,18 +400,43 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
   <body>
     <div class="shell">
       <header>
-        <p class="eyebrow">Control plane · read only</p>
+        <p class="eyebrow" id="role-label">Control plane · read only</p>
         <h1>tkslopper operations</h1>
-        <p class="lede">Metadata-only visibility into product state, provider-attempt records, conservative accounting, stale work, and administrative changes. Prompts, responses, credentials, and raw identities never appear here.</p>
-        <form class="auth" id="auth-form">
-          <label><span class="eyebrow">Dashboard token</span><input id="token" type="password" autocomplete="off" required aria-label="Dashboard token"></label>
-          <button type="submit">Load dashboard</button>
-          <span id="status" role="status" aria-live="polite">Enter the separate read-only token. It is kept in memory only.</span>
-        </form>
+        <p class="lede">Operational metadata without prompts or responses. Named admins can manage access and configuration; issued credentials appear only in the operation result.</p>
+        <div class="auth">
+          <button type="button" id="refresh">Refresh dashboard</button>
+          <a href="/cdn-cgi/access/logout">Sign out</a>
+          <span id="status" role="status" aria-live="polite">Loading metadata…</span>
+        </div>
       </header>
 
       <main id="dashboard" hidden>
         <p id="inventory-warning" class="notice" role="status" hidden></p>
+
+        <section id="admin-panel" hidden>
+          <div class="section-head"><h2 id="admin-heading">Administration</h2><p class="section-note" id="admin-identity"></p></div>
+          <div class="admin-body">
+            <p>All admins have full write access. People must also be allowed by Cloudflare Access to sign in. Other company users remain viewers.</p>
+            <div class="table-wrap" role="region" tabindex="0" aria-label="Named admins"><table id="admin-members"></table></div>
+            <p id="admin-limit" hidden>Only the first 100 admins are shown. You can still manage an exact email using the form.</p>
+            <form id="admin-form" autocomplete="off">
+              <label for="admin-operation">Operation</label>
+              <select id="admin-operation"></select>
+              <div id="admin-fields" class="admin-fields"></div>
+              <p>Use product and environment IDs from the tables below. Submission changes live state. There is no automatic retry.</p>
+              <button id="admin-submit" type="submit">Review and apply</button>
+            </form>
+            <p id="admin-result-status" role="status" aria-live="polite"></p>
+            <div id="admin-result" hidden>
+              <p>Copy issued credentials now: they cannot be retrieved later. Do not put them in tickets or logs.</p>
+              <pre id="admin-result-data"></pre>
+              <button id="admin-clear" type="button">Clear result</button>
+            </div>
+            <h3 id="admin-audit-heading">Who changed what</h3>
+            <p>Latest 25 actions. API credential means a legacy API/CLI caller, not an identified person.</p>
+            <div class="table-wrap" role="region" tabindex="0" aria-labelledby="admin-audit-heading"><table id="admin-audit"></table></div>
+          </div>
+        </section>
 
         <div class="cards" role="list" aria-label="24 hour summary">
           <div class="card" role="listitem"><span>Products shown</span><strong id="total-products">—</strong></div>
@@ -456,8 +483,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
     </div>
 
     <script nonce="__CSP_NONCE__">
-      const form = document.getElementById("auth-form");
-      const token = document.getElementById("token");
+      const refresh = document.getElementById("refresh");
       const status = document.getElementById("status");
       const dashboard = document.getElementById("dashboard");
 
@@ -592,27 +618,103 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         ], data.recent_admin_actions);
       }
 
-      form.addEventListener("submit", async (event) => {
+      const adminPanel = document.getElementById("admin-panel");
+      const operation = document.getElementById("admin-operation");
+      const fields = document.getElementById("admin-fields");
+      const adminSubmit = document.getElementById("admin-submit");
+      const scopeFields = [["product_id", "Product ID"], ["environment_id", "Environment ID"]];
+      const identityFields = [["tenant_id", "Classroom / tenant ID"], ["principal_id", "Principal ID"]];
+      const capabilities = ["capabilities", "Capabilities (comma separated)", "list"];
+      const expiry = ["expires_at", "Expires at (local time)", "datetime-local"];
+      const operations = [
+        ["admins", "Manage admins", [["email", "Email", "email"], ["enabled", "Admin access", ["true", "false"]]]],
+        ["access-codes", "Issue classroom code", [...scopeFields, identityFields[0], capabilities, expiry, ["max_activations", "Maximum activations", "number"], ["max_failed_attempts", "Maximum failed attempts", "number", 8]]],
+        ["service-credentials", "Issue service key", [...scopeFields, ...identityFields, capabilities, [...expiry, "", true]]],
+        ["revoke", "Revoke access", [["resource_type", "Resource type", ["access_code", "service_credential", "entitlement", "token_grant"]], ["resource_id", "Resource ID (not secret value)"]]],
+        ["kill-switch", "Set kill switch", [["resource_type", "Resource type", ["environment", "product"]], ["resource_id", "Resource ID"], ["enabled", "Kill switch ON (true) / OFF (false)", ["true", "false"]]]],
+        ["products", "Create product", [["slug", "Slug"], ["display_name", "Display name"]]],
+        ["environments", "Create environment", [scopeFields[0], ["name", "Environment name"], ["audience", "Token audience"], ["rpm_limit", "Requests per minute", "number", 30], ["tpm_limit", "Tokens per minute", "number", 100000], ["concurrency_limit", "Concurrency", "number", 2], ["daily_budget_microcents", "Daily budget (microcents)", "number", 1000000]]],
+        ["aliases", "Set model alias", [...scopeFields, ["alias", "Public alias"], ["endpoint", "Endpoint", ["chat", "responses"]], ["route_id", "Configured provider route ID"], ["max_input_tokens", "Maximum input tokens", "number"], ["max_output_tokens", "Maximum output tokens", "number"], ["input_cost_microcents_per_million", "Input microcents per million tokens", "number", 0], ["output_cost_microcents_per_million", "Output microcents per million tokens", "number", 0]]],
+        ["entitlements", "Create entitlement", [...scopeFields, ...identityFields, ["source", "Source", ["contract", "stripe", "storekit", "dev"]], capabilities, [...expiry, "", true]]],
+      ];
+      for (const [value, label] of operations) { const option = document.createElement("option"); option.value = value; option.textContent = label; operation.append(option); }
+      function clearResult() { document.getElementById("admin-result").hidden = true; set("admin-result-data", ""); }
+      function renderFields() {
+        clearResult();
+        fields.replaceChildren();
+        for (const [name, label, type = "text", initial = "", optional = false] of operations.find((item) => item[0] === operation.value)[2]) {
+          const wrapper = document.createElement("label"); wrapper.textContent = label + (optional ? " (optional)" : "");
+          const input = document.createElement(Array.isArray(type) ? "select" : "input");
+          input.name = name; input.required = !optional;
+          if (Array.isArray(type)) for (const value of type) { const option = document.createElement("option"); option.value = value; option.textContent = name === "enabled" && operation.value === "admins" ? (value === "true" ? "Grant admin" : "Remove admin") : value; input.append(option); }
+          else { input.type = type === "list" ? "text" : type; if (type === "number") { input.step = "1"; input.min = "0"; } input.value = initial; }
+          wrapper.append(input); fields.append(wrapper);
+        }
+      }
+      operation.addEventListener("change", renderFields); renderFields();
+      document.getElementById("admin-clear").addEventListener("click", clearResult);
+      window.addEventListener("pagehide", clearResult);
+      document.getElementById("admin-form").addEventListener("submit", async (event) => {
         event.preventDefault();
-        const suppliedToken = token.value;
-        token.value = "";
+        if (!window.confirm("Apply: " + operation.selectedOptions[0].textContent + "? This changes live state.")) return;
+        const payload = {};
+        const selected = operation.value;
+        for (const [name, , type] of operations.find((item) => item[0] === selected)[2]) {
+          const value = fields.querySelector('[name="' + name + '"]').value;
+          if (value === "") continue;
+          payload[name] = type === "number" ? Number(value) : type === "datetime-local" ? Math.floor(new Date(value).getTime() / 1000) : type === "list" ? value.split(",").map((item) => item.trim()).filter(Boolean) : Array.isArray(type) && type[0] === "true" ? value === "true" : value;
+        }
+        clearResult(); adminSubmit.disabled = true; refresh.disabled = true; operation.disabled = true;
+        set("admin-result-status", "Applying…");
+        try {
+          const response = await fetch("/dashboard/api/" + selected, { method: "POST", headers: { "content-type": "application/json" }, credentials: "same-origin", redirect: "error", cache: "no-store", body: JSON.stringify(payload) });
+          const result = await response.json();
+          if (!response.ok) { if (response.status === 401 || response.status === 403) { adminPanel.hidden = true; status.textContent = "Admin access expired or was revoked. Reload to check your login."; } throw new Error(response.status >= 500 ? "Server error; check activity before retrying because the operation may have completed." : result.error?.message || "Operation rejected."); }
+          if (selected === "admins") await loadDashboard();
+          set("admin-result-status", "Operation completed. Copy any credentials before refreshing the dashboard.");
+          if (!adminPanel.hidden) { set("admin-result-data", JSON.stringify(result, null, 2)); document.getElementById("admin-result").hidden = false; }
+        } catch (error) {
+          set("admin-result-status", error instanceof TypeError || error instanceof SyntaxError ? "Connection failed; the operation may have completed. Check activity before retrying. Reload if your login expired." : error.message);
+        } finally { adminSubmit.disabled = false; refresh.disabled = false; operation.disabled = false; }
+      });
+
+      async function loadDashboard() {
+        refresh.disabled = true;
+        clearResult();
+        adminPanel.hidden = true;
         status.className = "";
         status.textContent = "Loading metadata…";
         dashboard.hidden = true;
         try {
           const response = await fetch("/admin/v1/dashboard", {
-            headers: { authorization: "Bearer " + suppliedToken },
+            credentials: "same-origin",
+            redirect: "error",
             cache: "no-store",
           });
-          if (!response.ok) throw new Error(response.status === 401 ? "Dashboard authentication failed." : "Dashboard data is unavailable.");
+          if (!response.ok) throw new Error(response.status === 401 || response.status === 403 ? "Your login expired or is not authorized. Reload this page to sign in." : "Dashboard data is unavailable.");
           render(await response.json());
+          const sessionResponse = await fetch("/dashboard/api/session", { credentials: "same-origin", redirect: "error", cache: "no-store" });
+          if (!sessionResponse.ok) throw new Error("Unable to verify your role. Reload to sign in.");
+          const session = await sessionResponse.json();
+          set("role-label", session.role === "admin" ? "Control plane · admin" : "Control plane · read only");
+          if (session.role === "admin") {
+            set("admin-identity", "Signed in as " + session.email);
+            document.getElementById("admin-limit").hidden = !session.admins_truncated;
+            renderTable("admin-members", [{ label: "Email", value: "email" }, { label: "Role", value: (row) => row.enabled ? "Admin" : "Viewer (revoked)" }], session.admins);
+            renderTable("admin-audit", [{ label: "Time", value: "created_at", format: time }, { label: "Actor", value: (row) => row.actor_email || "API credential" }, { label: "Action", value: "action" }, { label: "Resource", value: (row) => row.resource_type + " / " + (row.target_email || row.resource_id) }], session.recent_actions);
+            adminPanel.hidden = false;
+          }
           dashboard.hidden = false;
-          status.textContent = "Loaded bounded metadata. Token was not stored; re-enter it to refresh.";
+          status.textContent = "Loaded bounded metadata.";
         } catch (error) {
           status.className = "error";
-          status.textContent = error instanceof Error ? error.message : "Dashboard data is unavailable.";
+          status.textContent = error instanceof TypeError ? "Your session may have expired. Reload this page to sign in." : error instanceof Error ? error.message : "Dashboard data is unavailable.";
+        } finally {
+          refresh.disabled = false;
         }
-      });
+      }
+      refresh.addEventListener("click", loadDashboard);
+      loadDashboard();
     </script>
   </body>
 </html>`;
@@ -631,34 +733,11 @@ export function dashboardPage(): Response {
   });
 }
 
-async function requireDashboard(
-  request: Request,
-  env: DashboardEnv,
-): Promise<void> {
-  const supplied = bearerToken(request);
-  if (!supplied)
-    throw new HttpError(
-      401,
-      "authentication_failed",
-      "dashboard authentication failed",
-    );
-  const [suppliedHash, expectedHash] = await Promise.all([
-    sha256(supplied),
-    sha256(env.DASHBOARD_TOKEN),
-  ]);
-  if (suppliedHash !== expectedHash)
-    throw new HttpError(
-      401,
-      "authentication_failed",
-      "dashboard authentication failed",
-    );
-}
-
 export async function dashboardOverview(
-  request: Request,
   env: DashboardEnv,
+  access?: CloudflareAccessContext,
 ): Promise<Response> {
-  await requireDashboard(request, env);
+  await requireAccessEmail(env, access);
   const generatedAt = Math.floor(Date.now() / 1000);
   const since = generatedAt - 86_400;
   const productLimit = 100;

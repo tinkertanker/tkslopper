@@ -1,6 +1,6 @@
 # ADR 0010: Metadata-only operations dashboard
 
-**Status:** Accepted for the pre-release scaffold; deployment ingress remains unresolved
+**Status:** Accepted. Authentication and ingress are superseded by [ADR 0013](0013-dashboard-access-login.md); the token design below records the original decision.
 
 ## Decision
 
