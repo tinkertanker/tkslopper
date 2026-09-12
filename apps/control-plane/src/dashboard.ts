@@ -701,7 +701,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
             set("admin-identity", "Signed in as " + session.email);
             document.getElementById("admin-limit").hidden = !session.admins_truncated;
             renderTable("admin-members", [{ label: "Email", value: "email" }, { label: "Role", value: (row) => row.enabled ? "Admin" : "Viewer (revoked)" }], session.admins);
-            renderTable("admin-audit", [{ label: "Time", value: "created_at", format: time }, { label: "Actor", value: (row) => row.actor_email || "API credential" }, { label: "Action", value: "action" }, { label: "Resource", value: (row) => row.resource_type + " / " + row.resource_id }], session.recent_actions);
+            renderTable("admin-audit", [{ label: "Time", value: "created_at", format: time }, { label: "Actor", value: (row) => row.actor_email || "API credential" }, { label: "Action", value: "action" }, { label: "Resource", value: (row) => row.resource_type + " / " + (row.target_email || row.resource_id) }], session.recent_actions);
             adminPanel.hidden = false;
           }
           dashboard.hidden = false;

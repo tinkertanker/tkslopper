@@ -206,7 +206,21 @@ describe("named dashboard admins", () => {
     expect(await audit.json()).toMatchObject({
       recent_actions: expect.arrayContaining([
         expect.objectContaining({ action: "create", actor_email: grant.email }),
+        expect.objectContaining({
+          action: "admin_revoke",
+          actor_email: "member@tinkertanker.com",
+          target_email: grant.email,
+        }),
       ]) as unknown,
     });
+    const viewerMetadata = await handleControlPlane(
+      new Request(origin + "/admin/v1/dashboard"),
+      config,
+      owner,
+    );
+    expect(viewerMetadata.status).toBe(200);
+    const viewerText = await viewerMetadata.text();
+    expect(viewerText).not.toContain(grant.email);
+    expect(viewerText).not.toContain("member@tinkertanker.com");
   });
 });

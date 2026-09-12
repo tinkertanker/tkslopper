@@ -70,8 +70,9 @@ export async function adminSession(
     ),
     env.DB.prepare(`SELECT a.action, a.resource_type,
       CASE WHEN a.resource_type = 'access_code' THEN '[redacted]' ELSE a.resource_id END AS resource_id,
-      a.created_at, d.email AS actor_email
+      a.created_at, d.email AS actor_email, target.email AS target_email
       FROM admin_audit a LEFT JOIN dashboard_admins d ON d.actor_hash = a.actor_hash
+      LEFT JOIN dashboard_admins target ON a.resource_type = 'dashboard_admin' AND target.id = a.resource_id
       ORDER BY a.created_at DESC, a.id DESC LIMIT 25`),
   ])) as [D1Result, D1Result];
   return jsonResponse({
