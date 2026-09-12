@@ -202,6 +202,24 @@ describe("operations dashboard", () => {
     );
   });
 
+  it("serves the brand mark same-origin and admits no other image source", async () => {
+    const page = await handleControlPlane(get("/dashboard"), controlEnv);
+    const csp = page.headers.get("content-security-policy") ?? "";
+
+    expect(csp).toContain("img-src 'self'");
+    expect(csp).not.toContain("img-src 'self' data:");
+    expect(await page.text()).toContain('<link rel="icon" href="/favicon.svg"');
+
+    const icon = await handleControlPlane(get("/favicon.svg"), controlEnv);
+
+    expect(icon.status).toBe(200);
+    expect(icon.headers.get("content-type")).toContain("image/svg+xml");
+    expect(icon.headers.get("x-content-type-options")).toBe("nosniff");
+    const svg = await icon.text();
+    expect(svg).toContain("#60ae0a");
+    expect(svg).not.toContain("<script");
+  });
+
   it("fails closed when any control-plane role secrets are reused", async () => {
     for (const conflictingEnv of [
       { ...controlEnv, ADMIN_TOKEN: controlEnv.TOKEN_SIGNING_SECRET },
