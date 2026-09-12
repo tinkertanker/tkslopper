@@ -14,7 +14,16 @@ import {
 } from "../apps/control-plane/src/dashboard";
 import { handleGateway } from "../apps/gateway/src";
 
-const controlEnv = env as unknown as ControlPlaneEnv;
+const controlEnv = {
+  ...env,
+  DASHBOARD_ACCESS_AUD: "dashboard-test-audience",
+} as unknown as ControlPlaneEnv;
+const dashboardContext = {
+  access: {
+    aud: "dashboard-test-audience",
+    getIdentity: () => Promise.resolve({ email: "operator@example.invalid" }),
+  },
+};
 const now = (): number => Math.floor(Date.now() / 1000);
 
 beforeEach(async () => {
@@ -68,6 +77,71 @@ async function admin(path: string, body: unknown): Promise<Response> {
 }
 
 describe("operations dashboard", () => {
+  it("uses verified Access identity and the configured audience, not caller headers", async () => {
+    const accessEnv = {
+      ...controlEnv,
+      DASHBOARD_ACCESS_AUD: "dashboard-test-audience",
+    };
+    const access = {
+      aud: "dashboard-test-audience",
+      getIdentity: () => Promise.resolve({ email: "operator@example.invalid" }),
+    };
+    const response = await handleControlPlane(
+      get("/admin/v1/dashboard"),
+      accessEnv,
+      { access },
+    );
+    expect(response.status).toBe(200);
+    for (const context of [
+      undefined,
+      { access: { ...access, aud: "another-app" } },
+      { access: { ...access, getIdentity: () => Promise.resolve(undefined) } },
+      { access: { ...access, getIdentity: () => Promise.resolve({}) } },
+    ]) {
+      const forged = new Request(
+        "https://control.example.invalid/admin/v1/dashboard",
+        {
+          headers: {
+            "cf-access-authenticated-user-email": "operator@example.invalid",
+            "cf-access-jwt-assertion": "forged",
+          },
+        },
+      );
+      expect(
+        (await handleControlPlane(forged, accessEnv, context)).status,
+      ).toBe(401);
+    }
+    expect(
+      (
+        await handleControlPlane(
+          get("/admin/v1/dashboard", String(env.DASHBOARD_TOKEN)),
+          accessEnv,
+        )
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await handleControlPlane(
+          get("/admin/v1/dashboard"),
+          { ...accessEnv, DASHBOARD_ACCESS_AUD: "" },
+          { access },
+        )
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await handleControlPlane(
+          request("/admin/v1/products", {
+            slug: "denied",
+            display_name: "Denied",
+          }),
+          accessEnv,
+          { access },
+        )
+      ).status,
+    ).toBe(401);
+  });
+
   it("redirects the root to the protected dashboard without forwarding query parameters", async () => {
     for (const path of [
       "/",
@@ -105,13 +179,13 @@ describe("operations dashboard", () => {
     expect(html).not.toContain("__CSP_NONCE__");
     expect(html).not.toContain(String(env.ADMIN_TOKEN));
     expect(html).not.toContain(String(env.DASHBOARD_TOKEN));
+    expect(html).not.toContain('id="token"');
+    expect(html).toContain('id="refresh"');
+    expect(html).toContain('credentials: "same-origin"');
   });
 
   it("fails closed when any control-plane role secrets are reused", async () => {
     for (const conflictingEnv of [
-      { ...controlEnv, DASHBOARD_TOKEN: controlEnv.ADMIN_TOKEN },
-      { ...controlEnv, DASHBOARD_TOKEN: controlEnv.TOKEN_SIGNING_SECRET },
-      { ...controlEnv, DASHBOARD_TOKEN: controlEnv.CREDENTIAL_PEPPER },
       { ...controlEnv, ADMIN_TOKEN: controlEnv.TOKEN_SIGNING_SECRET },
       { ...controlEnv, ADMIN_TOKEN: controlEnv.CREDENTIAL_PEPPER },
       {
@@ -131,7 +205,7 @@ describe("operations dashboard", () => {
     }
   });
 
-  it("requires the separate read credential and returns metadata-only operations state", async () => {
+  it("requires Access login and returns metadata-only operations state", async () => {
     const timestamp = now();
     await env.DB.batch([
       env.DB.prepare(
@@ -199,8 +273,9 @@ describe("operations dashboard", () => {
     ).toBe(401);
 
     const response = await handleControlPlane(
-      get("/admin/v1/dashboard", String(env.DASHBOARD_TOKEN)),
+      get("/admin/v1/dashboard"),
       controlEnv,
+      dashboardContext,
     );
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
@@ -307,8 +382,9 @@ describe("operations dashboard", () => {
       .run();
 
     const response = await handleControlPlane(
-      get("/admin/v1/dashboard", String(env.DASHBOARD_TOKEN)),
+      get("/admin/v1/dashboard"),
       controlEnv,
+      dashboardContext,
     );
     expect(response.status).toBe(200);
     const overview = await response.json<{
@@ -357,8 +433,9 @@ describe("operations dashboard", () => {
     const code = await created.json<{ id: string }>();
 
     const response = await handleControlPlane(
-      get("/admin/v1/dashboard", String(env.DASHBOARD_TOKEN)),
+      get("/admin/v1/dashboard"),
       controlEnv,
+      dashboardContext,
     );
     expect(response.status).toBe(200);
     const serialized = await response.text();
@@ -463,8 +540,9 @@ describe("operations dashboard", () => {
 
     const load = async (): Promise<unknown> => {
       const response = await handleControlPlane(
-        get("/admin/v1/dashboard", String(env.DASHBOARD_TOKEN)),
+        get("/admin/v1/dashboard"),
         controlEnv,
+        dashboardContext,
       );
       expect(response.status).toBe(200);
       const overview: unknown = await response.json();
@@ -543,8 +621,9 @@ describe("operations dashboard", () => {
       .run();
 
     const response = await handleControlPlane(
-      get("/admin/v1/dashboard", String(env.DASHBOARD_TOKEN)),
+      get("/admin/v1/dashboard"),
       controlEnv,
+      dashboardContext,
     );
     expect(response.status).toBe(200);
     const overview = await response.json<{
@@ -606,8 +685,9 @@ describe("operations dashboard", () => {
 
     const load = async () => {
       const response = await handleControlPlane(
-        get("/admin/v1/dashboard", String(env.DASHBOARD_TOKEN)),
+        get("/admin/v1/dashboard"),
         controlEnv,
+        dashboardContext,
       );
       expect(response.status).toBe(200);
       return response.json<{
@@ -668,8 +748,9 @@ describe("operations dashboard", () => {
       .run();
 
     const response = await handleControlPlane(
-      get("/admin/v1/dashboard", String(env.DASHBOARD_TOKEN)),
+      get("/admin/v1/dashboard"),
       controlEnv,
+      dashboardContext,
     );
     expect(response.status).toBe(200);
     const overview = await response.json<{

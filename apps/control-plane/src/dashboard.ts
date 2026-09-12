@@ -1,14 +1,8 @@
-import {
-  HttpError,
-  bearerToken,
-  jsonResponse,
-  randomSecret,
-  sha256,
-} from "@tkslopper/shared";
+import { HttpError, jsonResponse, randomSecret } from "@tkslopper/shared";
 
 export type DashboardEnv = {
   DB: D1Database;
-  DASHBOARD_TOKEN: string;
+  DASHBOARD_ACCESS_AUD?: string;
 };
 
 type ProductRow = {
@@ -401,11 +395,11 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         <p class="eyebrow">Control plane · read only</p>
         <h1>tkslopper operations</h1>
         <p class="lede">Metadata-only visibility into product state, provider-attempt records, conservative accounting, stale work, and administrative changes. Prompts, responses, credentials, and raw identities never appear here.</p>
-        <form class="auth" id="auth-form">
-          <label><span class="eyebrow">Dashboard token</span><input id="token" type="password" autocomplete="off" required aria-label="Dashboard token"></label>
-          <button type="submit">Load dashboard</button>
-          <span id="status" role="status" aria-live="polite">Enter the separate read-only token. It is kept in memory only.</span>
-        </form>
+        <div class="auth">
+          <button type="button" id="refresh">Refresh dashboard</button>
+          <a href="/cdn-cgi/access/logout">Sign out</a>
+          <span id="status" role="status" aria-live="polite">Loading metadata…</span>
+        </div>
       </header>
 
       <main id="dashboard" hidden>
@@ -456,8 +450,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
     </div>
 
     <script nonce="__CSP_NONCE__">
-      const form = document.getElementById("auth-form");
-      const token = document.getElementById("token");
+      const refresh = document.getElementById("refresh");
       const status = document.getElementById("status");
       const dashboard = document.getElementById("dashboard");
 
@@ -592,27 +585,30 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         ], data.recent_admin_actions);
       }
 
-      form.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        const suppliedToken = token.value;
-        token.value = "";
+      async function loadDashboard() {
+        refresh.disabled = true;
         status.className = "";
         status.textContent = "Loading metadata…";
         dashboard.hidden = true;
         try {
           const response = await fetch("/admin/v1/dashboard", {
-            headers: { authorization: "Bearer " + suppliedToken },
+            credentials: "same-origin",
+            redirect: "error",
             cache: "no-store",
           });
-          if (!response.ok) throw new Error(response.status === 401 ? "Dashboard authentication failed." : "Dashboard data is unavailable.");
+          if (!response.ok) throw new Error(response.status === 401 || response.status === 403 ? "Your login expired or is not authorized. Reload this page to sign in." : "Dashboard data is unavailable.");
           render(await response.json());
           dashboard.hidden = false;
-          status.textContent = "Loaded bounded metadata. Token was not stored; re-enter it to refresh.";
+          status.textContent = "Loaded bounded metadata.";
         } catch (error) {
           status.className = "error";
-          status.textContent = error instanceof Error ? error.message : "Dashboard data is unavailable.";
+          status.textContent = error instanceof TypeError ? "Your session may have expired. Reload this page to sign in." : error instanceof Error ? error.message : "Dashboard data is unavailable.";
+        } finally {
+          refresh.disabled = false;
         }
-      });
+      }
+      refresh.addEventListener("click", loadDashboard);
+      loadDashboard();
     </script>
   </body>
 </html>`;
@@ -632,33 +628,30 @@ export function dashboardPage(): Response {
 }
 
 async function requireDashboard(
-  request: Request,
   env: DashboardEnv,
+  access: CloudflareAccessContext | undefined,
 ): Promise<void> {
-  const supplied = bearerToken(request);
-  if (!supplied)
+  // Trust only the platform-verified context, never caller-supplied headers.
+  if (!env.DASHBOARD_ACCESS_AUD || access?.aud !== env.DASHBOARD_ACCESS_AUD)
     throw new HttpError(
       401,
       "authentication_failed",
-      "dashboard authentication failed",
+      "dashboard login required",
     );
-  const [suppliedHash, expectedHash] = await Promise.all([
-    sha256(supplied),
-    sha256(env.DASHBOARD_TOKEN),
-  ]);
-  if (suppliedHash !== expectedHash)
+  const identity = await access.getIdentity();
+  if (typeof identity?.email !== "string" || !identity.email.trim())
     throw new HttpError(
       401,
       "authentication_failed",
-      "dashboard authentication failed",
+      "dashboard login required",
     );
 }
 
 export async function dashboardOverview(
-  request: Request,
   env: DashboardEnv,
+  access?: CloudflareAccessContext,
 ): Promise<Response> {
-  await requireDashboard(request, env);
+  await requireDashboard(env, access);
   const generatedAt = Math.floor(Date.now() / 1000);
   const since = generatedAt - 86_400;
   const productLimit = 100;

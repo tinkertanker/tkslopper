@@ -1,8 +1,8 @@
 # Operations dashboard
 
-The control-plane Worker serves a read-only dashboard shell at `/dashboard`. The shell contains no deployment data. It requests current metadata from `GET /admin/v1/dashboard` only after an operator supplies the separate `DASHBOARD_TOKEN` bearer credential.
+The control-plane Worker serves a read-only dashboard at `/dashboard`. After Cloudflare Access login, the page automatically requests metadata from `GET /admin/v1/dashboard`. Refresh uses the same login session; there is no dashboard token to copy or enter.
 
-The browser clears the token field when submitting and retains the value only for the lifetime of the in-flight request. It is not placed in a URL, cookie, browser storage, source file, or D1. Refreshing the data or page requires re-authentication. The write-capable `ADMIN_TOKEN` is intentionally rejected, and the Worker fails configuration if the dashboard credential equals the admin token, signing secret, or credential pepper.
+The Worker requires platform-verified `ctx.access`, its audience matching private `DASHBOARD_ACCESS_AUD`, and a human email identity. Caller-supplied identity headers, the old dashboard token, and the write-capable `ADMIN_TOKEN` cannot authorize dashboard reads. Access login grants no write-admin privileges. The page stores neither credentials nor metadata in browser storage; Access manages its own session cookie. Sign out uses the same-origin Access logout endpoint.
 
 ## Included data
 
@@ -23,6 +23,8 @@ Live per-principal RPM, TPM, concurrency, reservations, and daily spend remain i
 
 ## Deployment boundary
 
-Create `DASHBOARD_TOKEN` as an independent high-entropy control-plane Worker secret. Do not reuse the admin token, signing secret, credential pepper, or a provider key. The Worker can enforce equality checks only for secrets bound to it; the deployment owner must compare private fingerprints against gateway provider secrets before provisioning. Restrict `/dashboard*` and `/admin/v1/dashboard` with Cloudflare Access or an equivalent operator-only ingress policy before exposing a deployed control Worker; the Worker-level bearer check remains defense in depth.
+Protect `/dashboard*` and `/admin/v1/dashboard` together in one Cloudflare Access application with named-operator allow policies and a short session. Both paths must share the same audience so the page's session also authorizes its data fetch. Set the application's audience tag as private `DASHBOARD_ACCESS_AUD`; absent configuration fails dashboard reads closed without affecting other APIs. Repeat both destinations for any alternate hostname. Add operators to this application's policy, not to a shared token. Existing bearer clients must migrate to Access login; the old dashboard secret is no longer read.
+
+Local Wrangler uses its explicit `access.dev` identity with the `local-dashboard` audience. This simulation works only locally; production requires real platform-verified Access context. Never copy the simulated audience into private production configuration. See [ADR 0013](adr/0013-dashboard-access-login.md) for migration and rollback.
 
 The dashboard has no mutation controls. Kill switches, revocation, provisioning, and credential issuance remain explicit audited admin API/CLI operations.

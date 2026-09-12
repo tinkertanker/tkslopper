@@ -36,7 +36,7 @@ export type ControlPlaneEnv = {
   TOKEN_SIGNING_SECRET: string;
   CREDENTIAL_PEPPER: string;
   ADMIN_TOKEN: string;
-  DASHBOARD_TOKEN: string;
+  DASHBOARD_ACCESS_AUD?: string;
   TOKEN_ISSUER: string;
   DEPLOYMENT_ENV: string;
   ENABLE_DEV_ISSUER: string;
@@ -109,7 +109,6 @@ function ensureConfiguration(env: ControlPlaneEnv): void {
     env.TOKEN_SIGNING_SECRET,
     env.CREDENTIAL_PEPPER,
     env.ADMIN_TOKEN,
-    env.DASHBOARD_TOKEN,
   ];
   if (
     typeof env.DB !== "object" ||
@@ -121,8 +120,6 @@ function ensureConfiguration(env: ControlPlaneEnv): void {
     env.CREDENTIAL_PEPPER.length < 32 ||
     typeof env.ADMIN_TOKEN !== "string" ||
     env.ADMIN_TOKEN.length < 32 ||
-    typeof env.DASHBOARD_TOKEN !== "string" ||
-    env.DASHBOARD_TOKEN.length < 32 ||
     new Set(roleSecrets).size !== roleSecrets.length ||
     !["development", "test", "production"].includes(env.DEPLOYMENT_ENV) ||
     !["true", "false"].includes(env.ENABLE_DEV_ISSUER) ||
@@ -1050,6 +1047,7 @@ async function adminDevIssue(
 export async function handleControlPlane(
   request: Request,
   env: ControlPlaneEnv,
+  ctx?: Pick<ExecutionContext, "access">,
 ): Promise<Response> {
   const url = new URL(request.url);
   try {
@@ -1076,7 +1074,7 @@ export async function handleControlPlane(
       return dashboardPage();
     }
     if (request.method === "GET" && url.pathname === "/admin/v1/dashboard") {
-      return await dashboardOverview(request, env);
+      return await dashboardOverview(env, ctx?.access);
     }
     if (request.method === "POST" && url.pathname === "/v1/token") {
       return await exchangeServiceCredential(request, env);
