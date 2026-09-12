@@ -87,7 +87,7 @@ pnpm admin -- help
 
 The CLI writes one-time service credentials and access codes to stdout. Do not put that output in shell history, tickets, logs, or source control.
 
-The control Worker also serves a read-only operations shell at `/dashboard`. It uses an independent `DASHBOARD_TOKEN`, never the write-capable admin token, and displays only bounded operational metadata. See the [dashboard contract](docs/dashboard.md).
+The control Worker also serves a read-only operations shell at `/dashboard`. It uses Cloudflare Access login with no second token, grants no write-admin privileges, and displays only bounded operational metadata. See the [dashboard contract](docs/dashboard.md).
 
 ## Validation
 
