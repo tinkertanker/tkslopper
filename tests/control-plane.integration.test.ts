@@ -187,6 +187,13 @@ describe("operations dashboard", () => {
     expect(html).toContain(
       ".stamp { margin: 0; color: var(--soft); font-size: 12px; }",
     );
+    expect(html).toContain(
+      ".sidebar a:focus-visible { outline-color: var(--on-band); }",
+    );
+    expect(html).toContain("border: 1px solid var(--soft);");
+    expect(html).toContain(
+      'color: var(--soft);\n          content: "Swipe horizontally for all columns";',
+    );
     expect(html).not.toContain("__CSP_NONCE__");
     expect(html).not.toContain(String(env.ADMIN_TOKEN));
     expect(html).not.toContain(String(env.DASHBOARD_TOKEN));

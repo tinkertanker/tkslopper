@@ -324,6 +324,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       .side-foot p { margin: 0; overflow-wrap: anywhere; color: rgb(255 255 255 / 70%); }
       .side-foot p:empty { display: none; }
       .side-foot a { color: var(--on-band); }
+      .sidebar a:focus-visible { outline-color: var(--on-band); }
 
       .content { display: flex; flex-direction: column; min-width: 0; }
 
@@ -491,7 +492,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           left: 0;
           display: block;
           padding: 0 0 8px;
-          color: var(--faint);
+          color: var(--soft);
           content: "Swipe horizontally for all columns";
           font-size: 12px;
         }
@@ -517,7 +518,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         width: 100%;
         min-height: 40px;
         padding: 0 12px;
-        border: 1px solid var(--rule);
+        border: 1px solid var(--soft);
         border-radius: 6px;
         background: var(--panel);
         color: var(--ink);
