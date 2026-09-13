@@ -175,13 +175,65 @@ describe("operations dashboard", () => {
       "#audit th, #audit td { overflow-wrap: anywhere; white-space: normal; vertical-align: top; }",
     );
     expect(html).toContain("Oldest 50 past route deadline plus grace");
-    expect(html).toContain('{ label: "Status", value: "display_status" }');
+    expect(html).toContain(
+      '{ label: "Status", value: "display_status", pill: "status" }',
+    );
+    expect(html).toContain(
+      'faultCoverageIncomplete ? "No faults in shown metadata" : "All nominal"',
+    );
+    expect(html).toContain(
+      'if (column.pill === "status" && kind === "bad") row.classList.add("flagged")',
+    );
+    expect(html).toContain(
+      ".stamp { margin: 0; color: var(--soft); font-size: 12px; }",
+    );
+    expect(html).toContain(
+      ".sidebar a:focus-visible { outline-color: var(--on-band); }",
+    );
+    expect(html).toContain("border: 1px solid var(--soft);");
+    expect(html).toContain(
+      'color: var(--soft);\n          content: "Swipe horizontally for all columns";',
+    );
     expect(html).not.toContain("__CSP_NONCE__");
     expect(html).not.toContain(String(env.ADMIN_TOKEN));
     expect(html).not.toContain(String(env.DASHBOARD_TOKEN));
     expect(html).not.toContain('id="token"');
     expect(html).toContain('id="refresh"');
     expect(html).toContain('credentials: "same-origin"');
+  });
+
+  it("ships every section as a nav-addressable view, with admin gated", async () => {
+    const html = await (
+      await handleControlPlane(get("/dashboard"), controlEnv)
+    ).text();
+
+    for (const view of ["overview", "attempts", "stale", "activity", "admin"]) {
+      expect(html).toContain(`data-view="${view}"`);
+    }
+    // Administration is never in the served markup as visible; only a session says otherwise.
+    expect(html).toContain('<li id="nav-admin" hidden>');
+    expect(html).toContain('<section id="admin-panel" hidden>');
+    expect(html).toContain(
+      'class="nav-item" data-view="overview" aria-current="page"',
+    );
+  });
+
+  it("serves the brand mark same-origin and admits no other image source", async () => {
+    const page = await handleControlPlane(get("/dashboard"), controlEnv);
+    const csp = page.headers.get("content-security-policy") ?? "";
+
+    expect(csp).toContain("img-src 'self'");
+    expect(csp).not.toContain("img-src 'self' data:");
+    expect(await page.text()).toContain('<link rel="icon" href="/favicon.svg"');
+
+    const icon = await handleControlPlane(get("/favicon.svg"), controlEnv);
+
+    expect(icon.status).toBe(200);
+    expect(icon.headers.get("content-type")).toContain("image/svg+xml");
+    expect(icon.headers.get("x-content-type-options")).toBe("nosniff");
+    const svg = await icon.text();
+    expect(svg).toContain("#60ae0a");
+    expect(svg).not.toContain("<script");
   });
 
   it("fails closed when any control-plane role secrets are reused", async () => {

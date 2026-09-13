@@ -29,7 +29,11 @@ import {
   type GrantClaims,
 } from "@tkslopper/shared";
 import { z, type ZodType } from "zod";
-import { dashboardOverview, dashboardPage } from "./dashboard";
+import {
+  dashboardFavicon,
+  dashboardOverview,
+  dashboardPage,
+} from "./dashboard";
 import { adminSession, requireBrowserAdmin } from "./admin-access";
 
 export type ControlPlaneEnv = {
@@ -1129,6 +1133,9 @@ export async function handleControlPlane(
     }
     if (request.method === "GET" && url.pathname === "/dashboard") {
       return dashboardPage();
+    }
+    if (request.method === "GET" && url.pathname === "/favicon.svg") {
+      return dashboardFavicon();
     }
     if (request.method === "GET" && url.pathname === "/admin/v1/dashboard") {
       return await dashboardOverview(env, ctx?.access);
