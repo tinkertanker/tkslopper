@@ -343,7 +343,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       .glyph svg { fill: none; stroke: var(--green-deep); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
       .glyph-bad, body.alarm .glyph-ok { display: none; }
       body.alarm .glyph-bad { display: block; stroke: #ffb9b3; stroke-width: 2.8; }
-      .stamp { margin: 0; color: var(--faint); font-size: 12px; }
+      .stamp { margin: 0; color: var(--soft); font-size: 12px; }
       .stamp span { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
       body.alarm .stamp { color: rgb(255 255 255 / 74%); }
 
@@ -414,7 +414,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       }
       .section-head { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: baseline; justify-content: space-between; padding-bottom: 11px; border-bottom: 1px solid var(--rule); margin-bottom: 2px; }
       h2 { margin: 0; font-size: 15px; font-weight: 650; }
-      .section-note { margin: 0; color: var(--faint); font-size: 12px; }
+      .section-note { margin: 0; color: var(--soft); font-size: 12px; }
       .notice { margin: 0; padding: 13px 16px; border: 1px solid var(--rule); border-left: 3px solid var(--faint); border-radius: 6px; background: var(--panel); color: var(--soft); font-size: 13px; }
 
       .table-wrap { min-width: 0; max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
@@ -454,13 +454,13 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       #audit th:nth-child(1) { width: 25%; }
       #audit th:nth-child(2) { width: 20%; }
       #audit th:nth-child(3) { width: 55%; }
-      .empty { color: var(--faint); font-style: italic; }
+      .empty { color: var(--soft); font-style: italic; }
       .split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
       .limitation { border-left: 3px solid var(--faint); }
       .limitation .section-head { border-bottom: 0; padding-bottom: 6px; }
       .limitation #quota-note { padding-bottom: 14px; }
 
-      footer { padding: 0 24px 28px; color: var(--faint); font-size: 12px; }
+      footer { padding: 0 24px 28px; color: var(--soft); font-size: 12px; }
       code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
 
       /* Below this the sidebar costs more width than it returns, so it lies down as a strip. */
@@ -712,9 +712,11 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
               cell.title = String(raw ?? "");
               if (column.pill) {
                 const pill = document.createElement("span");
-                pill.className = "pill " + pillKind(column, text);
+                const kind = pillKind(column, text);
+                pill.className = "pill " + kind;
                 pill.textContent = text;
                 cell.append(pill);
+                if (column.pill === "status" && kind === "bad") row.classList.add("flagged");
               } else {
                 if (isNumeric(column)) cell.className = "num";
                 cell.textContent = text;
@@ -744,7 +746,8 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         if (killed) faults.push(plural(killed, "killed environment"));
         if (stale) faults.push(plural(stale, "stale intent"));
         if (failures) faults.push(plural(failures, "failure") + " in 24h");
-        set("verdict", faults.length ? faults.join(", ") : "All nominal");
+        const faultCoverageIncomplete = data.inventory_truncated.environments || data.accounting_truncated.finalized_attempts;
+        set("verdict", faults.length ? faults.join(", ") : faultCoverageIncomplete ? "No faults in shown metadata" : "All nominal");
         document.body.classList.toggle("alarm", faults.length > 0);
         document.getElementById("card-failures").classList.toggle("alert", failures > 0);
         document.getElementById("card-stale").classList.toggle("alert", stale > 0);

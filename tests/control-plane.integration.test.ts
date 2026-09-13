@@ -178,6 +178,15 @@ describe("operations dashboard", () => {
     expect(html).toContain(
       '{ label: "Status", value: "display_status", pill: "status" }',
     );
+    expect(html).toContain(
+      'faultCoverageIncomplete ? "No faults in shown metadata" : "All nominal"',
+    );
+    expect(html).toContain(
+      'if (column.pill === "status" && kind === "bad") row.classList.add("flagged")',
+    );
+    expect(html).toContain(
+      ".stamp { margin: 0; color: var(--soft); font-size: 12px; }",
+    );
     expect(html).not.toContain("__CSP_NONCE__");
     expect(html).not.toContain(String(env.ADMIN_TOKEN));
     expect(html).not.toContain(String(env.DASHBOARD_TOKEN));
