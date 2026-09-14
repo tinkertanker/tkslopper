@@ -6,7 +6,7 @@
   "exports": "./src/index.ts",
   "dependencies": {
     "@ai-sdk/openai": "4.0.60",
-    "@ai-sdk/provider": "4.0.10",
+    "@ai-sdk/provider": "4.0.13",
     "zod": "^3.25.76"
   }
 }
