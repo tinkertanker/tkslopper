@@ -430,6 +430,9 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       tbody tr:hover { background: var(--hover); }
       tbody tr.flagged td:first-child { box-shadow: inset 3px 0 0 var(--alarm); }
       #class-groups th:first-child, #class-groups td:first-child { position: sticky; left: 0; z-index: 1; background: var(--panel); box-shadow: 1px 0 var(--rule); }
+      /* A group name is API-bounded at 200 characters; the sticky first column must not
+         grow past the actions column, so it is clipped with the full name in the title. */
+      .bounded-cell { display: block; width: 180px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
       .pill { display: inline-block; padding: 2px 9px 3px; border-radius: 999px; background: var(--hair); color: var(--soft); font-size: 11px; font-weight: 600; letter-spacing: .01em; }
       .pill.ok { background: var(--green-wash); color: var(--green-deep); }
@@ -488,6 +491,12 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         .side-foot { margin-left: 0; }
         .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         section { padding: 14px 14px 4px; }
+        /* On narrow screens the sticky name column must leave room for the action buttons:
+           shrink the bounded cell, stop pinning the first column, and let the action buttons
+           wrap between themselves. The id scopes the wrap above the base td.actions rule. */
+        #class-groups th:first-child, #class-groups td:first-child { position: static; }
+        .bounded-cell { width: 96px; max-width: 96px; }
+        #class-groups td.actions { white-space: normal; }
         .table-wrap::before {
           position: sticky;
           left: 0;
@@ -908,6 +917,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
                   element.type = "button";
                   element.className = "row-action" + (button.danger ? " danger" : "");
                   element.textContent = button.label;
+                  element.disabled = Boolean(button.disabled);
                   element.addEventListener("click", button.onClick);
                   cell.append(element);
                 }
@@ -926,7 +936,14 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
                 if (column.pill === "status" && kind === "bad") row.classList.add("flagged");
               } else {
                 if (isNumeric(column)) cell.className = "num";
-                cell.textContent = text;
+                if (column.bounded) {
+                  const bounded = document.createElement("span");
+                  bounded.className = "bounded-cell";
+                  bounded.textContent = text;
+                  cell.append(bounded);
+                } else {
+                  cell.textContent = text;
+                }
               }
               row.append(cell);
             }
@@ -1132,7 +1149,10 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       let firstClassLoad = true;
       let classOptions = null;
       let classOptionsTruncated = false;
-      const classState = { classes: [], selected: null, detail: null, usage: null, groupEditing: null };
+      const classState = { classes: [], selected: null, detail: null, usage: null, groupEditing: null, groupEditorRevision: 0 };
+      // Credential-producing actions share one show-once panel, so only one may run at a
+      // time: a second rotation must never overwrite a secret the operator has not seen.
+      let credentialPending = false;
 
       function setStatus(id, message, kind) {
         const element = document.getElementById(id);
@@ -1612,7 +1632,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         for (const key of keys) keyCounts[key.group_id] = (keyCounts[key.group_id] || 0) + 1;
         for (const code of codes) codeCounts[code.classroom_group_id] = (codeCounts[code.classroom_group_id] || 0) + 1;
         renderTable("class-groups", [
-          { label: "Group", value: "name" },
+          { label: "Group", value: "name", bounded: true },
           { label: "Status", value: (row) => statusLabel(row.status), pill: true },
           { label: "Aliases", value: (row) => (row.capabilities === null || row.capabilities === undefined ? "Inherits class" : ((row.capabilities || []).join(", ") || "Inherits class")) },
           { label: "Group budget", value: "budget_microcents", format: cost },
@@ -1627,8 +1647,8 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           { label: "Actions", buttons: (row) => {
             const buttons = [];
             if (row.status === "active") {
-              buttons.push({ label: "API key", onClick: () => issueGroupAccess(row.id, "api_key") });
-              buttons.push({ label: "Join code", onClick: () => issueGroupAccess(row.id, "join_code") });
+              buttons.push({ label: "API key", disabled: credentialPending, onClick: () => issueGroupAccess(row.id, "api_key") });
+              buttons.push({ label: "Join code", disabled: credentialPending, onClick: () => issueGroupAccess(row.id, "join_code") });
             }
             buttons.push({ label: "Adjust", onClick: () => openGroupEditor(row) });
             if (row.status === "active") buttons.push({ label: "Revoke", danger: true, onClick: () => revokeGroup(row) });
@@ -1646,7 +1666,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           { label: "Expires (UTC)", value: (row) => row.expires_at === null || row.expires_at === undefined ? "Inherits group schedule" : time(row.expires_at) },
           { label: "State", value: (row) => row.revoked_at ? "Revoked" : "Active", pill: true },
           { label: "Actions", buttons: (row) => row.revoked_at ? [] : [
-            { label: "Rotate", onClick: () => rotateKey(row.id) },
+            { label: "Rotate", disabled: credentialPending, onClick: () => rotateKey(row.id) },
             { label: "Revoke", danger: true, onClick: () => revokeKey(row.id) },
           ] },
         ], Array.isArray(detail.keys) ? detail.keys : []);
@@ -1720,6 +1740,52 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           return false;
         }
       }
+      // Ownership-guarded variant for completions that belong to a specific draft rather
+      // than to a selected class: the group editor session and the bulk-create draft.
+      // Gate once when the awaited work resolves, then run the owned cleanup and success
+      // status synchronously: cleanup must not invalidate the ownership it just checked.
+      async function runOwnedAction(statusId, owns, action, onSuccess, onSuperseded) {
+        setStatus(statusId, "Applying…", "");
+        try {
+          const message = await action();
+          if (!owns()) {
+            if (onSuperseded) onSuperseded();
+            return true;
+          }
+          if (onSuccess) onSuccess();
+          setStatus(statusId, message || "Done.", "ok");
+          return true;
+        } catch (error) {
+          if (!owns()) {
+            setStatus("classes-status", messageFor(error), "error");
+            return false;
+          }
+          setStatus(statusId, messageFor(error), "error");
+          return false;
+        }
+      }
+      function groupEditorOwnedBy(owner) {
+        return classState.selected === owner.classId
+          && classState.groupEditing === owner.groupId
+          && classState.groupEditorRevision === owner.revision;
+      }
+      // Credential-producing actions share one show-once panel. While one is in flight the
+      // issuance and rotation controls are disabled, so a later action cannot replace a
+      // secret the operator has not read yet.
+      function setCredentialPending(pending) {
+        credentialPending = pending;
+        renderGroups();
+        renderKeys();
+      }
+      async function runCredentialAction(action) {
+        if (credentialPending) return;
+        setCredentialPending(true);
+        try {
+          await action();
+        } finally {
+          setCredentialPending(false);
+        }
+      }
       function groupContext(groupId) {
         const group = classState.detail?.groups?.find((row) => row.id === groupId);
         const classroom = classState.classes.find((row) => row.id === classState.selected);
@@ -1737,27 +1803,35 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         setStatus("class-secret-status", "", "");
       }
       async function issueGroupAccess(groupId, kind) {
+        if (credentialPending) return;
+        const classId = classState.selected;
         const label = kind === "api_key" ? "API key" : "join code";
         const context = groupContext(groupId);
         if (!window.confirm("Issue a new " + label + " for " + context + "? It is shown once and cannot be retrieved later.")) return;
-        clearSecret();
-        await runClassAction("group-status", async () => {
-          const result = await dashboardPost("groups/access", { group_id: groupId, kind });
-          showSecret(result, context);
-          await loadGroups();
-          return "Issued " + label + " for " + context + ".";
+        await runCredentialAction(async () => {
+          clearSecret();
+          await runClassAction("group-status", async () => {
+            const result = await dashboardPost("groups/access", { group_id: groupId, kind });
+            showSecret(result, context);
+            await loadGroups();
+            return "Issued " + label + " for " + context + ".";
+          }, classId);
         });
       }
       async function rotateKey(id) {
+        if (credentialPending) return;
+        const classId = classState.selected;
         const key = classState.detail?.keys?.find((row) => row.id === id);
         const context = groupContext(key?.group_id || id);
         if (!window.confirm("Rotate the API key for " + context + "? The old key is invalidated immediately; the group and its spend are unchanged.")) return;
-        clearSecret();
-        await runClassAction("group-status", async () => {
-          const result = await dashboardPost("groups/rotate", { id });
-          showSecret(result, context);
-          await loadGroups();
-          return "Rotated the API key for " + context + ". The group and its spend are unchanged.";
+        await runCredentialAction(async () => {
+          clearSecret();
+          await runClassAction("group-status", async () => {
+            const result = await dashboardPost("groups/rotate", { id });
+            showSecret(result, context);
+            await loadGroups();
+            return "Rotated the API key for " + context + ". The group and its spend are unchanged.";
+          }, classId);
         });
       }
       async function revokeKey(id) {
@@ -1786,12 +1860,20 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       }
       function openGroupEditor(row) {
         classState.groupEditing = row.id;
+        // A new editor session invalidates any in-flight save for the previous draft,
+        // even when it targets the same group.
+        classState.groupEditorRevision += 1;
         renderFieldSet(document.getElementById("group-edit-fields"), GROUP_FIELDS, row);
         renderGroupAliases(row);
         document.getElementById("group-edit-panel").hidden = false;
         set("group-edit-heading", "Adjust group: " + row.name);
         setStatus("group-edit-status", "", "");
       }
+      // Editing the open editor is a new draft too, so a held save for the same group
+      // cannot close the panel over newer field changes.
+      document.getElementById("group-edit-form").addEventListener("input", () => {
+        classState.groupEditorRevision += 1;
+      });
 
       renderFieldSet(document.getElementById("class-create-fields"), CLASS_SCOPE_FIELDS.concat(CLASS_FIELDS), { timezone: "Asia/Singapore" });
       set("class-create-schedule-note", scheduleNote);
@@ -1887,32 +1969,53 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       });
       document.getElementById("group-create-form").addEventListener("submit", async (event) => {
         event.preventDefault();
-        if (!classState.selected) return;
-        const names = document.getElementById("group-names").value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+        const classId = classState.selected;
+        if (!classId) return;
+        const textarea = document.getElementById("group-names");
+        const submitted = textarea.value;
+        const names = submitted.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
         if (!names.length) { setStatus("group-status", "Enter at least one group name.", "error"); return; }
         if (names.length > 100) { setStatus("group-status", "At most 100 groups per request.", "error"); return; }
-        await runClassAction("group-status", async () => {
-          const result = await dashboardPost("groups", { class_id: classState.selected, names });
-          document.getElementById("group-names").value = "";
+        // The draft belongs to this class and this exact text: a newer draft typed for
+        // another class must survive an older completion.
+        const owns = () => classState.selected === classId && document.getElementById("group-names").value === submitted;
+        await runOwnedAction("group-status", owns, async () => {
+          const result = await dashboardPost("groups", { class_id: classId, names });
           await Promise.all([loadGroups(), loadUsage()]);
           return "Created " + number((result && result.groups ? result.groups.length : names.length)) + " group(s).";
-        });
+        }, () => { document.getElementById("group-names").value = ""; });
       });
       document.getElementById("group-edit-form").addEventListener("submit", async (event) => {
         event.preventDefault();
-        if (!classState.groupEditing) return;
+        const owner = {
+          classId: classState.selected,
+          groupId: classState.groupEditing,
+          revision: classState.groupEditorRevision,
+        };
+        if (!owner.classId || !owner.groupId) return;
         const payload = readFieldSet(document.getElementById("group-edit-fields"));
         payload.capabilities = readAliases(document.getElementById("group-edit-aliases"));
         if (Array.isArray(payload.capabilities) && !payload.capabilities.length) payload.capabilities = null;
         if (payload.budget_microcents === null || !Number.isFinite(payload.budget_microcents)) { setStatus("group-edit-status", "A group budget is required.", "error"); return; }
         if (payload.starts_at && payload.expires_at && payload.expires_at <= payload.starts_at) { setStatus("group-edit-status", "The end time must be after the start time.", "error"); return; }
-        payload.id = classState.groupEditing;
-        await runClassAction("group-edit-status", async () => {
+        payload.id = owner.groupId;
+        // Cleanup is owned by the editor session that submitted: another group, a reopened
+        // draft, or another class must not be hidden or cleared by an older completion.
+        const owns = () => groupEditorOwnedBy(owner);
+        await runOwnedAction("group-edit-status", owns, async () => {
           await dashboardPost("groups/update", payload);
           await Promise.all([loadGroups(), loadUsage()]);
+          return "Group updated.";
+        }, () => {
           document.getElementById("group-edit-panel").hidden = true;
           classState.groupEditing = null;
-          return "Group updated.";
+        }, () => {
+          const stillThisEditor =
+            classState.selected === owner.classId &&
+            classState.groupEditing === owner.groupId;
+          if (stillThisEditor && !document.getElementById("group-edit-panel").hidden) {
+            setStatus("group-edit-status", "Saved the earlier version; your newer edits are not saved yet.", "ok");
+          }
         });
       });
       document.getElementById("class-secret-copy").addEventListener("click", async () => {

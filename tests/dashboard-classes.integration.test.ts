@@ -222,7 +222,7 @@ describe("course-centred dashboard UI", () => {
       expect(html).toContain(`"${operation}"`);
     }
     expect(html).toContain(
-      'dashboardPost("groups", { class_id: classState.selected, names })',
+      'dashboardPost("groups", { class_id: classId, names })',
     );
     expect(html).toContain(
       'dashboardPost("groups/access", { group_id: groupId, kind })',

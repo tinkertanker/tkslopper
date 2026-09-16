@@ -35,6 +35,57 @@ type Json = Record<string, unknown>;
 
 const ALIAS_PATTERN = /^[a-z][a-z0-9._:-]*\.v[1-9][0-9]*$/;
 
+/**
+ * Test-only probe injected before the dashboard script. It wraps submit listeners on the
+ * two group forms and click listeners on the class/group action controls so the regression
+ * can await the real handler promise (which includes the handler's awaited refresh work)
+ * instead of inferring completion from timing.
+ */
+const HANDLER_SETTLEMENT_PROBE = `<script>
+(() => {
+  window.__handlers = { pending: 0, completed: 0 };
+  const submitIds = ["group-edit-form", "group-create-form"];
+  const clickIds = ["class-pause", "class-duplicate", "class-duplicate-submit", "class-detail-refresh", "class-edit-submit"];
+  const original = EventTarget.prototype.addEventListener;
+  EventTarget.prototype.addEventListener = function (type, listener, options) {
+    const mightTrack = listener && typeof listener === "function" &&
+      ((type === "submit" && submitIds.includes(this.id)) || type === "click");
+    if (!mightTrack) return original.call(this, type, listener, options);
+    // Row action buttons are registered while still detached, so the ancestry test has to
+    // happen when the handler is invoked, not when it is added.
+    const wrapped = function (event) {
+      const target = this;
+      const tracked =
+        (type === "submit" && submitIds.includes(target.id)) ||
+        (type === "click" &&
+          (clickIds.includes(target.id) ||
+            (target instanceof Element && target.classList.contains("row-action") &&
+              target.closest("#class-keys, #class-groups"))));
+      if (!tracked) return listener.call(target, event);
+      window.__handlers.pending += 1;
+      let result;
+      try {
+        result = listener.call(target, event);
+      } catch (error) {
+        window.__handlers.pending -= 1;
+        window.__handlers.completed += 1;
+        throw error;
+      }
+      if (result && typeof result.then === "function") {
+        return result.finally(() => {
+          window.__handlers.pending -= 1;
+          window.__handlers.completed += 1;
+        });
+      }
+      window.__handlers.pending -= 1;
+      window.__handlers.completed += 1;
+      return result;
+    };
+    return original.call(this, type, wrapped, options);
+  };
+})();
+</script>`;
+
 const scenarioNames: Scenario[] = [
   "populated",
   "empty",
@@ -285,6 +336,12 @@ function buildStore(scenario: Scenario): Store {
       budget_microcents: 500_000_000,
       starts_at: now() + 86_400 * 7,
       expires_at: now() + 86_400 * 21,
+    }),
+    groupRow({
+      id: "grp_b1",
+      class_id: "cls_p4",
+      name: "Science Group 1",
+      budget_microcents: 300_000_000,
     }),
   ];
   store.keys = [
@@ -557,7 +614,10 @@ async function main(): Promise<void> {
   const port = Number(process.argv[2] ?? 8790);
   let { scenario, store } = buildScenario();
   let updateDelayMs = 0;
-  const html = await dashboardPage().text();
+  const html = (await dashboardPage().text()).replace(
+    "<script nonce=",
+    `${HANDLER_SETTLEMENT_PROBE}<script nonce=`,
+  );
   const favicon = await dashboardFavicon().text();
 
   const server = createServer((request, response) => {
