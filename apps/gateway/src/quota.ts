@@ -25,7 +25,14 @@ type QuotaState = {
 
 const COMPLETION_RECEIPT_TTL_SECONDS = 300;
 const MAX_COMPLETION_RECEIPTS = 512;
-export const QUOTA_PROTOCOL_VERSION = "1";
+/**
+ * Bumped whenever the coordinator's operation set changes, because gateway
+ * readiness only compares this string. Classroom acquire/complete operations
+ * require "2": a coordinator that still reports "1" cannot serve them, and
+ * equality would otherwise let that old code pass readiness during a mixed
+ * rollout. Legacy operations and state layout are unchanged.
+ */
+export const QUOTA_PROTOCOL_VERSION = "2";
 
 export type QuotaAcquireRequest = {
   operation: "acquire";
