@@ -16,6 +16,26 @@ Role changes and their audit records commit in one D1 batch. Disabled role rows 
 
 Apply additive migration `0003_dashboard_admins.sql` before deploying the new control Worker, then bootstrap the approved operator. It does not alter existing tables or the gateway-compatible schema marker; control readiness additionally requires the new table. Rollback to the preceding Worker leaves grants inert without deleting audit history. Removing named access never changes the legacy recovery credential.
 
+## Classes, group access and usage
+
+Named admins can create a class within a product/environment/tenant, select enabled capability aliases, set its course, instructors, IANA timezone and active window, and bulk-create named groups. Class identifiers are separate from tenant identifiers. No student roster or provider credentials are required. Group overrides narrow the class model policy and intersect its schedule. Start is inclusive; expiry is exclusive. Daily budget buckets use UTC, independently of the class display timezone.
+
+- **Class budget:** one lifetime spending cap shared by every group in the class.
+- **Group allocation:** one lifetime cap shared by all keys and activated devices in that group. New groups copy the class's default allocation; changing the default does not rewrite existing allocations.
+- **Daily budget and RPM/TPM/concurrency:** group-scoped limits, inherited from class defaults unless overridden, and bounded by the environment guardrails. Class defaults are not additional class-wide rate limits. Zero budget permits only zero-cost requests; it does not mean unlimited.
+
+Group **API keys** (`tkgk_…`) are accepted directly as gateway Bearer credentials. Only a SHA-256 digest of each high-entropy key is stored. **Join codes** retain the existing `/v1/activations` device flow and return short-lived grants. A code's activation count limits devices, not spending. Secrets are shown only when issued; copy them for distribution before dismissing the result. Rotation revokes the old API key and issues a replacement for the same group without resetting spend.
+
+Class pause, class/group revocation, schedules and model restrictions are checked on every gateway request, including previously issued grants. Revocation is terminal; pause is reversible. Requests already authorized may finish. Individual key/code expiry still applies if the class window is extended. Configuration duplication creates new class/group identities without credentials, usage or revoked state; groups inherit the new class window rather than retaining old schedule overrides.
+
+Classroom routes use POST under `/admin/v1/`: `classes`, `classes/list`, `classes/options`, `classes/update`, `classes/duplicate`, `classes/usage`, `groups`, `groups/list`, `groups/update`, `groups/access`, `groups/rotate`, and `groups/revoke-key`. The same suffixes under `/dashboard/api/` use browser-admin authorization. Existing service-credential, grant, activation and revocation routes remain available.
+
+Class usage is lifetime usage attributed by group, with finalized counts/token/cost sums separate from pending intent counts/reservation ceilings. Token/cost sums are decimal strings in the API. Class lists are capped at 200, group/access lists at 500, and bulk creation at 100; responses disclose truncation. Class usage totals include all groups even when the displayed group list is truncated. Group/class revocation retains usage and audit history.
+
+One class-scoped Durable Object atomically reserves the shared class cap and the group limits. Classroom requests reserve the configured input ceiling plus requested output before dispatch, then settle against reported usage; uncertain dispatched requests retain a conservative charge. This can require more available budget than the eventual request cost. Live admission state is not the same as the D1 usage projection: failed finalization can leave a pending intent after settlement, and admission uncertainty can retain a reservation. There is no automatic reconciliation; do not interpret displayed finalized cost as exact remaining spendable budget or provider billing.
+
+Apply additive migration `0004_classrooms.sql`, deploy and verify the updated gateway, then deploy the control plane that can issue classroom access. Both readiness checks require the new tables and linkage columns. Do not roll back the gateway to a pre-classroom build while classroom access remains active: an older gateway would not enforce classroom policy on existing join-code grants. Stop classroom traffic and invalidate its issued credentials/grants before such a rollback; retain the additive schema and history.
+
 ## Included data
 
 - at most 100 products and 250 environments per response, with prominent truncation warnings and separate visible product/environment enabled and kill-switch state;

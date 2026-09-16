@@ -13,3 +13,4 @@
 - [0011: Buffered Chat completion outcomes](0011-buffered-chat-outcomes.md)
 - [0012: AI SDK and Cloudflare AI Gateway](0012-managed-inference-transport.md)
 - [0013: Login-based dashboard access](0013-dashboard-access-login.md)
+- [0014: Classroom authorization and accounting](0014-classroom-authorization-accounting.md)

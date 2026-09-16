@@ -28,6 +28,7 @@ import {
   zodMessage,
   type GrantClaims,
 } from "@tkslopper/shared";
+import { loadClassroomPolicy } from "../../../packages/shared/src/classroom-policy";
 import { z, type ZodType } from "zod";
 import {
   dashboardFavicon,
@@ -35,6 +36,7 @@ import {
   dashboardPage,
 } from "./dashboard";
 import { adminSession, requireBrowserAdmin } from "./admin-access";
+import { dispatchClassroomAdmin } from "./classrooms";
 
 export type ControlPlaneEnv = {
   DB: D1Database;
@@ -81,6 +83,7 @@ type ServiceCredentialRow = EnvironmentRow & {
 
 type AccessCodeRow = EnvironmentRow & {
   id: string;
+  classroom_group_id: string | null;
   tenant_id: string;
   secret_salt: string;
   secret_hash: string;
@@ -478,6 +481,7 @@ async function activateAccessCode(
   const row = await env.DB.prepare(
     `SELECT c.id, c.product_id, c.environment_id, c.tenant_id, c.secret_salt, c.secret_hash,
             c.capabilities_json, c.disabled, c.expires_at, c.max_activations, c.activation_count,
+            c.classroom_group_id,
             c.max_failed_attempts, c.failed_attempts, e.audience, e.token_ttl_seconds,
             p.enabled AS product_enabled, p.kill_switch AS product_kill_switch,
             e.enabled AS environment_enabled, e.kill_switch AS environment_kill_switch
@@ -521,7 +525,29 @@ async function activateAccessCode(
     );
   }
   ensureEnvironmentEnabled(row);
-  const allowedCapabilities = parseCapabilities(row.capabilities_json);
+  const classroom = row.classroom_group_id
+    ? await loadClassroomPolicy(env.DB, row.classroom_group_id, now)
+    : undefined;
+  if (
+    classroom &&
+    (classroom.productId !== row.product_id ||
+      classroom.environmentId !== row.environment_id ||
+      classroom.tenantId !== row.tenant_id)
+  )
+    throw new HttpError(
+      403,
+      "authorization_failed",
+      "classroom identity mismatch",
+    );
+  const allowedCapabilities = parseCapabilities(row.capabilities_json).filter(
+    (capability) => !classroom || classroom.capabilities.includes(capability),
+  );
+  if (classroom && allowedCapabilities.length === 0)
+    throw new HttpError(
+      403,
+      "authorization_failed",
+      "no classroom capability is entitled",
+    );
   const capabilities = selectCapabilities(
     allowedCapabilities,
     body.capabilities,
@@ -633,7 +659,12 @@ async function activateAccessCode(
         row.token_ttl_seconds,
       ),
       entitlementId: entitlement.id,
-      entitlementExpiresAt: entitlement.expires_at,
+      entitlementExpiresAt: classroom
+        ? Math.min(
+            classroom.expiresAt,
+            entitlement.expires_at ?? row.expires_at,
+          )
+        : entitlement.expires_at,
     }),
   );
 }
@@ -1117,12 +1148,31 @@ export async function handleControlPlane(
     }
     if (request.method === "GET" && url.pathname === "/healthz") {
       const schema = await env.DB.prepare(
-        `SELECT value, EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'dashboard_admins') AS admin_schema
+        `SELECT value,
+                EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'dashboard_admins') AS admin_schema,
+                EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'classroom_classes') AS classroom_classes_schema,
+                EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'classroom_groups') AS classroom_groups_schema,
+                EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'classroom_group_keys') AS classroom_group_keys_schema,
+                EXISTS(SELECT 1 FROM pragma_table_info('access_codes') WHERE name = 'classroom_group_id') AS access_code_group_column,
+                EXISTS(SELECT 1 FROM pragma_table_info('provider_attempts') WHERE name = 'classroom_group_id') AS attempt_group_column
          FROM schema_metadata WHERE key = 'schema_version'`,
-      ).first<{ value: string; admin_schema: number }>();
+      ).first<{
+        value: string;
+        admin_schema: number;
+        classroom_classes_schema: number;
+        classroom_groups_schema: number;
+        classroom_group_keys_schema: number;
+        access_code_group_column: number;
+        attempt_group_column: number;
+      }>();
       if (
         schema?.value !== DATABASE_SCHEMA_VERSION ||
-        schema.admin_schema !== 1
+        schema.admin_schema !== 1 ||
+        schema.classroom_classes_schema !== 1 ||
+        schema.classroom_groups_schema !== 1 ||
+        schema.classroom_group_keys_schema !== 1 ||
+        schema.access_code_group_column !== 1 ||
+        schema.attempt_group_column !== 1
       )
         throw new HttpError(
           500,
@@ -1160,6 +1210,13 @@ export async function handleControlPlane(
       const adminPath = browserAdmin
         ? url.pathname.replace("/dashboard/api/", "/admin/v1/")
         : url.pathname;
+      const classroomResponse = await dispatchClassroomAdmin(
+        request,
+        env,
+        actorHash,
+        adminPath,
+      );
+      if (classroomResponse) return classroomResponse;
       switch (adminPath) {
         case "/admin/v1/admins":
           return await adminSetMember(request, env, actorHash);

@@ -2,10 +2,10 @@
 
 `tkslopper` is Tinkertanker's shared managed-inference boundary. It has two bounded components:
 
-- a **control plane** for products, environments, entitlements, activation codes, service credentials, short-lived grants, revocation, kill switches, and a metadata-only operations dashboard;
-- a **data plane** that resolves capability aliases, enforces policy and exact per-principal reservations, invokes one configured provider route, normalizes usage/errors, and records metadata-only attempt provenance.
+- a **control plane** for products, environments, classes/groups, entitlements, activation codes, service credentials, short-lived grants, revocation, kill switches, and an instructor/operations dashboard;
+- a **data plane** that resolves capability aliases, enforces per-principal or shared class/group reservations, invokes one configured provider route, normalizes usage/errors, and records metadata-only attempt provenance.
 
-It intentionally does **not** own product prompts, workflows, retrieval, tools, memory, uploads, artifacts, classroom UX, payment UX, student records, provider fallback, semantic retries, or response caching.
+It intentionally does **not** own product prompts, workflows, retrieval, tools, memory, uploads, artifacts, student-facing classroom UX, payment UX, student records, provider fallback, semantic retries, or response caching.
 
 > [!IMPORTANT]
 > This repository is a deployable public scaffold, not a running production service. No Cloudflare resources, provider keys, billing integrations, domains, or production routes are included.
@@ -15,15 +15,16 @@ It intentionally does **not** own product prompts, workflows, retrieval, tools, 
 ```diagram
 Product backend ──service credential──▶ Control Worker ──short grant──┐
 Native app ──access code + device───▶ Control Worker ──short grant───┤
+Group API client ───────────────────────group API key──────────────┤
                                                                     ▼
                               D1 policy ◀──── Gateway Worker ───▶ Provider
                                                   │
                                                   ▼
-                                  per-principal Durable Object
+                              per-principal or per-class Durable Object
                                   (RPM/TPM/concurrency/budget)
 ```
 
-Both Workers share one D1 database. The control plane is the only public writer of identity and entitlement policy. The gateway derives product, environment, tenant, and principal from a signed, database-backed grant; client attribution overrides are rejected. Provider routes are deployment configuration, and only versioned capability aliases are public.
+Both Workers share one D1 database. The control plane is the only public writer of identity and entitlement policy. The gateway derives product, environment, tenant, and principal from a signed, database-backed grant or a database-backed group key; client attribution overrides are rejected. Provider routes are deployment configuration, and only versioned capability aliases are public.
 
 See [the architecture overview](docs/architecture.md), [threat model](docs/threat-model.md), [configuration governance](docs/configuration.md), and [decision records](docs/adr/README.md).
 
@@ -75,6 +76,8 @@ pnpm e2e:local
 
 It creates isolated random local products named for Vibbit, Tapplet, and Playground Pal; exchanges service grants; exercises the normalized schema-smoke fixtures plus kill-switch and revocation paths; and prints no credential values. These fixtures are not source-exact product conformance. See the [product integration contracts](docs/integrations.md).
 
+The same command exercises class creation, bulk groups, two group API keys and a device join code, exact usage attribution, rotation without a budget reset, shared-budget denial, and pause/revocation of previously issued access.
+
 The checked-in fixture provider works only when `DEPLOYMENT_ENV` is `development` or `test`; it cannot run in production. Set `ENABLE_DEV_ISSUER=true` only in a local control-plane `.dev.vars` when using the admin-only test issuer.
 
 Use the admin CLI against a local control Worker:
@@ -87,7 +90,7 @@ pnpm admin -- help
 
 The CLI writes one-time service credentials and access codes to stdout. Do not put that output in shell history, tickets, logs, or source control.
 
-The control Worker serves an operations dashboard at `/dashboard` using Cloudflare Access login with no second token. Company viewers see bounded metadata; explicitly named admins can manage people, issue credentials, and perform audited operations. See the [dashboard contract](docs/dashboard.md).
+The control Worker serves an instructor/operations dashboard at `/dashboard` using Cloudflare Access login with no second token. Company viewers see bounded operational metadata; explicitly named admins can manage classes, groups, access and usage alongside existing audited operations. Group API keys work directly at the gateway; join codes retain the existing device activation flow. See the [dashboard contract](docs/dashboard.md).
 
 ## Validation
 
