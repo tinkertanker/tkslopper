@@ -28,9 +28,18 @@ import {
 import {
   QUOTA_PROTOCOL_VERSION,
   QuotaCoordinator,
+  type ClassroomAcquireRequest,
+  type ClassroomCompleteRequest,
   type QuotaAcquireRequest,
   type QuotaCompleteRequest,
 } from "./quota";
+import {
+  authenticateClassroomKey,
+  isClassroomGroupKey,
+  resolveClassroomGrantAuthorization,
+  type ClassroomLimits,
+  type RequestPolicy,
+} from "./classroom";
 
 export { QuotaCoordinator };
 
@@ -44,12 +53,8 @@ export type GatewayEnv = {
   [binding: string]: unknown;
 } & Record<"TOKEN_SIGNING_SECRET", string>;
 
-type GrantPolicyRow = {
+type GrantPolicyRow = RequestPolicy & {
   grant_id: string;
-  product_id: string;
-  environment_id: string;
-  tenant_id: string;
-  principal_id: string;
   audience: string;
   capabilities_json: string;
   grant_expires_at: number;
@@ -69,6 +74,7 @@ type GrantPolicyRow = {
   access_code_product_id: string | null;
   access_code_environment_id: string | null;
   access_code_tenant_id: string | null;
+  access_code_classroom_group_id: string | null;
   activation_id: string | null;
   activation_tenant_id: string | null;
   activation_principal_id: string | null;
@@ -78,11 +84,6 @@ type GrantPolicyRow = {
   environment_enabled: number;
   environment_kill_switch: number;
   environment_policy_version: number;
-  rpm_limit: number;
-  tpm_limit: number;
-  concurrency_limit: number;
-  daily_budget_microcents: number;
-  max_request_bytes: number;
 };
 
 type AliasRow = {
@@ -102,12 +103,23 @@ type RequestContext = {
   startedAt: number;
   endpoint?: Endpoint;
   alias?: string;
-  policy?: GrantPolicyRow;
+  policy?: RequestPolicy;
   aliasPolicy?: AliasRow;
   route?: ProviderRoute;
   tenantHash?: string;
   principalHash?: string;
   providerAttempted: boolean;
+  quotaScope?: string;
+  classroom?: { classId: string; groupId: string };
+  classroomLimits?: ClassroomLimits;
+};
+
+type Authentication = {
+  policy: RequestPolicy;
+  tokenCapabilities: string[];
+  quotaScope: string;
+  classroom?: { classId: string; groupId: string };
+  classroomLimits?: ClassroomLimits;
 };
 
 const forbiddenAttributionHeaders = [
@@ -203,10 +215,10 @@ function ensureNoAttributionOverride(request: Request): void {
   }
 }
 
-async function authenticate(
+async function authenticateGrant(
   request: Request,
   env: GatewayEnv,
-): Promise<{ policy: GrantPolicyRow; tokenCapabilities: string[] }> {
+): Promise<Authentication> {
   const rawToken = bearerToken(request);
   if (!rawToken)
     throw new HttpError(
@@ -237,6 +249,7 @@ async function authenticate(
             c.disabled AS access_code_disabled, c.expires_at AS access_code_expires_at,
             c.product_id AS access_code_product_id, c.environment_id AS access_code_environment_id,
             c.tenant_id AS access_code_tenant_id,
+            c.classroom_group_id AS access_code_classroom_group_id,
             a.id AS activation_id, a.tenant_id AS activation_tenant_id,
             a.principal_id AS activation_principal_id, a.revoked_at AS activation_revoked_at,
             p.enabled AS product_enabled, p.kill_switch AS product_kill_switch,
@@ -323,7 +336,54 @@ async function authenticate(
       "grant capability policy changed",
     );
   }
-  return { policy, tokenCapabilities: claims.tks.capabilities };
+  let quotaScope = identityScope(
+    policy.product_id,
+    policy.environment_id,
+    policy.tenant_id,
+    policy.principal_id,
+  );
+  let tokenCapabilities = claims.tks.capabilities;
+  let classroom: { classId: string; groupId: string } | undefined;
+  let classroomLimits: ClassroomLimits | undefined;
+  const classroomGroupId =
+    policy.entitlement_source === "access_code"
+      ? policy.access_code_classroom_group_id
+      : null;
+  if (classroomGroupId !== null) {
+    const authorization = await resolveClassroomGrantAuthorization(env, {
+      groupId: classroomGroupId,
+      principalId: policy.principal_id,
+      expected: {
+        productId: policy.product_id,
+        environmentId: policy.environment_id,
+        tenantId: policy.tenant_id,
+      },
+      now,
+    });
+    tokenCapabilities = tokenCapabilities.filter((capability) =>
+      authorization.capabilities.includes(capability),
+    );
+    quotaScope = authorization.quotaScope;
+    classroom = authorization.classroom;
+    classroomLimits = authorization.limits;
+  }
+  return {
+    policy,
+    tokenCapabilities,
+    quotaScope,
+    ...(classroom === undefined ? {} : { classroom }),
+    ...(classroomLimits === undefined ? {} : { classroomLimits }),
+  };
+}
+
+async function authenticateRequest(
+  request: Request,
+  env: GatewayEnv,
+): Promise<Authentication> {
+  const rawToken = bearerToken(request);
+  if (rawToken && isClassroomGroupKey(rawToken))
+    return await authenticateClassroomKey(request, env, nowSeconds());
+  return await authenticateGrant(request, env);
 }
 
 function parseGatewayRequest(
@@ -438,17 +498,17 @@ export function costMicrocents(tokens: number, ratePerMillion: number): number {
   return Number(cost);
 }
 
+type QuotaRequestBody =
+  | QuotaAcquireRequest
+  | QuotaCompleteRequest
+  | ClassroomAcquireRequest
+  | ClassroomCompleteRequest;
+
 async function quotaCall(
   env: GatewayEnv,
-  policy: GrantPolicyRow,
-  body: QuotaAcquireRequest | QuotaCompleteRequest,
+  scope: string,
+  body: QuotaRequestBody,
 ): Promise<Response> {
-  const scope = identityScope(
-    policy.product_id,
-    policy.environment_id,
-    policy.tenant_id,
-    policy.principal_id,
-  );
   const stub = env.QUOTA.get(env.QUOTA.idFromName(scope));
   return await stub.fetch("https://quota.internal/", {
     method: "POST",
@@ -459,14 +519,14 @@ async function quotaCall(
 
 async function quotaCallWithRetry(
   env: GatewayEnv,
-  policy: GrantPolicyRow,
-  body: QuotaAcquireRequest | QuotaCompleteRequest,
+  scope: string,
+  body: QuotaRequestBody,
 ): Promise<Response> {
   let lastResponse: Response | undefined;
   let lastError: unknown;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const response = await quotaCall(env, policy, body);
+      const response = await quotaCall(env, scope, body);
       if (response.ok || response.status < 500) return response;
       lastResponse = response;
     } catch (error) {
@@ -477,6 +537,104 @@ async function quotaCallWithRetry(
   throw lastError instanceof Error
     ? lastError
     : new Error("quota coordinator call failed");
+}
+
+type ReservationValues = {
+  reservationTtlSeconds: number;
+  estimatedTokens: number;
+  reservedCostMicrocents: number;
+};
+
+function quotaAcquireBody(
+  context: RequestContext,
+  values: ReservationValues,
+): QuotaAcquireRequest | ClassroomAcquireRequest {
+  const policy = context.policy;
+  if (!policy)
+    throw new HttpError(500, "internal_error", "request context is incomplete");
+  if (context.classroom) {
+    const { classroom, classroomLimits } = context;
+    if (!classroomLimits)
+      throw new HttpError(
+        500,
+        "internal_error",
+        "classroom limits are missing from the request context",
+      );
+    return {
+      operation: "classroom_acquire",
+      requestId: context.requestId,
+      reservationTtlSeconds: values.reservationTtlSeconds,
+      estimatedTokens: values.estimatedTokens,
+      reservedCostMicrocents: values.reservedCostMicrocents,
+      classId: classroom.classId,
+      groupId: classroom.groupId,
+      limits: classroomLimits,
+    };
+  }
+  return {
+    operation: "acquire",
+    requestId: context.requestId,
+    reservationTtlSeconds: values.reservationTtlSeconds,
+    estimatedTokens: values.estimatedTokens,
+    reservedCostMicrocents: values.reservedCostMicrocents,
+    limits: {
+      rpm: policy.rpm_limit,
+      tpm: policy.tpm_limit,
+      concurrency: policy.concurrency_limit,
+      dailyBudgetMicrocents: policy.daily_budget_microcents,
+    },
+  };
+}
+
+function quotaCompleteBody(
+  context: RequestContext,
+  values: { actualTokens: number; actualCostMicrocents: number },
+): QuotaCompleteRequest | ClassroomCompleteRequest {
+  if (context.classroom)
+    return {
+      operation: "classroom_complete",
+      requestId: context.requestId,
+      // Bound to the group that acquired the reservation, both derived from D1.
+      groupId: context.classroom.groupId,
+      actualTokens: values.actualTokens,
+      actualCostMicrocents: values.actualCostMicrocents,
+    };
+  return {
+    operation: "complete",
+    requestId: context.requestId,
+    actualTokens: values.actualTokens,
+    actualCostMicrocents: values.actualCostMicrocents,
+  };
+}
+
+function isBudgetDenial(reason: string | undefined): boolean {
+  return (
+    reason === "budget" ||
+    reason === "class_budget" ||
+    reason === "group_budget" ||
+    reason === "group_daily_budget"
+  );
+}
+
+/**
+ * A classroom lifetime cap is not a daily cap. Only name the dimension the
+ * admission reason actually identified; otherwise stay generic.
+ */
+function budgetDenialMessage(
+  context: RequestContext,
+  reason: string | undefined,
+): string {
+  if (!context.classroom) return "daily budget is exhausted";
+  switch (reason) {
+    case "class_budget":
+      return "classroom total budget is exhausted";
+    case "group_budget":
+      return "classroom group budget is exhausted";
+    case "group_daily_budget":
+      return "classroom group daily budget is exhausted";
+    default:
+      return "classroom budget is exhausted";
+  }
 }
 
 async function quotaCompletionSucceeded(
@@ -545,8 +703,8 @@ async function recordAttemptStart(
     `INSERT INTO provider_attempts
       (id, request_id, attempt_number, product_id, environment_id, tenant_hash, principal_hash,
        alias, policy_version, route_id, provider, resolved_model, endpoint, status_code, error_class,
-       latency_ms, input_tokens, output_tokens, cost_microcents, created_at, stale_after)
-     VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       latency_ms, input_tokens, output_tokens, cost_microcents, created_at, stale_after, classroom_group_id)
+     VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       randomId("attempt"),
@@ -569,6 +727,8 @@ async function recordAttemptStart(
       values.costMicrocents,
       createdAt,
       createdAt + Math.ceil(route.timeoutMs / 1000) + 30,
+      // Classroom attribution only; legacy attempts keep NULL.
+      context.classroom?.groupId ?? null,
     )
     .run();
 }
@@ -663,8 +823,14 @@ async function handleInference(
   let reservedCost = 0;
   try {
     ensureNoAttributionOverride(request);
-    const { policy, tokenCapabilities } = await authenticate(request, env);
+    const authentication = await authenticateRequest(request, env);
+    const { policy, tokenCapabilities } = authentication;
+    const quotaScope = authentication.quotaScope;
     context.policy = policy;
+    context.quotaScope = quotaScope;
+    if (authentication.classroom) context.classroom = authentication.classroom;
+    if (authentication.classroomLimits)
+      context.classroomLimits = authentication.classroomLimits;
     [context.tenantHash, context.principalHash] = await Promise.all([
       pseudonymize(policy.tenant_id, env.TOKEN_SIGNING_SECRET),
       pseudonymize(policy.principal_id, env.TOKEN_SIGNING_SECRET),
@@ -799,9 +965,15 @@ async function handleInference(
     }
     await acquireIdempotency(request, env, context);
 
-    const reservedInputTokens = inspection.hasImages
-      ? aliasPolicy.max_input_tokens
-      : inspection.estimatedInputTokens;
+    // Classroom settlement must never exceed its reservation, otherwise
+    // concurrent requests could each settle above the shared class cap. Reserve
+    // the configured input ceiling (the envelope images already use) so the
+    // provider-reported input can only settle at or below it. Legacy traffic
+    // keeps its existing estimate-based reservation.
+    const reservedInputTokens =
+      inspection.hasImages || context.classroom !== undefined
+        ? aliasPolicy.max_input_tokens
+        : inspection.estimatedInputTokens;
     reservedTokens = reservedInputTokens + inspection.maxOutputTokens;
     reservedCost =
       costMicrocents(
@@ -813,19 +985,15 @@ async function handleInference(
         aliasPolicy.output_cost_microcents_per_million,
       );
     quotaMayBeAcquired = true;
-    const quotaResponse = await quotaCallWithRetry(env, policy, {
-      operation: "acquire",
-      requestId: context.requestId,
-      reservationTtlSeconds: Math.ceil(route.timeoutMs / 1000) + 30,
-      estimatedTokens: reservedTokens,
-      reservedCostMicrocents: reservedCost,
-      limits: {
-        rpm: policy.rpm_limit,
-        tpm: policy.tpm_limit,
-        concurrency: policy.concurrency_limit,
-        dailyBudgetMicrocents: policy.daily_budget_microcents,
-      },
-    }).catch(() => undefined);
+    const quotaResponse = await quotaCallWithRetry(
+      env,
+      quotaScope,
+      quotaAcquireBody(context, {
+        reservationTtlSeconds: Math.ceil(route.timeoutMs / 1000) + 30,
+        estimatedTokens: reservedTokens,
+        reservedCostMicrocents: reservedCost,
+      }),
+    ).catch(() => undefined);
     if (!quotaResponse?.ok) {
       if (!quotaResponse || quotaResponse.status >= 500) {
         throw new HttpError(
@@ -836,12 +1004,12 @@ async function handleInference(
       }
       quotaMayBeAcquired = false;
       const reason = (await quotaResponse.json<{ reason?: string }>()).reason;
-      const budget = reason === "budget";
+      const budget = isBudgetDenial(reason);
       throw new HttpError(
         budget ? 402 : 429,
         budget ? "budget_exceeded" : "rate_limit_exceeded",
         budget
-          ? "daily budget is exhausted"
+          ? budgetDenialMessage(context, reason)
           : "rate or concurrency limit exceeded",
       );
     }
@@ -907,12 +1075,14 @@ async function handleInference(
         );
       completionTokens = inputTokens + outputTokens;
       completionCost = actualCost;
-      const completion = await quotaCallWithRetry(env, policy, {
-        operation: "complete",
-        requestId: context.requestId,
-        actualTokens: completionTokens,
-        actualCostMicrocents: completionCost,
-      }).catch(() => undefined);
+      const completion = await quotaCallWithRetry(
+        env,
+        quotaScope,
+        quotaCompleteBody(context, {
+          actualTokens: completionTokens,
+          actualCostMicrocents: completionCost,
+        }),
+      ).catch(() => undefined);
       if (!(await quotaCompletionSucceeded(completion))) {
         quotaCompletionExhausted = true;
         quotaReservationUnresolved = true;
@@ -949,12 +1119,14 @@ async function handleInference(
       const providerAttempted = context.providerAttempted;
       completionTokens = providerAttempted ? reservedTokens : 0;
       completionCost = providerAttempted ? reservedCost : 0;
-      const completion = await quotaCallWithRetry(env, policy, {
-        operation: "complete",
-        requestId: context.requestId,
-        actualTokens: completionTokens,
-        actualCostMicrocents: completionCost,
-      }).catch(() => undefined);
+      const completion = await quotaCallWithRetry(
+        env,
+        quotaScope,
+        quotaCompleteBody(context, {
+          actualTokens: completionTokens,
+          actualCostMicrocents: completionCost,
+        }),
+      ).catch(() => undefined);
       if (!(await quotaCompletionSucceeded(completion))) {
         quotaCompletionExhausted = true;
         quotaReservationUnresolved = true;
@@ -1003,13 +1175,15 @@ async function handleInference(
       clearTimeout(timeout);
     }
   } catch (error) {
-    if (quotaMayBeAcquired && !quotaCompletionExhausted && context.policy) {
-      const completion = await quotaCallWithRetry(env, context.policy, {
-        operation: "complete",
-        requestId: context.requestId,
-        actualTokens: completionTokens,
-        actualCostMicrocents: completionCost,
-      }).catch(() => undefined);
+    if (quotaMayBeAcquired && !quotaCompletionExhausted && context.quotaScope) {
+      const completion = await quotaCallWithRetry(
+        env,
+        context.quotaScope,
+        quotaCompleteBody(context, {
+          actualTokens: completionTokens,
+          actualCostMicrocents: completionCost,
+        }),
+      ).catch(() => undefined);
       if (await quotaCompletionSucceeded(completion))
         quotaMayBeAcquired = false;
       else quotaReservationUnresolved = true;
@@ -1071,8 +1245,21 @@ export async function handleGateway(
       const quota = env.QUOTA.get(env.QUOTA.idFromName("readiness-probe"));
       const [schema, quotaResponse] = await Promise.all([
         env.DB.prepare(
-          "SELECT value FROM schema_metadata WHERE key = 'schema_version'",
-        ).first<{ value: string }>(),
+          `SELECT value,
+                  (SELECT COUNT(*) FROM sqlite_schema
+                    WHERE type = 'table'
+                      AND name IN ('classroom_classes', 'classroom_groups', 'classroom_group_keys')) AS classroom_tables,
+                  (SELECT COUNT(*) FROM pragma_table_info('access_codes')
+                    WHERE name = 'classroom_group_id') AS access_code_classroom_group,
+                  (SELECT COUNT(*) FROM pragma_table_info('provider_attempts')
+                    WHERE name = 'classroom_group_id') AS attempt_classroom_group
+             FROM schema_metadata WHERE key = 'schema_version'`,
+        ).first<{
+          value: string;
+          classroom_tables: number;
+          access_code_classroom_group: number;
+          attempt_classroom_group: number;
+        }>(),
         quota.fetch("https://quota.internal/healthz", {
           signal: controller.signal,
         }),
@@ -1085,6 +1272,9 @@ export async function handleGateway(
         : undefined;
       if (
         schema?.value !== DATABASE_SCHEMA_VERSION ||
+        schema.classroom_tables !== 3 ||
+        schema.access_code_classroom_group !== 1 ||
+        schema.attempt_classroom_group !== 1 ||
         quotaBody?.status !== "ok" ||
         quotaBody.protocolVersion !== QUOTA_PROTOCOL_VERSION
       ) {

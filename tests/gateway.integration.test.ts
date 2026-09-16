@@ -1215,6 +1215,13 @@ describe("Stage 0 failure-path accounting", () => {
 
 describe("gateway configuration", () => {
   const gatewayEnv = env as unknown as GatewayEnv;
+  const legacyQuota = {
+    idFromName: () => ({ synthetic: true }),
+    get: () => ({
+      fetch: () =>
+        Promise.resolve(Response.json({ status: "ok", protocolVersion: "1" })),
+    }),
+  } as unknown as DurableObjectNamespace;
 
   it("fails closed on unknown environments and invalid global body limits", async () => {
     const healthRequest = () =>
@@ -1279,15 +1286,6 @@ describe("gateway configuration", () => {
         fetch: () => Promise.reject(new Error("synthetic quota outage")),
       }),
     } as unknown as DurableObjectNamespace;
-    const incompatibleQuota = {
-      idFromName: () => ({ synthetic: true }),
-      get: () => ({
-        fetch: () =>
-          Promise.resolve(
-            Response.json({ status: "ok", protocolVersion: "old" }),
-          ),
-      }),
-    } as unknown as DurableObjectNamespace;
     for (const configured of [
       { ...gatewayEnv, PROVIDER_ROUTES_JSON: "{}" },
       { ...gatewayEnv, DB: undefined as unknown as D1Database },
@@ -1295,12 +1293,33 @@ describe("gateway configuration", () => {
       { ...gatewayEnv, DB: unavailableDb },
       { ...gatewayEnv, DB: incompatibleDb },
       { ...gatewayEnv, QUOTA: unavailableQuota },
-      { ...gatewayEnv, QUOTA: incompatibleQuota },
+      { ...gatewayEnv, QUOTA: legacyQuota },
     ]) {
       expect((await handleGateway(healthRequest(), configured)).status).toBe(
         500,
       );
     }
+  });
+
+  it("rejects the exact legacy quota protocol and passes readiness against the current coordinator", async () => {
+    const healthRequest = () =>
+      new Request("https://gateway.example.invalid/healthz");
+    expect(
+      (
+        await handleGateway(healthRequest(), {
+          ...upstreamEnv(5000),
+          QUOTA: legacyQuota,
+        })
+      ).status,
+    ).toBe(500);
+
+    const quota = env.QUOTA.get(env.QUOTA.idFromName("readiness-probe"));
+    await expect(
+      (await quota.fetch("https://quota.internal/healthz")).json(),
+    ).resolves.toEqual({ status: "ok", protocolVersion: "2" });
+    expect(
+      (await handleGateway(healthRequest(), upstreamEnv(5000))).status,
+    ).toBe(200);
   });
 });
 

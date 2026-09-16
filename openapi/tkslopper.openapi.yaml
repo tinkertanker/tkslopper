@@ -25,6 +25,7 @@ paths:
       summary: Create one non-streaming chat completion
       security:
         - shortGrant: []
+        - groupKey: []
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -75,6 +76,7 @@ paths:
       summary: Create one non-streaming Responses result
       security:
         - shortGrant: []
+        - groupKey: []
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -184,6 +186,16 @@ components:
       scheme: bearer
       bearerFormat: tkslopper+jwt
       description: Short-lived audience/product/environment/capability-scoped grant
+    groupKey:
+      type: http
+      scheme: bearer
+      bearerFormat: tkgk
+      description: >-
+        High-entropy classroom group API key, used directly at the gateway.
+        All keys and activated devices for a group share its allocation and
+        the class total budget. Class/group schedules, pause, model policy and
+        revocation are checked on every request. Rotation does not reset spend.
+        Join codes are separate credentials used only with /v1/activations.
     serviceCredential:
       type: http
       scheme: bearer

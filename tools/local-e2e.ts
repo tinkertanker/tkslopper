@@ -196,6 +196,198 @@ async function createProductFlow(options: {
   };
 }
 
+async function classroomFlow(): Promise<void> {
+  const suffix = crypto.randomUUID().slice(0, 8);
+  const { body: product } = await admin("/admin/v1/products", {
+    slug: `classroom-${suffix}`,
+    display_name: "Classroom workflow fixture",
+  });
+  const { body: environment } = await admin("/admin/v1/environments", {
+    product_id: product.id,
+    name: "classroom-e2e",
+    audience: `classroom:e2e:${suffix}`,
+    rpm_limit: 100,
+    tpm_limit: 100_000,
+    concurrency_limit: 5,
+    daily_budget_microcents: 100_000,
+  });
+  await admin("/admin/v1/aliases", {
+    product_id: product.id,
+    environment_id: environment.id,
+    alias: "text.chat.v1",
+    endpoint: "chat",
+    route_id: "fixture-text-v1",
+    max_input_tokens: 512,
+    max_output_tokens: 100,
+    input_cost_microcents_per_million: 1_000_000,
+    output_cost_microcents_per_million: 1_000_000,
+  });
+  const now = Math.floor(Date.now() / 1000);
+  const { body: classroom } = await admin("/admin/v1/classes", {
+    product_id: product.id,
+    environment_id: environment.id,
+    tenant_id: "classroom-e2e",
+    name: "Creative computing",
+    course: "Introduction to AI",
+    instructors: ["Fixture instructor"],
+    timezone: "Asia/Singapore",
+    starts_at: now - 60,
+    expires_at: now + 3600,
+    capabilities: ["text.chat.v1"],
+    budget_microcents: 10_000,
+    group_budget_microcents: 1000,
+    daily_budget_microcents: 1000,
+    rpm_limit: 100,
+    tpm_limit: 100_000,
+    concurrency_limit: 5,
+  });
+  const { body: created } = await admin("/admin/v1/groups", {
+    class_id: classroom.id,
+    names: ["Orchid", "Merlion"],
+  });
+  if (!Array.isArray(created.groups) || created.groups.length !== 2)
+    throw new Error("bulk groups did not return two groups");
+  const [group, other] = created.groups as JsonObject[];
+  const { body: key } = await admin("/admin/v1/groups/access", {
+    group_id: group?.id,
+    kind: "api_key",
+  });
+  const { body: secondKey } = await admin("/admin/v1/groups/access", {
+    group_id: group?.id,
+    kind: "api_key",
+  });
+  const { body: join } = await admin("/admin/v1/groups/access", {
+    group_id: group?.id,
+    kind: "join_code",
+    max_activations: 2,
+  });
+  const { body: activation } = await postJson(
+    controlPlaneUrl,
+    "/v1/activations",
+    {
+      access_code: join.access_code,
+      device_id: `classroom-device-${suffix}`,
+    },
+  );
+  if (
+    typeof key.api_key !== "string" ||
+    typeof secondKey.api_key !== "string" ||
+    typeof activation.access_token !== "string"
+  )
+    throw new Error(
+      "group access distribution returned incomplete credentials",
+    );
+  const sample = {
+    model: "text.chat.v1",
+    messages: [{ role: "user", content: "Explain loops." }],
+    max_completion_tokens: 16,
+  };
+  const infer = async (token: string): Promise<void> => {
+    const { body } = await postJson(
+      gatewayUrl,
+      "/v1/chat/completions",
+      sample,
+      token,
+      crypto.randomUUID(),
+    );
+    requireCompleteChatText(body);
+  };
+  const denied = async (token: string): Promise<void> => {
+    const response = await fetch(`${gatewayUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(sample),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (![401, 403].includes(response.status))
+      throw new Error(
+        `revoked classroom access returned HTTP ${response.status}`,
+      );
+    await response.body?.cancel();
+  };
+  await infer(key.api_key);
+  await infer(secondKey.api_key);
+  await infer(activation.access_token);
+  const usage = async (): Promise<JsonObject> => {
+    const { body } = await admin("/admin/v1/classes/usage", {
+      class_id: classroom.id,
+    });
+    if (!Array.isArray(body.groups)) throw new Error("missing per-group usage");
+    const rows = body.groups as JsonObject[];
+    const used = rows.find((row) => row.group_id === group?.id);
+    const unused = rows.find((row) => row.group_id === other?.id);
+    if (!used || !unused || Number(unused.requests) !== 0)
+      throw new Error("group usage attribution is incorrect");
+    return used;
+  };
+  const before = await usage();
+  // The fixture provider reports 8 input + 3 output tokens, each priced at 1 microcent.
+  if (Number(before.requests) !== 3 || before.cost_microcents !== "33")
+    throw new Error("keys and activated device did not share group usage");
+  const { body: rotated } = await admin("/admin/v1/groups/rotate", {
+    id: key.id,
+  });
+  if (typeof rotated.api_key !== "string")
+    throw new Error("rotation returned no key");
+  await denied(key.api_key);
+  await infer(rotated.api_key);
+  const after = await usage();
+  if (Number(after.requests) !== 4 || after.cost_microcents !== "44")
+    throw new Error("rotation lost existing group usage");
+  await admin("/admin/v1/groups/update", {
+    id: group?.id,
+    budget_microcents: 44,
+  });
+  await expectStatus(
+    gatewayUrl,
+    "/v1/chat/completions",
+    sample,
+    rotated.api_key,
+    402,
+  );
+  await expectStatus(
+    gatewayUrl,
+    "/v1/chat/completions",
+    sample,
+    secondKey.api_key,
+    402,
+  );
+  await expectStatus(
+    gatewayUrl,
+    "/v1/chat/completions",
+    sample,
+    activation.access_token,
+    402,
+  );
+  await admin("/admin/v1/groups/update", {
+    id: group?.id,
+    budget_microcents: 1000,
+  });
+  await admin("/admin/v1/classes/update", {
+    id: classroom.id,
+    status: "paused",
+  });
+  await denied(rotated.api_key);
+  await denied(activation.access_token);
+  await admin("/admin/v1/classes/update", {
+    id: classroom.id,
+    status: "active",
+  });
+  await admin("/admin/v1/groups/update", { id: group?.id, status: "revoked" });
+  await denied(rotated.api_key);
+  await denied(secondKey.api_key);
+  await denied(activation.access_token);
+  const retained = await usage();
+  if (retained.cost_microcents !== "44")
+    throw new Error("revocation lost usage history");
+  console.log(
+    "PASS classroom create → distribute keys/code → usage → rotate → shared budget → pause/revoke",
+  );
+}
+
 const largeContext = {
   model: playgroundPalLongContext.model,
   messages: [
@@ -339,6 +531,7 @@ await expectStatus(
   403,
 );
 console.log("PASS live kill switch and grant revocation");
+await classroomFlow();
 console.log(
   "Local tkslopper E2E conformance passed without printing credentials.",
 );

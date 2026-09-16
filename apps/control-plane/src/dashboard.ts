@@ -429,6 +429,10 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       tbody tr:last-child td { border-bottom: 0; }
       tbody tr:hover { background: var(--hover); }
       tbody tr.flagged td:first-child { box-shadow: inset 3px 0 0 var(--alarm); }
+      #class-groups th:first-child, #class-groups td:first-child { position: sticky; left: 0; z-index: 1; background: var(--panel); box-shadow: 1px 0 var(--rule); }
+      /* A group name is API-bounded at 200 characters; the sticky first column must not
+         grow past the actions column, so it is clipped with the full name in the title. */
+      .bounded-cell { display: block; width: 180px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
       .pill { display: inline-block; padding: 2px 9px 3px; border-radius: 999px; background: var(--hair); color: var(--soft); font-size: 11px; font-weight: 600; letter-spacing: .01em; }
       .pill.ok { background: var(--green-wash); color: var(--green-deep); }
@@ -487,6 +491,12 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         .side-foot { margin-left: 0; }
         .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         section { padding: 14px 14px 4px; }
+        /* On narrow screens the sticky name column must leave room for the action buttons:
+           shrink the bounded cell, stop pinning the first column, and let the action buttons
+           wrap between themselves. The id scopes the wrap above the base td.actions rule. */
+        #class-groups th:first-child, #class-groups td:first-child { position: static; }
+        .bounded-cell { width: 96px; max-width: 96px; }
+        #class-groups td.actions { white-space: normal; }
         .table-wrap::before {
           position: sticky;
           left: 0;
@@ -549,6 +559,86 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       }
       #admin-clear { border-color: var(--rule); background: transparent; color: var(--green-deep); }
       #admin-clear:hover { background: var(--green-wash); }
+
+      /* Classes: the course-centred workflow. It reuses the panel, table, pill, and form
+         primitives above; only the pieces unique to class distribution are new. */
+      .classes-body { min-width: 0; padding-bottom: 16px; }
+      .classes-body > p { max-width: 78ch; margin: 12px 0; color: var(--soft); font-size: 13px; }
+      .classes-body h3 { margin: 28px 0 0; font-size: 13px; font-weight: 650; }
+      .classes-body form > label { display: block; margin-bottom: 7px; color: var(--soft); font-size: 12px; font-weight: 650; }
+      .field-note { max-width: 88ch; margin: 4px 0 14px; color: var(--soft); font-size: 12px; }
+      textarea {
+        width: 100%;
+        min-height: 96px;
+        margin-bottom: 14px;
+        padding: 10px 12px;
+        border: 1px solid var(--soft);
+        border-radius: 6px;
+        background: var(--panel);
+        color: var(--ink);
+        font: inherit;
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+        font-size: 12.5px;
+        resize: vertical;
+      }
+      textarea:focus-visible { outline: 2px solid var(--band); outline-offset: 2px; }
+      .row-action {
+        min-height: 28px;
+        margin: 0 6px 4px 0;
+        padding: 0 10px;
+        border: 1px solid var(--rule);
+        background: transparent;
+        color: var(--green-deep);
+        font-size: 12px;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      .row-action:hover { background: var(--green-wash); }
+      .row-action.danger { border-color: #e0b6b1; color: var(--alarm); }
+      .row-action.danger:hover { background: var(--alarm-wash); }
+      td.actions { white-space: nowrap; }
+      .scope {
+        display: inline-block;
+        margin: 0 4px 0 0;
+        padding: 1px 7px 2px;
+        border: 1px solid var(--rule);
+        border-radius: 4px;
+        color: var(--soft);
+        font-size: 10.5px;
+        font-weight: 650;
+        letter-spacing: .02em;
+        text-transform: uppercase;
+      }
+      .subpanel { margin-top: 14px; padding: 14px 16px 4px; border: 1px solid var(--rule); border-left: 3px solid var(--band); border-radius: 6px; background: #f7f9f3; }
+      .subpanel h3 { margin-top: 0; }
+      .action-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 4px; }
+      #class-secret { margin: 16px 0 4px; padding: 14px 16px 4px; border: 1px solid #e0b6b1; border-left: 3px solid var(--alarm); border-radius: 6px; background: var(--alarm-wash); }
+      #class-secret p { max-width: 78ch; margin: 0 0 10px; color: var(--alarm); font-size: 13px; font-weight: 600; }
+      #class-secret pre {
+        margin: 0 0 12px;
+        padding: 14px;
+        overflow-x: auto;
+        border: 1px solid var(--rule);
+        border-radius: 6px;
+        background: var(--panel);
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+        font-size: 12.5px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .status-line { margin: 12px 0 0; color: var(--soft); font-size: 13px; }
+      .status-line.error { color: var(--alarm); font-weight: 600; }
+      .status-line.ok { color: var(--green-deep); font-weight: 600; }
+
+      /* Approved-alias picker: options come from the control plane, never free text. */
+      .alias-editor { margin: 4px 0 10px; }
+      .alias-editor fieldset { margin: 0; padding: 12px 14px 4px; border: 1px solid var(--rule); border-radius: 6px; }
+      .alias-editor legend { padding: 0 6px; color: var(--soft); font-size: 12px; font-weight: 650; }
+      .alias-option { display: flex; gap: 8px; align-items: baseline; margin: 0 0 9px; color: var(--ink); font-size: 12.5px; }
+      .alias-option input[type="checkbox"] { flex: none; width: auto; min-height: 0; margin: 2px 0 0; }
+      .alias-option span { overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+      .alias-option em { color: var(--alarm); font-style: normal; }
+      .alias-editor input[type="text"] { max-width: 620px; }
     </style>
   </head>
   <body>
@@ -560,11 +650,12 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         </div>
         <p class="tag" id="role-label">Read-only</p>
         <ul class="nav">
+          <li id="nav-classes" hidden><button type="button" class="nav-item" data-view="classes">Classes</button></li>
           <li><button type="button" class="nav-item" data-view="overview" aria-current="page">Overview</button></li>
-          <li><button type="button" class="nav-item" data-view="attempts">Attempts</button></li>
+          <li><button type="button" class="nav-item" data-view="attempts">Diagnostics</button></li>
           <li><button type="button" class="nav-item" data-view="stale">Stale intents</button></li>
           <li id="nav-activity"><button type="button" class="nav-item" data-view="activity">Activity</button></li>
-          <li id="nav-admin" hidden><button type="button" class="nav-item" data-view="admin">Administration</button></li>
+          <li id="nav-admin" hidden><button type="button" class="nav-item" data-view="admin">Settings</button></li>
         </ul>
         <div class="side-foot">
           <p id="admin-identity"></p>
@@ -591,6 +682,117 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
             <div class="card" id="card-failures" role="listitem"><span>Failures in 24h</span><strong id="total-failures">—</strong></div>
             <div class="card" role="listitem"><span>Accounted cost, 24h (μ¢)</span><strong id="total-cost">—</strong></div>
             <div class="card" id="card-stale" role="listitem"><span>Stale intents</span><strong id="total-stale">—</strong></div>
+          </div>
+
+          <div class="view" data-view="classes" hidden>
+            <p class="lede">Course-centred control. Create a class with approved aliases and a shared budget, distribute group API keys and join codes, then inspect group and class usage. Group API keys are direct gateway credentials; join codes still activate devices through the existing activation endpoint.</p>
+
+            <section>
+              <div class="section-head"><h2 id="classes-heading">Classes</h2><p class="section-note">Bounded inventory; open a class to manage its groups, keys, and usage</p></div>
+              <p id="class-options-note" class="section-note"></p>
+              <div class="table-wrap" role="region" tabindex="0" aria-labelledby="classes-heading"><table id="classes"></table></div>
+              <p id="classes-truncated" class="section-note" hidden>Only the first page of classes is shown.</p>
+              <p id="classes-status" class="status-line" role="status" aria-live="polite"></p>
+            </section>
+
+            <section>
+              <div class="section-head"><h2 id="class-create-heading">Create class</h2><p class="section-note">Approved aliases, budgets, and schedules are enforced by the control plane, not the browser</p></div>
+              <div class="classes-body">
+                <form id="class-create-form" autocomplete="off">
+                  <div class="admin-fields" id="class-create-fields"></div>
+                  <p class="field-note" id="class-create-schedule-note"></p>
+                  <div class="alias-editor" id="class-create-aliases"></div>
+                  <p class="field-note" id="class-create-alias-note"></p>
+                  <p class="field-note">Budgets are shared and scoped: <span class="scope">class</span> the class lifetime budget covers every group; <span class="scope">group</span> each group's budget is shared by all of its keys and activated devices; <span class="scope">key</span> and <span class="scope">device</span> access never adds a separate spend bucket. The default group daily budget is optional and applies per group in UTC; timezone is display and scheduling metadata.</p>
+                  <button id="class-create-submit" type="submit">Create class</button>
+                </form>
+                <p id="class-create-status" class="status-line" role="status" aria-live="polite"></p>
+              </div>
+            </section>
+
+            <section id="class-detail" hidden>
+              <div class="section-head"><h2 id="class-detail-heading">Class</h2><p class="section-note" id="class-detail-meta"></p></div>
+              <div class="classes-body">
+                <div class="action-row">
+                  <button id="class-pause" type="button">Pause class</button>
+                  <button id="class-duplicate" type="button">Duplicate configuration</button>
+                  <button id="class-detail-refresh" type="button">Refresh groups and usage</button>
+                </div>
+                <p id="class-action-status" class="status-line" role="status" aria-live="polite"></p>
+
+                <div class="subpanel">
+                  <h3 id="class-edit-heading">Adjust class budget, schedule, and aliases</h3>
+                  <form id="class-edit-form" autocomplete="off">
+                    <div class="admin-fields" id="class-edit-fields"></div>
+                    <p class="field-note" id="class-edit-schedule-note"></p>
+                    <div class="alias-editor" id="class-edit-aliases"></div>
+                    <p class="field-note" id="class-edit-alias-note"></p>
+                    <p class="field-note">Leave the daily budget blank to remove the class's default group daily cap; environment guardrails still apply. Class controls cannot expose aliases the environment has not approved.</p>
+                    <button id="class-edit-submit" type="submit">Save class</button>
+                  </form>
+                  <p id="class-edit-status" class="status-line" role="status" aria-live="polite"></p>
+                </div>
+
+                <div class="subpanel" id="class-duplicate-panel" hidden>
+                  <h3 id="class-duplicate-heading">Duplicate configuration</h3>
+                  <form id="class-duplicate-form" autocomplete="off">
+                    <div class="admin-fields" id="class-duplicate-fields"></div>
+                    <p class="field-note" id="class-duplicate-note"></p>
+                    <button id="class-duplicate-submit" type="submit">Duplicate class</button>
+                  </form>
+                  <p id="class-duplicate-status" class="status-line" role="status" aria-live="polite"></p>
+                </div>
+
+                <h3>Groups and keys</h3>
+                <p class="field-note">Groups are created in bulk. Each group inherits class policy unless it overrides it, and starts with the class default group budget.</p>
+                <form id="group-create-form" autocomplete="off">
+                  <label for="group-names">Group names (one per line, up to 100)</label>
+                  <textarea id="group-names" required></textarea>
+                  <button id="group-create-submit" type="submit">Create groups</button>
+                </form>
+                <p id="group-status" class="status-line" role="status" aria-live="polite"></p>
+                <p id="groups-truncated" class="field-note" role="status" hidden>Group, key, or join-code inventory is truncated; counts and rows shown may be incomplete.</p>
+                <div class="table-wrap" role="region" tabindex="0" aria-label="Class groups"><table id="class-groups"></table></div>
+
+                <div class="subpanel" id="group-edit-panel" hidden>
+                  <h3 id="group-edit-heading">Adjust group</h3>
+                  <form id="group-edit-form" autocomplete="off">
+                    <div class="admin-fields" id="group-edit-fields"></div>
+                    <p class="field-note" id="group-edit-schedule-note"></p>
+                    <div class="alias-editor" id="group-edit-aliases"></div>
+                    <p class="field-note" id="group-edit-alias-note"></p>
+                    <p class="field-note">Blank override fields inherit the class policy or remove the override. Revoking a group is terminal.</p>
+                    <button id="group-edit-submit" type="submit">Save group</button>
+                  </form>
+                  <p id="group-edit-status" class="status-line" role="status" aria-live="polite"></p>
+                </div>
+
+                <h3>Group API keys</h3>
+                <p class="field-note">Direct gateway credentials for compatible tools. Shown once. Multiple keys share one group's budget, and rotation keeps the group and its spend.</p>
+                <div class="table-wrap" role="region" tabindex="0" aria-label="Group API keys"><table id="class-keys"></table></div>
+
+                <h3>Join codes</h3>
+                <p class="field-note">Codes that activate devices into short-lived grants through the existing activation endpoint. The activation cap counts devices, not spend, and every device shares the group budget.</p>
+                <div class="table-wrap" role="region" tabindex="0" aria-label="Join codes"><table id="class-codes"></table></div>
+
+                <h3>Usage</h3>
+                <p class="field-note">Persisted accounting projection, not the live reservation state. Allocation is the configured budget for the scope, not a remaining balance. Accounted lifetime cost and pending reservation ceilings are shown separately; live reservations and uncertain charges may reduce the budget still available. This view does not reconcile them. Daily caps apply in UTC.</p>
+                <div class="table-wrap" role="region" tabindex="0" aria-label="Class and group usage"><table id="class-usage"></table></div>
+                <p id="class-usage-status" class="status-line" role="status" aria-live="polite"></p>
+                <p id="class-usage-note" class="section-note"></p>
+
+                <div id="class-secret" hidden>
+                  <p>Copy this credential now: it is shown once and cannot be retrieved later. Do not put it in tickets or logs, and do not store it in browser storage.</p>
+                  <pre id="class-secret-value"></pre>
+                  <div class="action-row">
+                    <button id="class-secret-copy" type="button">Copy</button>
+                    <button id="class-secret-download" type="button">Download</button>
+                    <button id="class-secret-clear" type="button">Clear</button>
+                  </div>
+                  <p id="class-secret-status" class="status-line" role="status" aria-live="polite"></p>
+                </div>
+              </div>
+            </section>
           </div>
 
           <div class="view" data-view="overview">
@@ -635,7 +837,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
 
           <div class="view" data-view="admin" hidden>
         <section id="admin-panel" hidden>
-          <div class="section-head"><h2 id="admin-heading">Administration</h2><p class="section-note">Changes here take effect immediately</p></div>
+          <div class="section-head"><h2 id="admin-heading">Settings</h2><p class="section-note">Changes here take effect immediately</p></div>
           <div class="admin-body">
             <p>All admins have full write access. People must also be allowed by Cloudflare Access to sign in. Other company users remain viewers.</p>
             <div class="table-wrap" role="region" tabindex="0" aria-label="Named admins"><table id="admin-members"></table></div>
@@ -677,7 +879,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       const cost = (value) => number(value) + " μ¢";
       const set = (id, value) => { document.getElementById(id).textContent = String(value); };
 
-      const PILL_KIND = { Enabled: "ok", Disabled: "off", KILLED: "bad", Admin: "ok" };
+      const PILL_KIND = { Enabled: "ok", Disabled: "off", KILLED: "bad", Admin: "ok", Active: "ok", Paused: "off", Revoked: "bad", Class: "ok", Group: "off" };
       const statusKind = (text) => /^2\d\d/.test(text) ? "ok" : text === "in flight" ? "off" : "bad";
       const pillKind = (column, text) => column.pill === "status" ? statusKind(text) : PILL_KIND[text] || "off";
       const isNumeric = (column) => column.num === true || column.format === number || column.format === cost;
@@ -708,6 +910,20 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
             const row = document.createElement("tr");
             for (const column of columns) {
               const cell = document.createElement("td");
+              if (column.buttons) {
+                cell.className = "actions";
+                for (const button of column.buttons(item) || []) {
+                  const element = document.createElement("button");
+                  element.type = "button";
+                  element.className = "row-action" + (button.danger ? " danger" : "");
+                  element.textContent = button.label;
+                  element.disabled = Boolean(button.disabled);
+                  element.addEventListener("click", button.onClick);
+                  cell.append(element);
+                }
+                row.append(cell);
+                continue;
+              }
               const raw = typeof column.value === "function" ? column.value(item) : item[column.value];
               const text = String(column.format ? column.format(raw) : raw ?? "—");
               cell.title = String(raw ?? "");
@@ -720,7 +936,14 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
                 if (column.pill === "status" && kind === "bad") row.classList.add("flagged");
               } else {
                 if (isNumeric(column)) cell.className = "num";
-                cell.textContent = text;
+                if (column.bounded) {
+                  const bounded = document.createElement("span");
+                  bounded.className = "bounded-cell";
+                  bounded.textContent = text;
+                  cell.append(bounded);
+                } else {
+                  cell.textContent = text;
+                }
               }
               row.append(cell);
             }
@@ -829,6 +1052,8 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           { label: "Action", value: "action" },
           { label: "Resource", value: (row) => row.resource_type + " / " + row.resource_id },
         ], data.recent_admin_actions);
+
+        dashboardData = data;
       }
 
       const adminPanel = document.getElementById("admin-panel");
@@ -843,12 +1068,17 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           else item.removeAttribute("aria-current");
         }
       }
-      for (const item of navItems) item.addEventListener("click", () => showView(item.dataset.view));
+      for (const item of navItems) item.addEventListener("click", () => {
+        showView(item.dataset.view);
+        if (item.dataset.view === "classes") loadClasses();
+      });
 
-      // Admins get the richer "Who changed what" table inside Administration, so the
-      // actor-blind copy is theirs to lose, not the viewers'.
+      // Admins get the richer "Who changed what" table inside Settings, so the
+      // actor-blind copy is theirs to lose, not the viewers'. Classes is a named-admin
+      // workflow too, so it is hidden for viewers.
       function applyRole(isAdmin) {
         document.getElementById("nav-admin").hidden = !isAdmin;
+        document.getElementById("nav-classes").hidden = !isAdmin;
         document.getElementById("nav-activity").hidden = isAdmin;
         const current = navItems.find((item) => item.hasAttribute("aria-current"));
         showView(current ? current.dataset.view : "overview");
@@ -912,10 +1142,926 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         } finally { adminSubmit.disabled = false; refresh.disabled = false; operation.disabled = false; }
       });
 
+      // ---- Classes: course-centred workflow (named admins only) ----
+      // Everything below talks to the class/group management API through the same
+      // same-origin, named-admin POST /dashboard/api/... boundary as Settings.
+      let dashboardData = null;
+      let firstClassLoad = true;
+      let classOptions = null;
+      let classOptionsTruncated = false;
+      const classState = { classes: [], selected: null, detail: null, usage: null, groupEditing: null, groupEditorRevision: 0 };
+      // Credential-producing actions share one show-once panel, so only one may run at a
+      // time: a second rotation must never overwrite a secret the operator has not seen.
+      let credentialPending = false;
+
+      function setStatus(id, message, kind) {
+        const element = document.getElementById(id);
+        element.textContent = message || "";
+        element.className = "status-line" + (kind ? " " + kind : "");
+      }
+      function messageFor(error) {
+        if (error instanceof TypeError || error instanceof SyntaxError) return "Connection failed; the operation may have completed. Check the class list and activity before retrying.";
+        return error && error.message ? error.message : "Operation failed.";
+      }
+      async function dashboardPost(operation, payload) {
+        const response = await fetch("/dashboard/api/" + operation, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          credentials: "same-origin",
+          redirect: "error",
+          cache: "no-store",
+          body: JSON.stringify(payload || {}),
+        });
+        let result = null;
+        try { result = await response.json(); } catch { result = null; }
+        if (!response.ok) {
+          if (response.status === 401 || response.status === 403) {
+            document.getElementById("nav-classes").hidden = true;
+            document.getElementById("class-detail").hidden = true;
+            applyRole(false);
+            status.textContent = "Admin access expired or was revoked. Reload to check your login.";
+          }
+          const serverMessage = result && result.error && result.error.message;
+          const fallback = response.status === 409 ? "This change conflicts with the current state; revoked items are terminal." : response.status === 400 ? "The request was rejected as invalid." : "Operation rejected.";
+          throw new Error(response.status >= 500 ? "Server error; check activity before retrying because the operation may have completed." : serverMessage || fallback);
+        }
+        return result;
+      }
+      const pad = (value) => String(value).padStart(2, "0");
+      function localDateTime(seconds) {
+        if (!seconds) return "";
+        const date = new Date(Number(seconds) * 1000);
+        return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) + "T" + pad(date.getHours()) + ":" + pad(date.getMinutes());
+      }
+      function renderFieldSet(container, spec, values) {
+        container.replaceChildren();
+        for (const [name, label, type] of spec) {
+          const wrapper = document.createElement("label");
+          wrapper.textContent = label;
+          let input;
+          if (type === "status") {
+            input = document.createElement("select");
+            for (const value of ["active", "revoked"]) {
+              const option = document.createElement("option");
+              option.value = value;
+              option.textContent = value === "active" ? "Active" : "Revoked (terminal)";
+              input.append(option);
+            }
+            input.value = values.status === "revoked" ? "revoked" : "active";
+          } else if (type === "select-product" || type === "select-environment") {
+            input = document.createElement("select");
+            input.dataset.role = type;
+          } else if (type === "list") {
+            input = document.createElement("input");
+            input.type = "text";
+            input.value = Array.isArray(values[name]) ? values[name].join(", ") : "";
+          } else if (type === "datetime-local") {
+            input = document.createElement("input");
+            input.type = "datetime-local";
+            input.value = localDateTime(values[name]);
+          } else if (type === "number") {
+            input = document.createElement("input");
+            input.type = "number";
+            input.step = "1";
+            input.min = "0";
+            input.value = values[name] === null || values[name] === undefined ? "" : String(values[name]);
+          } else {
+            input = document.createElement("input");
+            input.type = "text";
+            input.value = values[name] === null || values[name] === undefined ? "" : String(values[name]);
+          }
+          input.name = name;
+          wrapper.append(input);
+          container.append(wrapper);
+        }
+      }
+      function readFieldSet(container) {
+        const payload = {};
+        for (const input of container.querySelectorAll("input, select")) {
+          const name = input.name;
+          if (!name) continue;
+          if (input.type === "datetime-local") { payload[name] = input.value ? Math.floor(new Date(input.value).getTime() / 1000) : null; continue; }
+          if (input.type === "number") { payload[name] = input.value === "" ? null : Number(input.value); continue; }
+          if (name === "instructors") { payload[name] = input.value.split(",").map((item) => item.trim()).filter(Boolean); continue; }
+          payload[name] = input.value;
+        }
+        return payload;
+      }
+      function scopeSource() {
+        if (classOptions && Array.isArray(classOptions.environments) && classOptions.environments.length) {
+          const products = [];
+          const seen = new Set();
+          const environments = [];
+          for (const environment of classOptions.environments) {
+            if (!seen.has(environment.product_id)) {
+              seen.add(environment.product_id);
+              products.push({ id: environment.product_id, display_name: environment.product_name || environment.product_id });
+            }
+            environments.push({ id: environment.environment_id, product_id: environment.product_id, name: environment.environment_name || environment.environment_id });
+          }
+          return { products, environments, approved: true };
+        }
+        const data = dashboardData || { products: [], environments: [] };
+        return { products: data.products, environments: data.environments, approved: false };
+      }
+      function approvedAliases(environmentId) {
+        if (!classOptions || !Array.isArray(classOptions.environments)) return null;
+        const environment = classOptions.environments.find((item) => item.environment_id === environmentId);
+        return environment && Array.isArray(environment.aliases) ? environment.aliases : [];
+      }
+      function readAliases(container) {
+        const boxes = container.querySelectorAll('input[type="checkbox"][name="capabilities"]');
+        if (boxes.length) return [...boxes].filter((box) => box.checked).map((box) => box.value);
+        const text = container.querySelector('input[name="capabilities"]');
+        return text ? text.value.split(",").map((item) => item.trim()).filter(Boolean) : [];
+      }
+      function renderAliasChecklist(container, config) {
+        container.replaceChildren();
+        const fieldset = document.createElement("fieldset");
+        const legend = document.createElement("legend");
+        legend.textContent = config.legend;
+        fieldset.append(legend);
+        const note = document.createElement("p");
+        note.className = "field-note";
+        note.textContent = config.note;
+        fieldset.append(note);
+        if (!config.options.length) {
+          const empty = document.createElement("p");
+          empty.className = "field-note";
+          empty.textContent = config.empty;
+          fieldset.append(empty);
+        }
+        for (const alias of config.options) {
+          const label = document.createElement("label");
+          label.className = "alias-option";
+          const input = document.createElement("input");
+          input.type = "checkbox";
+          input.name = "capabilities";
+          input.value = alias;
+          input.checked = config.selected.includes(alias);
+          const text = document.createElement("span");
+          text.textContent = alias;
+          label.append(input, text);
+          if (config.outside.includes(alias)) {
+            const marker = document.createElement("em");
+            marker.textContent = config.outsideLabel;
+            label.append(marker);
+          }
+          fieldset.append(label);
+        }
+        container.append(fieldset);
+      }
+      // The approved-alias picker is driven by classes/options. If that call is
+      // unavailable it degrades to a labelled text field, never silent free text.
+      function renderAliasEditor(container, environmentId, selected) {
+        const approved = approvedAliases(environmentId);
+        if (approved === null) {
+          container.replaceChildren();
+          const fieldset = document.createElement("fieldset");
+          const legend = document.createElement("legend");
+          legend.textContent = "Approved aliases / models";
+          fieldset.append(legend);
+          const note = document.createElement("p");
+          note.className = "field-note";
+          note.textContent = "The approved-alias list is unavailable (classes/options did not respond). Enter alias IDs separated by commas; the control plane rejects invalid or unapproved aliases with 400.";
+          fieldset.append(note);
+          const input = document.createElement("input");
+          input.type = "text";
+          input.name = "capabilities";
+          input.setAttribute("aria-label", "Approved aliases / models (comma separated)");
+          input.value = (selected || []).join(", ");
+          fieldset.append(input);
+          container.append(fieldset);
+          return;
+        }
+        const options = approved.slice();
+        for (const alias of selected || []) if (!options.includes(alias)) options.push(alias);
+        renderAliasChecklist(container, {
+          legend: "Approved aliases / models",
+          note: "Only aliases approved and enabled for the chosen environment are listed; the control plane rejects anything else with 400.",
+          empty: "This environment has no enabled aliases yet. Add one in Settings before creating the class.",
+          options,
+          selected: selected || [],
+          outside: (selected || []).filter((alias) => !approved.includes(alias)),
+          outsideLabel: "not currently approved",
+        });
+      }
+      function aliasNoteText(environmentId) {
+        const approved = approvedAliases(environmentId);
+        if (approved === null) return "Approved aliases could not be listed; the text field above is validated server-side.";
+        return "Alias options come from the control plane (enabled products, environments, and aliases only).";
+      }
+      function classAliases(classId) {
+        const row = classState.classes.find((item) => item.id === classId);
+        return row && Array.isArray(row.capabilities) ? row.capabilities : [];
+      }
+      function renderGroupAliases(row) {
+        const policy = classAliases(row.class_id);
+        const selected = Array.isArray(row.capabilities) ? row.capabilities : [];
+        const options = policy.slice();
+        for (const alias of selected) if (!options.includes(alias)) options.push(alias);
+        renderAliasChecklist(document.getElementById("group-edit-aliases"), {
+          legend: "Aliases (override)",
+          note: "Leave every alias unchecked to inherit the class policy. A group can only be granted aliases the class already approves.",
+          empty: "The class has no approved aliases to override.",
+          options,
+          selected,
+          outside: selected.filter((alias) => !policy.includes(alias)),
+          outsideLabel: "not in class policy",
+        });
+        set("group-edit-alias-note", "Group aliases are the intersection of this override and the class policy; the control plane enforces it.");
+      }
+      function fillScopeSelectors(container) {
+        const productSelect = container.querySelector('[data-role="select-product"]');
+        const environmentSelect = container.querySelector('[data-role="select-environment"]');
+        if (!productSelect || !environmentSelect) return;
+        const aliasContainer = document.getElementById("class-create-aliases");
+        const renderEnvironmentAliases = () => {
+          renderAliasEditor(aliasContainer, environmentSelect.value, []);
+          set("class-create-alias-note", aliasNoteText(environmentSelect.value));
+        };
+        // The option source is read on every run. A listener bound once must not keep the
+        // environments array captured on its first call, or a refreshed or newly created
+        // product would wrongly resolve to "No environments".
+        const fillEnvironments = () => {
+          const source = scopeSource();
+          const products = source.products;
+          const environments = source.environments;
+          const previousProduct = productSelect.value;
+          productSelect.replaceChildren();
+          for (const product of products) {
+            const option = document.createElement("option");
+            option.value = product.id;
+            option.textContent = product.display_name;
+            productSelect.append(option);
+          }
+          if (previousProduct && products.some((product) => product.id === previousProduct)) productSelect.value = previousProduct;
+          const productId = productSelect.value;
+          const previousEnvironment = environmentSelect.value;
+          environmentSelect.replaceChildren();
+          const matching = environments.filter((environment) => environment.product_id === productId);
+          for (const environment of matching) {
+            const option = document.createElement("option");
+            option.value = environment.id;
+            option.textContent = environment.name;
+            environmentSelect.append(option);
+          }
+          if (!matching.length) {
+            const option = document.createElement("option");
+            option.value = "";
+            option.textContent = "No environments";
+            environmentSelect.append(option);
+          } else if (previousEnvironment && matching.some((environment) => environment.id === previousEnvironment)) {
+            environmentSelect.value = previousEnvironment;
+          }
+          renderEnvironmentAliases();
+        };
+        if (!productSelect.dataset.bound) {
+          productSelect.dataset.bound = "true";
+          productSelect.addEventListener("change", fillEnvironments);
+          environmentSelect.addEventListener("change", renderEnvironmentAliases);
+        }
+        fillEnvironments();
+      }
+      async function loadClassOptions() {
+        try {
+          const result = await dashboardPost("classes/options", {});
+          classOptions = result && Array.isArray(result.environments) ? result : null;
+          classOptionsTruncated = Boolean(result && result.truncated);
+        } catch {
+          classOptions = null;
+          classOptionsTruncated = false;
+        }
+      }
+      function refreshAliasEditors() {
+        fillScopeSelectors(document.getElementById("class-create-fields"));
+        const row = classState.classes.find((item) => item.id === classState.selected);
+        if (row) {
+          renderAliasEditor(document.getElementById("class-edit-aliases"), row.environment_id, row.capabilities || []);
+          set("class-edit-alias-note", aliasNoteText(row.environment_id));
+        }
+        const groupRow = classState.detail && (classState.detail.groups || []).find((group) => group.id === classState.groupEditing);
+        if (groupRow) renderGroupAliases(groupRow);
+        document.getElementById("class-options-note").textContent = classOptionsTruncated ? "The environment and alias options are truncated; only the first page is shown." : "";
+      }
+
+      const CLASS_FIELDS = [
+        ["name", "Class name", "text"],
+        ["course", "Course", "text"],
+        ["instructors", "Instructors (comma separated)", "list"],
+        ["timezone", "Timezone (IANA; display and scheduling metadata only, does not convert times)", "text"],
+        ["starts_at", "Starts at (browser local time)", "datetime-local"],
+        ["expires_at", "Ends at (browser local time)", "datetime-local"],
+        ["budget_microcents", "Class lifetime budget (μ¢, shared by all groups)", "number"],
+        ["group_budget_microcents", "Default group budget (μ¢, each group)", "number"],
+        ["daily_budget_microcents", "Default group daily budget (μ¢, optional; applies in UTC)", "number"],
+        ["rpm_limit", "Default group requests per minute", "number"],
+        ["tpm_limit", "Default group tokens per minute", "number"],
+        ["concurrency_limit", "Default group concurrency", "number"],
+      ];
+      const CLASS_SCOPE_FIELDS = [
+        ["product_id", "Product", "select-product"],
+        ["environment_id", "Environment", "select-environment"],
+        ["tenant_id", "Classroom / tenant ID", "text"],
+      ];
+      const GROUP_FIELDS = [
+        ["name", "Group name", "text"],
+        ["budget_microcents", "Group budget (μ¢, shared by its keys and devices)", "number"],
+        ["daily_budget_microcents", "Daily group budget (μ¢; blank inherits class default; applies in UTC)", "number"],
+        ["rpm_limit", "Requests per minute (blank inherits)", "number"],
+        ["tpm_limit", "Tokens per minute (blank inherits)", "number"],
+        ["concurrency_limit", "Concurrency (blank inherits)", "number"],
+        ["starts_at", "Starts at (browser local time; blank inherits)", "datetime-local"],
+        ["expires_at", "Ends at (browser local time; blank inherits)", "datetime-local"],
+        ["status", "Status", "status"],
+      ];
+
+      const DUPLICATE_FIELDS = [
+        ["name", "New class name", "text"],
+        ["starts_at", "New start (browser local time)", "datetime-local"],
+        ["expires_at", "New end (browser local time)", "datetime-local"],
+      ];
+      // A duplicate always gets its own window: an expired source must not be copied
+      // forward, so fall back to a future window instead of the source's past one.
+      function duplicateDefaults(row) {
+        const current = Math.floor(Date.now() / 1000);
+        const stillCurrent = typeof row.expires_at === "number" && row.expires_at > current;
+        return {
+          name: row.name + " (copy)",
+          starts_at: stillCurrent ? row.starts_at : current,
+          expires_at: stillCurrent ? row.expires_at : current + 86_400 * 30,
+        };
+      }
+      const statusLabel = (status) => status === "active" ? "Active" : status === "paused" ? "Paused" : "Revoked";
+      const ALIAS_PATTERN = /^[a-z][a-z0-9._:-]*\.v[1-9][0-9]*$/;
+      const overrideText = (value, format) => value === null || value === undefined ? "Inherits class" : format(value);
+      const browserTimeZone = (() => {
+        try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "browser local time"; }
+        catch { return "browser local time"; }
+      })();
+      const scheduleNote = "Start and end times are entered in your browser's local time (" + browserTimeZone + ") and stored as Unix seconds; stored times are displayed in UTC. The class timezone field is display and scheduling metadata and does not convert these times. Daily budgets apply in UTC.";
+      function validateClassPayload(payload) {
+        if (!payload.name || !String(payload.name).trim()) return "A class name is required.";
+        if (!Array.isArray(payload.capabilities) || !payload.capabilities.length) return "Choose at least one approved alias.";
+        const invalidAlias = payload.capabilities.find((alias) => !ALIAS_PATTERN.test(alias));
+        if (invalidAlias) return "Alias \"" + invalidAlias + "\" is not a valid alias ID (expected a name like text.chat.v1).";
+        for (const field of ["budget_microcents", "group_budget_microcents", "rpm_limit", "tpm_limit", "concurrency_limit"]) {
+          if (payload[field] === null || payload[field] === undefined || !Number.isFinite(payload[field])) return "Budgets and limits must be whole numbers.";
+        }
+        if (!payload.starts_at || !payload.expires_at) return "Start and end times are required.";
+        if (payload.expires_at <= payload.starts_at) return "The end time must be after the start time.";
+        return "";
+      }
+      function renderClassTable() {
+        renderTable("classes", [
+          { label: "Class", value: "name" },
+          { label: "Course", value: (row) => row.course || "—" },
+          { label: "Status", value: (row) => statusLabel(row.status), pill: true },
+          { label: "Timezone (metadata)", value: (row) => row.timezone || "—" },
+          { label: "Starts (UTC)", value: "starts_at", format: time },
+          { label: "Ends (UTC)", value: "expires_at", format: time },
+          { label: "Class budget", value: "budget_microcents", format: cost },
+          { label: "Group budget", value: "group_budget_microcents", format: cost },
+          { label: "Default group daily (UTC)", value: (row) => row.daily_budget_microcents === null || row.daily_budget_microcents === undefined ? "No class default" : cost(row.daily_budget_microcents) },
+          { label: "Approved aliases", value: (row) => (row.capabilities || []).join(", ") || "—" },
+          { label: "Group defaults (RPM / TPM / concurrency)", value: (row) => number(row.rpm_limit) + " / " + number(row.tpm_limit) + " / " + number(row.concurrency_limit) },
+          { label: "Updated", value: "updated_at", format: time },
+          { label: "Actions", buttons: (row) => [{ label: "Open", onClick: () => selectClass(row.id) }] },
+        ], classState.classes);
+      }
+      async function loadClasses() {
+        if (document.getElementById("nav-classes").hidden) return;
+        setStatus("classes-status", "Loading classes…", "");
+        try {
+          const result = await dashboardPost("classes/list", {});
+          classState.classes = Array.isArray(result.classes) ? result.classes : [];
+          renderClassTable();
+          document.getElementById("classes-truncated").hidden = !result.truncated;
+          setStatus("classes-status", classState.classes.length ? "" : "No classes yet. Create one below.", "");
+          if (classState.selected && !classState.classes.some((row) => row.id === classState.selected)) clearClassDetail();
+        } catch (error) {
+          setStatus("classes-status", messageFor(error), "error");
+        }
+      }
+      function classMeta(row) {
+        const parts = [
+          row.course ? row.course : "No course",
+          "Status: " + statusLabel(row.status),
+          "Timezone metadata: " + (row.timezone || "—") + " (display and scheduling only; does not convert times)",
+          "Schedule (UTC): " + time(row.starts_at) + " → " + time(row.expires_at),
+          "Class lifetime budget: " + cost(row.budget_microcents),
+          "Default group budget: " + cost(row.group_budget_microcents),
+          "Default group daily budget (UTC): " + (row.daily_budget_microcents === null || row.daily_budget_microcents === undefined ? "no class default" : cost(row.daily_budget_microcents)),
+          "Approved aliases: " + ((row.capabilities || []).join(", ") || "—"),
+          "Tenant: " + row.tenant_id,
+        ];
+        if (row.instructors && row.instructors.length) parts.splice(1, 0, "Instructors: " + row.instructors.join(", "));
+        return parts.join(" · ");
+      }
+      async function selectClass(id) {
+        const row = classState.classes.find((item) => item.id === id);
+        if (!row) return;
+        classState.selected = id;
+        classState.detail = null;
+        classState.usage = null;
+        classState.groupEditing = null;
+        renderGroups();
+        renderKeys();
+        renderCodes();
+        renderUsage();
+        document.getElementById("groups-truncated").hidden = true;
+        clearSecret();
+        document.getElementById("group-edit-panel").hidden = true;
+        document.getElementById("class-duplicate-panel").hidden = true;
+        setStatus("class-duplicate-status", "", "");
+        document.getElementById("class-detail").hidden = false;
+        set("class-detail-heading", row.name);
+        set("class-detail-meta", classMeta(row));
+        renderFieldSet(document.getElementById("class-edit-fields"), CLASS_FIELDS, row);
+        renderAliasEditor(document.getElementById("class-edit-aliases"), row.environment_id, row.capabilities || []);
+        set("class-edit-alias-note", aliasNoteText(row.environment_id));
+        updatePauseButton(row);
+        setStatus("class-action-status", "", "");
+        setStatus("class-edit-status", "", "");
+        setStatus("group-status", "", "");
+        setStatus("group-edit-status", "", "");
+        setStatus("class-usage-status", "", "");
+        set("class-usage-note", "");
+        await Promise.all([loadGroups(), loadUsage()]);
+      }
+      function clearClassDetail() {
+        classState.selected = null;
+        classState.detail = null;
+        classState.usage = null;
+        classState.groupEditing = null;
+        document.getElementById("class-detail").hidden = true;
+        document.getElementById("group-edit-panel").hidden = true;
+        document.getElementById("class-duplicate-panel").hidden = true;
+        clearSecret();
+      }
+      function updatePauseButton(row) {
+        const button = document.getElementById("class-pause");
+        button.textContent = row.status === "paused" ? "Resume class" : "Pause class";
+        button.disabled = row.status === "revoked";
+        button.title = row.status === "revoked" ? "Revoked classes are terminal." : "";
+      }
+      async function loadGroups() {
+        const classId = classState.selected;
+        if (!classId) return;
+        try {
+          const result = await dashboardPost("groups/list", { class_id: classId });
+          if (classState.selected !== classId) return;
+          classState.detail = result;
+          document.getElementById("groups-truncated").hidden = !result.truncated;
+          renderGroups();
+          renderKeys();
+          renderCodes();
+          renderUsage();
+        } catch (error) {
+          if (classState.selected !== classId) return;
+          setStatus("group-status", messageFor(error), "error");
+        }
+      }
+      function renderGroups() {
+        const detail = classState.detail || { groups: [], keys: [], codes: [] };
+        const groups = Array.isArray(detail.groups) ? detail.groups : [];
+        const keys = Array.isArray(detail.keys) ? detail.keys : [];
+        const codes = Array.isArray(detail.codes) ? detail.codes : [];
+        const keyCounts = {};
+        const codeCounts = {};
+        for (const key of keys) keyCounts[key.group_id] = (keyCounts[key.group_id] || 0) + 1;
+        for (const code of codes) codeCounts[code.classroom_group_id] = (codeCounts[code.classroom_group_id] || 0) + 1;
+        renderTable("class-groups", [
+          { label: "Group", value: "name", bounded: true },
+          { label: "Status", value: (row) => statusLabel(row.status), pill: true },
+          { label: "Aliases", value: (row) => (row.capabilities === null || row.capabilities === undefined ? "Inherits class" : ((row.capabilities || []).join(", ") || "Inherits class")) },
+          { label: "Group budget", value: "budget_microcents", format: cost },
+          { label: "Daily group budget (UTC)", value: (row) => overrideText(row.daily_budget_microcents, cost) },
+          { label: "RPM", value: (row) => overrideText(row.rpm_limit, number) },
+          { label: "TPM", value: (row) => overrideText(row.tpm_limit, number) },
+          { label: "Concurrency", value: (row) => overrideText(row.concurrency_limit, number) },
+          { label: "Starts (UTC)", value: (row) => overrideText(row.starts_at, time) },
+          { label: "Ends (UTC)", value: (row) => overrideText(row.expires_at, time) },
+          { label: "Keys", value: (row) => number(keyCounts[row.id] || 0) },
+          { label: "Join codes", value: (row) => number(codeCounts[row.id] || 0) },
+          { label: "Actions", buttons: (row) => {
+            const buttons = [];
+            if (row.status === "active") {
+              buttons.push({ label: "API key", disabled: credentialPending, onClick: () => issueGroupAccess(row.id, "api_key") });
+              buttons.push({ label: "Join code", disabled: credentialPending, onClick: () => issueGroupAccess(row.id, "join_code") });
+            }
+            buttons.push({ label: "Adjust", onClick: () => openGroupEditor(row) });
+            if (row.status === "active") buttons.push({ label: "Revoke", danger: true, onClick: () => revokeGroup(row) });
+            return buttons;
+          } },
+        ], groups);
+      }
+      function renderKeys() {
+        const detail = classState.detail || { groups: [], keys: [] };
+        const groupNames = Object.fromEntries((detail.groups || []).map((group) => [group.id, group.name]));
+        renderTable("class-keys", [
+          { label: "Key ID", value: "id" },
+          { label: "Group", value: (row) => groupNames[row.group_id] || row.group_id },
+          { label: "Created (UTC)", value: "created_at", format: time },
+          { label: "Expires (UTC)", value: (row) => row.expires_at === null || row.expires_at === undefined ? "Inherits group schedule" : time(row.expires_at) },
+          { label: "State", value: (row) => row.revoked_at ? "Revoked" : "Active", pill: true },
+          { label: "Actions", buttons: (row) => row.revoked_at ? [] : [
+            { label: "Rotate", disabled: credentialPending, onClick: () => rotateKey(row.id) },
+            { label: "Revoke", danger: true, onClick: () => revokeKey(row.id) },
+          ] },
+        ], Array.isArray(detail.keys) ? detail.keys : []);
+      }
+      function renderCodes() {
+        const detail = classState.detail || { groups: [], codes: [] };
+        const groupNames = Object.fromEntries((detail.groups || []).map((group) => [group.id, group.name]));
+        renderTable("class-codes", [
+          { label: "Code ID", value: "id" },
+          { label: "Group", value: (row) => groupNames[row.classroom_group_id] || row.classroom_group_id },
+          { label: "Expires (UTC)", value: "expires_at", format: time },
+          { label: "State", value: (row) => row.disabled ? "Disabled" : "Active", pill: true },
+          { label: "Activations (devices, not spend)", value: (row) => number(row.activation_count) + " / " + number(row.max_activations) },
+          { label: "Actions", buttons: (row) => row.disabled ? [] : [{ label: "Revoke", danger: true, onClick: () => revokeCode(row.id) }] },
+        ], Array.isArray(detail.codes) ? detail.codes : []);
+      }
+      async function loadUsage() {
+        const classId = classState.selected;
+        if (!classId) return;
+        try {
+          const result = await dashboardPost("classes/usage", { class_id: classId });
+          if (classState.selected !== classId) return;
+          classState.usage = result;
+          renderUsage();
+          set("class-usage-note", result && result.truncated ? "Usage is truncated; only the first page of groups is shown. Class totals include every group." : "");
+        } catch (error) {
+          if (classState.selected !== classId) return;
+          setStatus("class-usage-status", messageFor(error), "error");
+        }
+      }
+      function renderUsage() {
+        const usage = classState.usage || { groups: [], totals: null };
+        const groups = (classState.detail && classState.detail.groups) || [];
+        const groupNames = Object.fromEntries(groups.map((group) => [group.id, group.name]));
+        const classRow = classState.classes.find((item) => item.id === classState.selected);
+        const rows = [];
+        if (usage.totals) rows.push({ scope_kind: "Class", scope: "Class total", allocation_microcents: classRow ? classRow.budget_microcents : null, ...usage.totals });
+        for (const group of usage.groups || []) {
+          const detailRow = groups.find((item) => item.id === group.group_id);
+          rows.push({ scope_kind: "Group", scope: groupNames[group.group_id] || group.group_id, allocation_microcents: detailRow ? detailRow.budget_microcents : null, ...group });
+        }
+        renderTable("class-usage", [
+          { label: "Scope", value: "scope_kind", pill: true },
+          { label: "Group / total", value: "scope" },
+          { label: "Budget allocation", value: (row) => row.allocation_microcents === null || row.allocation_microcents === undefined ? "—" : cost(row.allocation_microcents) },
+          { label: "Requests", value: (row) => number(row.requests) },
+          { label: "Input tokens", value: (row) => number(row.input_tokens) },
+          { label: "Output tokens", value: (row) => number(row.output_tokens) },
+          { label: "Accounted lifetime cost", value: (row) => cost(row.cost_microcents) },
+          { label: "Pending requests", value: (row) => number(row.pending_requests) },
+          { label: "Pending reservation ceiling", value: (row) => cost(row.pending_cost_microcents) },
+        ], rows);
+      }
+      // Class-specific mutations finish after an await, during which the operator may
+      // have opened another class. When a target class id is supplied, completion and
+      // error messages only land while that class is still selected, so the heading,
+      // editor, actions, and status can never describe different classes.
+      async function runClassAction(statusId, action, targetClassId) {
+        setStatus(statusId, "Applying…", "");
+        try {
+          const message = await action();
+          if (targetClassId && classState.selected !== targetClassId) return true;
+          setStatus(statusId, message || "Done.", "ok");
+          return true;
+        } catch (error) {
+          if (targetClassId && classState.selected !== targetClassId) {
+            setStatus("classes-status", messageFor(error), "error");
+            return false;
+          }
+          setStatus(statusId, messageFor(error), "error");
+          return false;
+        }
+      }
+      // Ownership-guarded variant for completions that belong to a specific draft rather
+      // than to a selected class: the group editor session and the bulk-create draft.
+      // Gate once when the awaited work resolves, then run the owned cleanup and success
+      // status synchronously: cleanup must not invalidate the ownership it just checked.
+      async function runOwnedAction(statusId, owns, action, onSuccess, onSuperseded) {
+        setStatus(statusId, "Applying…", "");
+        try {
+          const message = await action();
+          if (!owns()) {
+            if (onSuperseded) onSuperseded();
+            return true;
+          }
+          if (onSuccess) onSuccess();
+          setStatus(statusId, message || "Done.", "ok");
+          return true;
+        } catch (error) {
+          if (!owns()) {
+            setStatus("classes-status", messageFor(error), "error");
+            return false;
+          }
+          setStatus(statusId, messageFor(error), "error");
+          return false;
+        }
+      }
+      function groupEditorOwnedBy(owner) {
+        return classState.selected === owner.classId
+          && classState.groupEditing === owner.groupId
+          && classState.groupEditorRevision === owner.revision;
+      }
+      // Credential-producing actions share one show-once panel. While one is in flight the
+      // issuance and rotation controls are disabled, so a later action cannot replace a
+      // secret the operator has not read yet.
+      function setCredentialPending(pending) {
+        credentialPending = pending;
+        renderGroups();
+        renderKeys();
+      }
+      async function runCredentialAction(action) {
+        if (credentialPending) return;
+        setCredentialPending(true);
+        try {
+          await action();
+        } finally {
+          setCredentialPending(false);
+        }
+      }
+      function groupContext(groupId) {
+        const group = classState.detail?.groups?.find((row) => row.id === groupId);
+        const classroom = classState.classes.find((row) => row.id === classState.selected);
+        return (group ? group.name : groupId) + " in " + (classroom ? classroom.name : classState.selected);
+      }
+      function showSecret(result, context) {
+        const value = result.api_key || result.access_code || "";
+        document.getElementById("class-secret-value").textContent = value;
+        document.getElementById("class-secret").hidden = !value;
+        setStatus("class-secret-status", value ? ("For " + context + ". " + (result.api_key ? "Shown once. This is a direct gateway API key; it does not activate devices." : "Shown once. This join code activates devices through the existing activation endpoint.")) : "", value ? "ok" : "");
+      }
+      function clearSecret() {
+        document.getElementById("class-secret").hidden = true;
+        document.getElementById("class-secret-value").textContent = "";
+        setStatus("class-secret-status", "", "");
+      }
+      async function issueGroupAccess(groupId, kind) {
+        if (credentialPending) return;
+        const classId = classState.selected;
+        const label = kind === "api_key" ? "API key" : "join code";
+        const context = groupContext(groupId);
+        if (!window.confirm("Issue a new " + label + " for " + context + "? It is shown once and cannot be retrieved later.")) return;
+        await runCredentialAction(async () => {
+          clearSecret();
+          await runClassAction("group-status", async () => {
+            const result = await dashboardPost("groups/access", { group_id: groupId, kind });
+            showSecret(result, context);
+            await loadGroups();
+            return "Issued " + label + " for " + context + ".";
+          }, classId);
+        });
+      }
+      async function rotateKey(id) {
+        if (credentialPending) return;
+        const classId = classState.selected;
+        const key = classState.detail?.keys?.find((row) => row.id === id);
+        const context = groupContext(key?.group_id || id);
+        if (!window.confirm("Rotate the API key for " + context + "? The old key is invalidated immediately; the group and its spend are unchanged.")) return;
+        await runCredentialAction(async () => {
+          clearSecret();
+          await runClassAction("group-status", async () => {
+            const result = await dashboardPost("groups/rotate", { id });
+            showSecret(result, context);
+            await loadGroups();
+            return "Rotated the API key for " + context + ". The group and its spend are unchanged.";
+          }, classId);
+        });
+      }
+      async function revokeKey(id) {
+        if (!window.confirm("Revoke this API key? This cannot be undone.")) return;
+        const classId = classState.selected;
+        await runClassAction("group-status", async () => {
+          await dashboardPost("groups/revoke-key", { id });
+          await loadGroups();
+          return "API key revoked.";
+        }, classId);
+      }
+      async function revokeCode(id) {
+        if (!window.confirm("Revoke this join code? Devices already activated lose access on their next gateway request.")) return;
+        const classId = classState.selected;
+        await runClassAction("group-status", async () => {
+          await dashboardPost("revoke", { resource_type: "access_code", resource_id: id });
+          await loadGroups();
+          return "Join code disabled.";
+        }, classId);
+      }
+      async function revokeGroup(row) {
+        if (!window.confirm("Revoke group " + row.name + "? Revocation is terminal and applies on the next gateway request.")) return;
+        const classId = classState.selected;
+        await runClassAction("group-status", async () => {
+          await dashboardPost("groups/update", { id: row.id, status: "revoked" });
+          await loadGroups();
+          return "Group revoked.";
+        }, classId);
+      }
+      function openGroupEditor(row) {
+        classState.groupEditing = row.id;
+        // A new editor session invalidates any in-flight save for the previous draft,
+        // even when it targets the same group.
+        classState.groupEditorRevision += 1;
+        renderFieldSet(document.getElementById("group-edit-fields"), GROUP_FIELDS, row);
+        renderGroupAliases(row);
+        document.getElementById("group-edit-panel").hidden = false;
+        set("group-edit-heading", "Adjust group: " + row.name);
+        setStatus("group-edit-status", "", "");
+      }
+      // Editing the open editor is a new draft too, so a held save for the same group
+      // cannot close the panel over newer field changes.
+      document.getElementById("group-edit-form").addEventListener("input", () => {
+        classState.groupEditorRevision += 1;
+      });
+
+      renderFieldSet(document.getElementById("class-create-fields"), CLASS_SCOPE_FIELDS.concat(CLASS_FIELDS), { timezone: "Asia/Singapore" });
+      set("class-create-schedule-note", scheduleNote);
+      set("class-edit-schedule-note", scheduleNote);
+      set("group-edit-schedule-note", scheduleNote);
+      set("class-create-alias-note", "Loading approved aliases…");
+      set("class-edit-alias-note", "Loading approved aliases…");
+      document.getElementById("class-create-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const container = document.getElementById("class-create-fields");
+        const payload = readFieldSet(container);
+        payload.capabilities = readAliases(document.getElementById("class-create-aliases"));
+        const problem = validateClassPayload(payload);
+        if (problem) { setStatus("class-create-status", problem, "error"); return; }
+        if (!payload.tenant_id || !String(payload.tenant_id).trim()) { setStatus("class-create-status", "A classroom / tenant ID is required.", "error"); return; }
+        if (!payload.product_id || !payload.environment_id) { setStatus("class-create-status", "Choose a product and environment.", "error"); return; }
+        if (!payload.course) delete payload.course;
+        if (!payload.instructors || !payload.instructors.length) delete payload.instructors;
+        await runClassAction("class-create-status", async () => {
+          const result = await dashboardPost("classes", payload);
+          renderFieldSet(container, CLASS_SCOPE_FIELDS.concat(CLASS_FIELDS), { timezone: "Asia/Singapore" });
+          refreshAliasEditors();
+          await loadClasses();
+          if (result && result.id) await selectClass(result.id);
+          return "Class created.";
+        });
+      });
+      document.getElementById("class-edit-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const targetId = classState.selected;
+        if (!targetId) return;
+        const payload = readFieldSet(document.getElementById("class-edit-fields"));
+        payload.capabilities = readAliases(document.getElementById("class-edit-aliases"));
+        const problem = validateClassPayload(payload);
+        if (problem) { setStatus("class-edit-status", problem, "error"); return; }
+        payload.id = targetId;
+        await runClassAction("class-edit-status", async () => {
+          await dashboardPost("classes/update", payload);
+          await loadClasses();
+          await loadUsage();
+          if (classState.selected !== targetId) return null;
+          const row = classState.classes.find((item) => item.id === targetId);
+          if (row) { set("class-detail-heading", row.name); set("class-detail-meta", classMeta(row)); updatePauseButton(row); }
+          return "Class updated. Changes are checked on every gateway request.";
+        }, targetId);
+      });
+      document.getElementById("class-pause").addEventListener("click", async () => {
+        const targetId = classState.selected;
+        const row = classState.classes.find((item) => item.id === targetId);
+        if (!row || row.status === "revoked") return;
+        const next = row.status === "paused" ? "active" : "paused";
+        if (!window.confirm(next === "paused" ? "Pause this class? Live requests are checked on every gateway call." : "Resume this class?")) return;
+        await runClassAction("class-action-status", async () => {
+          await dashboardPost("classes/update", { id: targetId, status: next });
+          await loadClasses();
+          if (classState.selected !== targetId) return null;
+          const updated = classState.classes.find((item) => item.id === targetId);
+          if (updated) { set("class-detail-heading", updated.name); set("class-detail-meta", classMeta(updated)); updatePauseButton(updated); }
+          return next === "paused" ? "Class paused. Existing grants are checked on every request." : "Class resumed.";
+        }, targetId);
+      });
+      document.getElementById("class-duplicate").addEventListener("click", () => {
+        const row = classState.classes.find((item) => item.id === classState.selected);
+        if (!row) return;
+        renderFieldSet(document.getElementById("class-duplicate-fields"), DUPLICATE_FIELDS, duplicateDefaults(row));
+        set("class-duplicate-note", "Copies policy and group names into a new class with the window below. Keys and spend are not copied, and the source class keeps its own schedule.");
+        setStatus("class-duplicate-status", "", "");
+        const panel = document.getElementById("class-duplicate-panel");
+        panel.hidden = false;
+        panel.scrollIntoView({ block: "start" });
+      });
+      document.getElementById("class-duplicate-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const targetId = classState.selected;
+        if (!targetId) return;
+        const payload = readFieldSet(document.getElementById("class-duplicate-fields"));
+        if (!payload.name || !String(payload.name).trim()) { setStatus("class-duplicate-status", "A name for the new class is required.", "error"); return; }
+        if (!payload.starts_at || !payload.expires_at) { setStatus("class-duplicate-status", "A start and end for the new class are required.", "error"); return; }
+        if (payload.expires_at <= payload.starts_at) { setStatus("class-duplicate-status", "The end time must be after the start time.", "error"); return; }
+        const request = { id: targetId, name: payload.name, starts_at: payload.starts_at, expires_at: payload.expires_at };
+        await runClassAction("class-duplicate-status", async () => {
+          const result = await dashboardPost("classes/duplicate", request);
+          await loadClasses();
+          // Stale completion: the operator left the source class, so nothing is reported.
+          if (classState.selected !== targetId || !result || !result.id) return null;
+          const newId = result.id;
+          await selectClass(newId);
+          // Opening the copy hides the source class's duplicate panel, so the confirmation
+          // belongs in the visible class status. Write it only while the copy is still the
+          // selected class: a switch during the load must win, never receive this message.
+          if (classState.selected === newId) {
+            setStatus("class-action-status", "Duplicated policy and group names into the new window; no keys or spend were copied.", "ok");
+          }
+          return null;
+        }, targetId);
+      });
+      document.getElementById("class-detail-refresh").addEventListener("click", async () => {
+        const targetId = classState.selected;
+        await Promise.all([loadGroups(), loadUsage()]);
+        if (classState.selected !== targetId) return;
+        setStatus("class-action-status", "Reloaded groups and usage.", "ok");
+      });
+      document.getElementById("group-create-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const classId = classState.selected;
+        if (!classId) return;
+        const textarea = document.getElementById("group-names");
+        const submitted = textarea.value;
+        const names = submitted.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+        if (!names.length) { setStatus("group-status", "Enter at least one group name.", "error"); return; }
+        if (names.length > 100) { setStatus("group-status", "At most 100 groups per request.", "error"); return; }
+        // The draft belongs to this class and this exact text: a newer draft typed for
+        // another class must survive an older completion.
+        const owns = () => classState.selected === classId && document.getElementById("group-names").value === submitted;
+        await runOwnedAction("group-status", owns, async () => {
+          const result = await dashboardPost("groups", { class_id: classId, names });
+          await Promise.all([loadGroups(), loadUsage()]);
+          return "Created " + number((result && result.groups ? result.groups.length : names.length)) + " group(s).";
+        }, () => { document.getElementById("group-names").value = ""; });
+      });
+      document.getElementById("group-edit-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const owner = {
+          classId: classState.selected,
+          groupId: classState.groupEditing,
+          revision: classState.groupEditorRevision,
+        };
+        if (!owner.classId || !owner.groupId) return;
+        const payload = readFieldSet(document.getElementById("group-edit-fields"));
+        payload.capabilities = readAliases(document.getElementById("group-edit-aliases"));
+        if (Array.isArray(payload.capabilities) && !payload.capabilities.length) payload.capabilities = null;
+        if (payload.budget_microcents === null || !Number.isFinite(payload.budget_microcents)) { setStatus("group-edit-status", "A group budget is required.", "error"); return; }
+        if (payload.starts_at && payload.expires_at && payload.expires_at <= payload.starts_at) { setStatus("group-edit-status", "The end time must be after the start time.", "error"); return; }
+        payload.id = owner.groupId;
+        // Cleanup is owned by the editor session that submitted: another group, a reopened
+        // draft, or another class must not be hidden or cleared by an older completion.
+        const owns = () => groupEditorOwnedBy(owner);
+        await runOwnedAction("group-edit-status", owns, async () => {
+          await dashboardPost("groups/update", payload);
+          await Promise.all([loadGroups(), loadUsage()]);
+          return "Group updated.";
+        }, () => {
+          document.getElementById("group-edit-panel").hidden = true;
+          classState.groupEditing = null;
+        }, () => {
+          const stillThisEditor =
+            classState.selected === owner.classId &&
+            classState.groupEditing === owner.groupId;
+          if (stillThisEditor && !document.getElementById("group-edit-panel").hidden) {
+            setStatus("group-edit-status", "Saved the earlier version; your newer edits are not saved yet.", "ok");
+          }
+        });
+      });
+      document.getElementById("class-secret-copy").addEventListener("click", async () => {
+        const value = document.getElementById("class-secret-value").textContent;
+        if (!value) return;
+        try {
+          await navigator.clipboard.writeText(value);
+          setStatus("class-secret-status", "Copied to the clipboard. Paste it into your tool now.", "ok");
+        } catch {
+          setStatus("class-secret-status", "Copy failed; select the value and copy it manually.", "error");
+        }
+      });
+      document.getElementById("class-secret-download").addEventListener("click", () => {
+        const value = document.getElementById("class-secret-value").textContent;
+        if (!value) return;
+        const blob = new Blob([value + "\n"], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "tkslopper-group-credential.txt";
+        document.body.append(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 0);
+        setStatus("class-secret-status", "Downloaded. Store it securely; it cannot be retrieved again.", "ok");
+      });
+      document.getElementById("class-secret-clear").addEventListener("click", clearSecret);
+      window.addEventListener("pagehide", clearSecret);
+
       async function loadDashboard() {
         refresh.disabled = true;
         document.body.classList.add("loading");
         clearResult();
+        clearSecret();
         adminPanel.hidden = true;
         status.className = "";
         status.textContent = "Loading metadata…";
@@ -939,6 +2085,10 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
             renderTable("admin-audit", [{ label: "Time", value: "created_at", format: time }, { label: "Actor", value: (row) => row.actor_email || "API credential" }, { label: "Action", value: "action" }, { label: "Resource", value: (row) => row.resource_type + " / " + (row.target_email || row.resource_id) }], session.recent_actions);
             adminPanel.hidden = false;
             applyRole(true);
+            if (firstClassLoad) { firstClassLoad = false; showView("classes"); }
+            await loadClassOptions();
+            await loadClasses();
+            refreshAliasEditors();
           } else {
             applyRole(false);
           }
