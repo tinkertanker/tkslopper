@@ -724,6 +724,16 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
                   <p id="class-edit-status" class="status-line" role="status" aria-live="polite"></p>
                 </div>
 
+                <div class="subpanel" id="class-duplicate-panel" hidden>
+                  <h3 id="class-duplicate-heading">Duplicate configuration</h3>
+                  <form id="class-duplicate-form" autocomplete="off">
+                    <div class="admin-fields" id="class-duplicate-fields"></div>
+                    <p class="field-note" id="class-duplicate-note"></p>
+                    <button id="class-duplicate-submit" type="submit">Duplicate class</button>
+                  </form>
+                  <p id="class-duplicate-status" class="status-line" role="status" aria-live="polite"></p>
+                </div>
+
                 <h3>Groups and keys</h3>
                 <p class="field-note">Groups are created in bulk. Each group inherits class policy unless it overrides it, and starts with the class default group budget.</p>
                 <form id="group-create-form" autocomplete="off">
@@ -1345,24 +1355,27 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         const productSelect = container.querySelector('[data-role="select-product"]');
         const environmentSelect = container.querySelector('[data-role="select-environment"]');
         if (!productSelect || !environmentSelect) return;
-        const source = scopeSource();
-        const products = source.products;
-        const environments = source.environments;
-        const previousProduct = productSelect.value;
-        productSelect.replaceChildren();
-        for (const product of products) {
-          const option = document.createElement("option");
-          option.value = product.id;
-          option.textContent = product.display_name;
-          productSelect.append(option);
-        }
-        if (previousProduct && products.some((product) => product.id === previousProduct)) productSelect.value = previousProduct;
         const aliasContainer = document.getElementById("class-create-aliases");
         const renderEnvironmentAliases = () => {
           renderAliasEditor(aliasContainer, environmentSelect.value, []);
           set("class-create-alias-note", aliasNoteText(environmentSelect.value));
         };
+        // The option source is read on every run. A listener bound once must not keep the
+        // environments array captured on its first call, or a refreshed or newly created
+        // product would wrongly resolve to "No environments".
         const fillEnvironments = () => {
+          const source = scopeSource();
+          const products = source.products;
+          const environments = source.environments;
+          const previousProduct = productSelect.value;
+          productSelect.replaceChildren();
+          for (const product of products) {
+            const option = document.createElement("option");
+            option.value = product.id;
+            option.textContent = product.display_name;
+            productSelect.append(option);
+          }
+          if (previousProduct && products.some((product) => product.id === previousProduct)) productSelect.value = previousProduct;
           const productId = productSelect.value;
           const previousEnvironment = environmentSelect.value;
           environmentSelect.replaceChildren();
@@ -1443,6 +1456,22 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         ["status", "Status", "status"],
       ];
 
+      const DUPLICATE_FIELDS = [
+        ["name", "New class name", "text"],
+        ["starts_at", "New start (browser local time)", "datetime-local"],
+        ["expires_at", "New end (browser local time)", "datetime-local"],
+      ];
+      // A duplicate always gets its own window: an expired source must not be copied
+      // forward, so fall back to a future window instead of the source's past one.
+      function duplicateDefaults(row) {
+        const current = Math.floor(Date.now() / 1000);
+        const stillCurrent = typeof row.expires_at === "number" && row.expires_at > current;
+        return {
+          name: row.name + " (copy)",
+          starts_at: stillCurrent ? row.starts_at : current,
+          expires_at: stillCurrent ? row.expires_at : current + 86_400 * 30,
+        };
+      }
       const statusLabel = (status) => status === "active" ? "Active" : status === "paused" ? "Paused" : "Revoked";
       const ALIAS_PATTERN = /^[a-z][a-z0-9._:-]*\.v[1-9][0-9]*$/;
       const overrideText = (value, format) => value === null || value === undefined ? "Inherits class" : format(value);
@@ -1523,6 +1552,8 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         document.getElementById("groups-truncated").hidden = true;
         clearSecret();
         document.getElementById("group-edit-panel").hidden = true;
+        document.getElementById("class-duplicate-panel").hidden = true;
+        setStatus("class-duplicate-status", "", "");
         document.getElementById("class-detail").hidden = false;
         set("class-detail-heading", row.name);
         set("class-detail-meta", classMeta(row));
@@ -1545,6 +1576,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         classState.groupEditing = null;
         document.getElementById("class-detail").hidden = true;
         document.getElementById("group-edit-panel").hidden = true;
+        document.getElementById("class-duplicate-panel").hidden = true;
         clearSecret();
       }
       function updatePauseButton(row) {
@@ -1668,13 +1700,22 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           { label: "Pending reservation ceiling", value: (row) => cost(row.pending_cost_microcents) },
         ], rows);
       }
-      async function runClassAction(statusId, action) {
+      // Class-specific mutations finish after an await, during which the operator may
+      // have opened another class. When a target class id is supplied, completion and
+      // error messages only land while that class is still selected, so the heading,
+      // editor, actions, and status can never describe different classes.
+      async function runClassAction(statusId, action, targetClassId) {
         setStatus(statusId, "Applying…", "");
         try {
           const message = await action();
+          if (targetClassId && classState.selected !== targetClassId) return true;
           setStatus(statusId, message || "Done.", "ok");
           return true;
         } catch (error) {
+          if (targetClassId && classState.selected !== targetClassId) {
+            setStatus("classes-status", messageFor(error), "error");
+            return false;
+          }
           setStatus(statusId, messageFor(error), "error");
           return false;
         }
@@ -1780,48 +1821,68 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       });
       document.getElementById("class-edit-form").addEventListener("submit", async (event) => {
         event.preventDefault();
-        if (!classState.selected) return;
+        const targetId = classState.selected;
+        if (!targetId) return;
         const payload = readFieldSet(document.getElementById("class-edit-fields"));
         payload.capabilities = readAliases(document.getElementById("class-edit-aliases"));
         const problem = validateClassPayload(payload);
         if (problem) { setStatus("class-edit-status", problem, "error"); return; }
-        payload.id = classState.selected;
+        payload.id = targetId;
         await runClassAction("class-edit-status", async () => {
           await dashboardPost("classes/update", payload);
           await loadClasses();
           await loadUsage();
-          const row = classState.classes.find((item) => item.id === classState.selected);
+          if (classState.selected !== targetId) return null;
+          const row = classState.classes.find((item) => item.id === targetId);
           if (row) { set("class-detail-heading", row.name); set("class-detail-meta", classMeta(row)); updatePauseButton(row); }
           return "Class updated. Changes are checked on every gateway request.";
-        });
+        }, targetId);
       });
       document.getElementById("class-pause").addEventListener("click", async () => {
-        const row = classState.classes.find((item) => item.id === classState.selected);
+        const targetId = classState.selected;
+        const row = classState.classes.find((item) => item.id === targetId);
         if (!row || row.status === "revoked") return;
         const next = row.status === "paused" ? "active" : "paused";
         if (!window.confirm(next === "paused" ? "Pause this class? Live requests are checked on every gateway call." : "Resume this class?")) return;
         await runClassAction("class-action-status", async () => {
-          await dashboardPost("classes/update", { id: row.id, status: next });
+          await dashboardPost("classes/update", { id: targetId, status: next });
           await loadClasses();
-          const updated = classState.classes.find((item) => item.id === row.id);
+          if (classState.selected !== targetId) return null;
+          const updated = classState.classes.find((item) => item.id === targetId);
           if (updated) { set("class-detail-heading", updated.name); set("class-detail-meta", classMeta(updated)); updatePauseButton(updated); }
           return next === "paused" ? "Class paused. Existing grants are checked on every request." : "Class resumed.";
-        });
+        }, targetId);
       });
-      document.getElementById("class-duplicate").addEventListener("click", async () => {
+      document.getElementById("class-duplicate").addEventListener("click", () => {
         const row = classState.classes.find((item) => item.id === classState.selected);
         if (!row) return;
-        const name = window.prompt("Name for the duplicated class:", row.name + " (copy)");
-        if (!name) return;
-        await runClassAction("class-action-status", async () => {
-          const result = await dashboardPost("classes/duplicate", { id: row.id, name, starts_at: row.starts_at, expires_at: row.expires_at });
+        renderFieldSet(document.getElementById("class-duplicate-fields"), DUPLICATE_FIELDS, duplicateDefaults(row));
+        set("class-duplicate-note", "Copies policy and group names into a new class with the window below. Keys and spend are not copied, and the source class keeps its own schedule.");
+        setStatus("class-duplicate-status", "", "");
+        const panel = document.getElementById("class-duplicate-panel");
+        panel.hidden = false;
+        panel.scrollIntoView({ block: "start" });
+      });
+      document.getElementById("class-duplicate-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const targetId = classState.selected;
+        if (!targetId) return;
+        const payload = readFieldSet(document.getElementById("class-duplicate-fields"));
+        if (!payload.name || !String(payload.name).trim()) { setStatus("class-duplicate-status", "A name for the new class is required.", "error"); return; }
+        if (!payload.starts_at || !payload.expires_at) { setStatus("class-duplicate-status", "A start and end for the new class are required.", "error"); return; }
+        if (payload.expires_at <= payload.starts_at) { setStatus("class-duplicate-status", "The end time must be after the start time.", "error"); return; }
+        const request = { id: targetId, name: payload.name, starts_at: payload.starts_at, expires_at: payload.expires_at };
+        await runClassAction("class-duplicate-status", async () => {
+          const result = await dashboardPost("classes/duplicate", request);
           await loadClasses();
-          if (result && result.id) await selectClass(result.id);
-          return "Duplicated policy and group names; no keys or spend were copied.";
-        });
+          if (classState.selected === targetId && result && result.id) await selectClass(result.id);
+          return "Duplicated policy and group names into the new window; no keys or spend were copied.";
+        }, targetId);
       });
       document.getElementById("class-detail-refresh").addEventListener("click", async () => {
+        const targetId = classState.selected;
         await Promise.all([loadGroups(), loadUsage()]);
+        if (classState.selected !== targetId) return;
         setStatus("class-action-status", "Reloaded groups and usage.", "ok");
       });
       document.getElementById("group-create-form").addEventListener("submit", async (event) => {

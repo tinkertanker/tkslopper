@@ -102,6 +102,39 @@ describe("course-centred dashboard UI", () => {
     }
   });
 
+  it("gives duplication its own schedule and guards class-specific completion", async () => {
+    const html = await pageHtml();
+
+    // Duplication collects a new window instead of reusing the source's.
+    expect(html).toContain(
+      '<div class="subpanel" id="class-duplicate-panel" hidden>',
+    );
+    expect(html).toContain('id="class-duplicate-form"');
+    expect(html).toContain('id="class-duplicate-fields"');
+    expect(html).toContain('id="class-duplicate-submit"');
+    expect(html).toContain(
+      '["starts_at", "New start (browser local time)", "datetime-local"]',
+    );
+    expect(html).toContain(
+      '["expires_at", "New end (browser local time)", "datetime-local"]',
+    );
+    expect(html).toContain(
+      "const request = { id: targetId, name: payload.name, starts_at: payload.starts_at, expires_at: payload.expires_at }",
+    );
+    expect(html).not.toContain("starts_at: row.starts_at");
+
+    // A late completion for class A must not relabel class B.
+    expect(html).toContain(
+      "async function runClassAction(statusId, action, targetClassId)",
+    );
+    expect(html).toContain(
+      "if (targetClassId && classState.selected !== targetClassId) return true;",
+    );
+    expect(html).toContain(
+      "if (classState.selected !== targetId) return null;",
+    );
+  });
+
   it("picks approved aliases from the control plane instead of free text", async () => {
     const html = await pageHtml();
 

@@ -28,7 +28,9 @@ type Scenario =
   | "pending"
   | "error"
   | "viewer"
-  | "nooptions";
+  | "nooptions"
+  | "twoproducts"
+  | "expired";
 type Json = Record<string, unknown>;
 
 const ALIAS_PATTERN = /^[a-z][a-z0-9._:-]*\.v[1-9][0-9]*$/;
@@ -41,8 +43,11 @@ const scenarioNames: Scenario[] = [
   "error",
   "viewer",
   "nooptions",
+  "twoproducts",
+  "expired",
 ];
 const now = () => Math.floor(Date.now() / 1000);
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 type ClassRow = Json & {
   id: string;
@@ -200,6 +205,36 @@ function buildStore(scenario: Scenario): Store {
         activation_count: 30,
         max_activations: 30,
       },
+    ];
+    return store;
+  }
+
+  if (scenario === "expired") {
+    store.classes = [
+      classRow({
+        id: "cls_expired",
+        name: "P3 Art — Term 1 (ended)",
+        course: "Primary 3 Art",
+        starts_at: now() - 86_400 * 60,
+        expires_at: now() - 86_400 * 5,
+        capabilities: ["text.chat.v1"],
+      }),
+    ];
+    store.groups = [
+      groupRow({
+        id: "grp_exp_1",
+        class_id: "cls_expired",
+        name: "Group 1",
+        budget_microcents: 100_000_000,
+        starts_at: now() - 86_400 * 60,
+        expires_at: now() - 86_400 * 5,
+      }),
+      groupRow({
+        id: "grp_exp_2",
+        class_id: "cls_expired",
+        name: "Group 2",
+        budget_microcents: 100_000_000,
+      }),
     ];
     return store;
   }
@@ -362,7 +397,28 @@ function buildStore(scenario: Scenario): Store {
   return store;
 }
 
-function optionsFixture(): Json {
+function optionsFixture(scenario: Scenario): Json {
+  if (scenario === "twoproducts") {
+    return {
+      environments: [
+        {
+          product_id: "prod_school",
+          environment_id: "env_prod",
+          product_name: "School products",
+          environment_name: "production",
+          aliases: ["text.chat.v1", "text.vision.v1", "text.structured.v1"],
+        },
+        {
+          product_id: "prod_arts",
+          environment_id: "env_arts",
+          product_name: "Arts academy",
+          environment_name: "studio",
+          aliases: ["text.chat.v1"],
+        },
+      ],
+      truncated: false,
+    };
+  }
   return {
     environments: [
       {
@@ -500,6 +556,7 @@ function buildScenario(): { scenario: Scenario; store: Store } {
 async function main(): Promise<void> {
   const port = Number(process.argv[2] ?? 8790);
   let { scenario, store } = buildScenario();
+  let updateDelayMs = 0;
   const html = await dashboardPage().text();
   const favicon = await dashboardFavicon().text();
 
@@ -529,7 +586,16 @@ async function main(): Promise<void> {
       return;
     }
     if (request.method === "GET" && path === "/__health") {
-      sendJson(response, 200, { ok: true, scenario });
+      sendJson(response, 200, { ok: true, scenario, updateDelayMs });
+      return;
+    }
+    if (request.method === "POST" && path === "/__delay") {
+      const body = await readBody(request);
+      const requested = Number(body.ms ?? 0);
+      updateDelayMs = Number.isFinite(requested)
+        ? Math.max(0, Math.min(5_000, requested))
+        : 0;
+      sendJson(response, 200, { ok: true, ms: updateDelayMs });
       return;
     }
     if (request.method === "POST" && path === "/__scenario") {
@@ -564,17 +630,17 @@ async function main(): Promise<void> {
     }
     if (request.method === "POST" && path.startsWith("/dashboard/api/")) {
       const operation = path.slice("/dashboard/api/".length);
-      handleOperation(operation, response, await readBody(request));
+      void handleOperation(operation, response, await readBody(request));
       return;
     }
     sendJson(response, 404, { error: { message: "not found" } });
   }
 
-  function handleOperation(
+  async function handleOperation(
     operation: string,
     response: ServerResponse,
     body: Json,
-  ): void {
+  ): Promise<void> {
     if (
       scenario === "error" &&
       (operation === "classes/list" ||
@@ -602,7 +668,7 @@ async function main(): Promise<void> {
           sendJson(response, 404, { error: { message: "not found" } });
           return;
         }
-        sendJson(response, 200, optionsFixture());
+        sendJson(response, 200, optionsFixture(scenario));
         return;
       case "classes/list":
         sendJson(response, 200, { classes: store.classes, truncated: false });
@@ -617,6 +683,7 @@ async function main(): Promise<void> {
         return;
       }
       case "classes/update": {
+        if (updateDelayMs) await sleep(updateDelayMs);
         const id = str(body.id);
         const index = store.classes.findIndex((row) => row.id === id);
         if (index < 0) {
@@ -639,12 +706,30 @@ async function main(): Promise<void> {
         return;
       }
       case "classes/duplicate": {
+        const source = store.classes.find((row) => row.id === str(body.id));
+        if (!source) {
+          sendJson(response, 404, { error: { message: "Class not found." } });
+          return;
+        }
+        const startsAt = Number(body.starts_at ?? 0);
+        const expiresAt = Number(body.expires_at ?? 0);
+        if (!startsAt || !expiresAt || expiresAt <= startsAt) {
+          sendJson(response, 400, {
+            error: { message: "a new start and end are required" },
+          });
+          return;
+        }
+        if (expiresAt <= now()) {
+          sendJson(response, 400, {
+            error: { message: "the duplicated window must end in the future" },
+          });
+          return;
+        }
         store.counter += 1;
         const id = `cls_copy_${store.counter}`;
-        const source = store.classes.find((row) => row.id === str(body.id));
         store.classes.push(
           classRow({
-            ...(source ?? {}),
+            ...source,
             ...body,
             id,
             status: "active",
@@ -652,6 +737,7 @@ async function main(): Promise<void> {
             updated_at: now(),
           }),
         );
+        // Copied groups keep policy and budget but inherit the new class window.
         for (const group of store.groups.filter(
           (row) => row.class_id === str(body.id),
         )) {
@@ -659,6 +745,8 @@ async function main(): Promise<void> {
             ...group,
             id: `grp_copy_${store.counter}_${group.name}`,
             class_id: id,
+            starts_at: null,
+            expires_at: null,
           });
         }
         sendJson(response, 201, { id });
