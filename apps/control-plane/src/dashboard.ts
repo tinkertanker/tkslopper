@@ -1836,27 +1836,30 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       }
       async function revokeKey(id) {
         if (!window.confirm("Revoke this API key? This cannot be undone.")) return;
+        const classId = classState.selected;
         await runClassAction("group-status", async () => {
           await dashboardPost("groups/revoke-key", { id });
           await loadGroups();
           return "API key revoked.";
-        });
+        }, classId);
       }
       async function revokeCode(id) {
         if (!window.confirm("Revoke this join code? Devices already activated lose access on their next gateway request.")) return;
+        const classId = classState.selected;
         await runClassAction("group-status", async () => {
           await dashboardPost("revoke", { resource_type: "access_code", resource_id: id });
           await loadGroups();
           return "Join code disabled.";
-        });
+        }, classId);
       }
       async function revokeGroup(row) {
         if (!window.confirm("Revoke group " + row.name + "? Revocation is terminal and applies on the next gateway request.")) return;
+        const classId = classState.selected;
         await runClassAction("group-status", async () => {
           await dashboardPost("groups/update", { id: row.id, status: "revoked" });
           await loadGroups();
           return "Group revoked.";
-        });
+        }, classId);
       }
       function openGroupEditor(row) {
         classState.groupEditing = row.id;
@@ -1957,8 +1960,17 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         await runClassAction("class-duplicate-status", async () => {
           const result = await dashboardPost("classes/duplicate", request);
           await loadClasses();
-          if (classState.selected === targetId && result && result.id) await selectClass(result.id);
-          return "Duplicated policy and group names into the new window; no keys or spend were copied.";
+          // Stale completion: the operator left the source class, so nothing is reported.
+          if (classState.selected !== targetId || !result || !result.id) return null;
+          const newId = result.id;
+          await selectClass(newId);
+          // Opening the copy hides the source class's duplicate panel, so the confirmation
+          // belongs in the visible class status. Write it only while the copy is still the
+          // selected class: a switch during the load must win, never receive this message.
+          if (classState.selected === newId) {
+            setStatus("class-action-status", "Duplicated policy and group names into the new window; no keys or spend were copied.", "ok");
+          }
+          return null;
         }, targetId);
       });
       document.getElementById("class-detail-refresh").addEventListener("click", async () => {

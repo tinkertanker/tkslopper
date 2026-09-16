@@ -550,9 +550,11 @@ async function regressionHeldGroupSaveKeepsNewerDraft(): Promise<void> {
 
   selectClassRow(2);
   await waitFor<string>(heading, (value) => value === "P4 Science — Term 3");
-  await waitFor<number>(
-    "document.querySelectorAll('#class-groups tbody tr').length",
-    (count) => count >= 1,
+  // Wait for class B's own rendered group row rather than the "No records" placeholder a
+  // pending groups/list leaves behind: clicking the placeholder races that response.
+  await waitFor<boolean>(
+    "(() => { const tr = document.querySelector('#class-groups tbody tr:nth-child(1)'); return Boolean(tr) && [...tr.querySelectorAll('button')].some((button) => button.textContent === 'Adjust'); })()",
+    (ready) => ready,
   );
   agentBrowser([
     "click",
@@ -732,6 +734,240 @@ async function regressionCredentialsAreSerialized(): Promise<void> {
     "6d. controls are re-enabled once the credential action settles",
     enabledAfter,
     `enabled=${enabledAfter}`,
+  );
+}
+
+/** Browser-local datetime-local values, so no Node or browser timezone is assumed. */
+function fillDuplicateWindow(
+  name: string,
+  startDays: number,
+  endDays: number,
+): string {
+  return `(() => { const f = document.getElementById('class-duplicate-fields'); const pad = (n) => String(n).padStart(2, '0'); const local = (d) => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes()); const s = local(new Date(Date.now() + 86_400_000 * ${startDays})); const e = local(new Date(Date.now() + 86_400_000 * ${endDays})); f.querySelector('[name=name]').value = ${JSON.stringify(name)}; f.querySelector('[name=starts_at]').value = s; f.querySelector('[name=expires_at]').value = e; return { starts: s, ends: e }; })()`;
+}
+
+async function openDuplicatePanel(): Promise<void> {
+  agentBrowser(["click", "#class-duplicate"]);
+  await waitFor<boolean>(
+    "!document.getElementById('class-duplicate-panel').hidden",
+    (visible) => visible,
+  );
+}
+
+/**
+ * Duplication opens the copy, so the confirmation has to appear in the newly visible class
+ * status, and a completion for a class the operator has left must write nothing into another.
+ */
+async function regressionDuplicateConfirmationIsClassScoped(): Promise<void> {
+  await post("/__scenario", { scenario: "populated" });
+  await openDashboard();
+  selectClassRow(1);
+  await waitFor<string>(heading, (value) => value === "P5 Maths — Term 3");
+
+  // A duplicate held open while the operator opens another class reports nothing anywhere.
+  await openDuplicatePanel();
+  evalJs(fillDuplicateWindow("P5 Maths — Term 4 (stale)", 1, 40));
+  const staleCompleted = handlerCompleted();
+  setGate("/dashboard/api/classes/duplicate");
+  agentBrowser(["click", "#class-duplicate-submit"]);
+  await waitFor<number>("window.__held.length", (count) => count === 1);
+  selectClassRow(2);
+  await waitFor<string>(heading, (value) => value === "P4 Science — Term 3");
+  releaseHeld();
+  await waitForHandlerSettlement(staleCompleted);
+  setGate(null);
+
+  const stale = evalJs<{
+    heading: string;
+    action: string;
+    duplicate: string;
+    group: string;
+  }>(
+    "(() => ({ heading: document.getElementById('class-detail-heading').textContent, action: document.getElementById('class-action-status').textContent, duplicate: document.getElementById('class-duplicate-status').textContent, group: document.getElementById('group-status').textContent }))()",
+  );
+  check(
+    "9a. a duplicate that finishes after the operator switches classes reports nothing there",
+    stale.heading === "P4 Science — Term 3" &&
+      !stale.action.includes("Duplicated") &&
+      !stale.duplicate.includes("Duplicated") &&
+      stale.group === "",
+    JSON.stringify(stale),
+  );
+
+  // Normal success: the copy opens and confirms in its own visible status.
+  await post("/__scenario", { scenario: "populated" });
+  await openDashboard();
+  selectClassRow(1);
+  await waitFor<string>(heading, (value) => value === "P5 Maths — Term 3");
+  await openDuplicatePanel();
+  evalJs(fillDuplicateWindow("P5 Maths — Term 4", 1, 40));
+  const duplicateCompleted = handlerCompleted();
+  agentBrowser(["click", "#class-duplicate-submit"]);
+  await waitForHandlerSettlement(duplicateCompleted);
+  const opened = await waitFor<string>(
+    heading,
+    (value) => value === "P5 Maths — Term 4",
+  );
+  const confirmation = evalJs<string>(
+    "document.getElementById('class-action-status').textContent",
+  );
+  check(
+    "9b. the duplicated class opens with a visible confirmation",
+    opened === "P5 Maths — Term 4" &&
+      confirmation.includes("Duplicated policy and group names"),
+    `${opened} | ${confirmation}`,
+  );
+
+  const copy = await waitFor<{ keys: string; codes: string; groups: number }>(
+    "(() => ({ keys: document.getElementById('class-keys').textContent, codes: document.getElementById('class-codes').textContent, groups: document.querySelectorAll('#class-groups tbody tr').length }))()",
+    (state) => state.groups >= 2,
+  );
+  check(
+    "9c. the copy inherits group names but no credentials",
+    copy.groups >= 2 &&
+      copy.keys.includes("No records") &&
+      copy.codes.includes("No records"),
+    `groups=${copy.groups} keys=${JSON.stringify(copy.keys.slice(0, 40))}`,
+  );
+}
+
+/**
+ * Revocation completions must carry the class they were started for: a revocation held open
+ * while the operator opens another class cannot write that class's group status, yet must
+ * still apply to its own class.
+ */
+async function regressionRevocationsStayClassScoped(): Promise<void> {
+  const cases: Array<{
+    label: string;
+    endpoint: string;
+    click: string;
+    applied: string;
+  }> = [
+    {
+      label: "API key",
+      endpoint: "/dashboard/api/groups/revoke-key",
+      click: "#class-keys tbody tr:nth-child(1) button:nth-of-type(2)",
+      applied:
+        "(() => { const tr = document.querySelector('#class-keys tbody tr:nth-child(1)'); return Boolean(tr) && tr.children[4].textContent === 'Revoked' && tr.children[5].querySelectorAll('button').length === 0; })()",
+    },
+    {
+      label: "join code",
+      endpoint: "/dashboard/api/revoke",
+      click: "#class-codes tbody tr:nth-child(1) button:nth-of-type(1)",
+      applied:
+        "(() => { const tr = document.querySelector('#class-codes tbody tr:nth-child(1)'); return Boolean(tr) && tr.children[3].textContent === 'Disabled'; })()",
+    },
+    {
+      label: "group",
+      endpoint: "/dashboard/api/groups/update",
+      click: "#class-groups tbody tr:nth-child(1) button:nth-of-type(4)",
+      applied:
+        "(() => { const tr = document.querySelector('#class-groups tbody tr:nth-child(1)'); return Boolean(tr) && tr.children[1].textContent === 'Revoked'; })()",
+    },
+  ];
+
+  for (const item of cases) {
+    await post("/__scenario", { scenario: "populated" });
+    await openDashboard();
+    evalJs("(() => { window.confirm = () => true; return 'ok'; })()");
+    selectClassRow(1);
+    await waitFor<string>(heading, (value) => value === "P5 Maths — Term 3");
+    await waitFor<number>(
+      "document.querySelectorAll('#class-keys tbody tr').length",
+      (count) => count === 2,
+    );
+    await waitFor<number>(
+      "document.querySelectorAll('#class-codes tbody tr').length",
+      (count) => count === 2,
+    );
+    await waitFor<number>(
+      "document.querySelectorAll('#class-groups tbody tr').length",
+      (count) => count >= 4,
+    );
+
+    const completedBefore = handlerCompleted();
+    setGate(item.endpoint);
+    agentBrowser(["click", item.click]);
+    await waitFor<number>("window.__held.length", (count) => count === 1);
+
+    selectClassRow(2);
+    await waitFor<string>(heading, (value) => value === "P4 Science — Term 3");
+    const statusBeforeRelease = evalJs<string>(
+      "document.getElementById('group-status').textContent",
+    );
+
+    releaseHeld();
+    await waitForHandlerSettlement(completedBefore);
+    setGate(null);
+
+    const after = evalJs<{ heading: string; group: string }>(
+      "(() => ({ heading: document.getElementById('class-detail-heading').textContent, group: document.getElementById('group-status').textContent }))()",
+    );
+    check(
+      `10. a held ${item.label} revocation writes no status into the class opened meanwhile`,
+      after.heading === "P4 Science — Term 3" &&
+        after.group === statusBeforeRelease,
+      `${item.label}: ${JSON.stringify(after)} was ${JSON.stringify(statusBeforeRelease)}`,
+    );
+
+    selectClassRow(1);
+    await waitFor<string>(heading, (value) => value === "P5 Maths — Term 3");
+    const applied = await waitFor<boolean>(
+      item.applied,
+      (value) => value,
+      6_000,
+    );
+    check(
+      `10. the held ${item.label} revocation still applied to its own class`,
+      applied,
+      `${item.label} applied=${applied}`,
+    );
+  }
+}
+
+/** Credentials belong to the class that owns the group, never to the class opened next. */
+async function regressionCredentialsAreClassScoped(): Promise<void> {
+  await post("/__scenario", { scenario: "populated" });
+  await openDashboard();
+  selectClassRow(1);
+  await waitFor<string>(heading, (value) => value === "P5 Maths — Term 3");
+  const classA = await waitFor<{ keys: number; codes: number }>(
+    "(() => ({ keys: document.querySelectorAll('#class-keys tbody tr').length, codes: document.querySelectorAll('#class-codes tbody tr').length }))()",
+    (state) => state.keys === 2 && state.codes === 2,
+  );
+
+  selectClassRow(2);
+  await waitFor<string>(heading, (value) => value === "P4 Science — Term 3");
+  const classB = await waitFor<{
+    keys: string;
+    codes: string;
+    loaded: boolean;
+  }>(
+    "(() => ({ keys: document.getElementById('class-keys').textContent, codes: document.getElementById('class-codes').textContent, loaded: [...document.querySelectorAll('#class-groups tbody button')].some((button) => button.textContent === 'Adjust') }))()",
+    (state) =>
+      state.loaded &&
+      state.keys.includes("No records") &&
+      state.codes.includes("No records"),
+  );
+  check(
+    "11a. class B shows none of class A's API keys or join codes",
+    classB.keys.includes("No records") &&
+      classB.codes.includes("No records") &&
+      !classB.keys.includes("key_a1b2") &&
+      !classB.codes.includes("code_p5a"),
+    `keys=${JSON.stringify(classB.keys.slice(0, 40))} codes=${JSON.stringify(classB.codes.slice(0, 40))}`,
+  );
+
+  selectClassRow(1);
+  await waitFor<string>(heading, (value) => value === "P5 Maths — Term 3");
+  const restored = await waitFor<{ keys: number; codes: number }>(
+    "(() => ({ keys: document.querySelectorAll('#class-keys tbody tr').length, codes: document.querySelectorAll('#class-codes tbody tr').length }))()",
+    (state) => state.keys === 2 && state.codes === 2,
+  );
+  check(
+    "11b. returning to class A still shows its own credentials",
+    restored.keys === 2 && restored.codes === 2,
+    `first=${JSON.stringify(classA)} back=${JSON.stringify(restored)}`,
   );
 }
 
@@ -925,6 +1161,12 @@ async function main(): Promise<void> {
         regressionHeldBulkCreateKeepsNewerDraft,
       ],
       ["credential actions are serialized", regressionCredentialsAreSerialized],
+      [
+        "duplicate confirmation is class scoped",
+        regressionDuplicateConfirmationIsClassScoped,
+      ],
+      ["revocations stay class scoped", regressionRevocationsStayClassScoped],
+      ["credentials are class scoped", regressionCredentialsAreClassScoped],
       ["sticky name column is bounded", regressionStickyNameColumnIsBounded],
       [
         "narrow viewport keeps actions reachable",

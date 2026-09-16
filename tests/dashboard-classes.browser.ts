@@ -44,7 +44,7 @@ const ALIAS_PATTERN = /^[a-z][a-z0-9._:-]*\.v[1-9][0-9]*$/;
 const HANDLER_SETTLEMENT_PROBE = `<script>
 (() => {
   window.__handlers = { pending: 0, completed: 0 };
-  const submitIds = ["group-edit-form", "group-create-form"];
+  const submitIds = ["group-edit-form", "group-create-form", "class-duplicate-form"];
   const clickIds = ["class-pause", "class-duplicate", "class-duplicate-submit", "class-detail-refresh", "class-edit-submit"];
   const original = EventTarget.prototype.addEventListener;
   EventTarget.prototype.addEventListener = function (type, listener, options) {
@@ -60,7 +60,7 @@ const HANDLER_SETTLEMENT_PROBE = `<script>
         (type === "click" &&
           (clickIds.includes(target.id) ||
             (target instanceof Element && target.classList.contains("row-action") &&
-              target.closest("#class-keys, #class-groups"))));
+              target.closest("#class-keys, #class-codes, #class-groups"))));
       if (!tracked) return listener.call(target, event);
       window.__handlers.pending += 1;
       let result;
@@ -812,14 +812,24 @@ async function main(): Promise<void> {
         sendJson(response, 201, { id });
         return;
       }
-      case "groups/list":
+      case "groups/list": {
+        // Production scopes keys and codes to the requested class's groups; mirror that so a
+        // regression cannot pass by reading another class's credentials.
+        const groupIds = new Set(
+          store.groups
+            .filter((row) => row.class_id === classId)
+            .map((row) => row.id),
+        );
         sendJson(response, 200, {
           groups: store.groups.filter((row) => row.class_id === classId),
-          keys: store.keys,
-          codes: store.codes,
+          keys: store.keys.filter((row) => groupIds.has(row.group_id)),
+          codes: store.codes.filter((row) =>
+            groupIds.has(row.classroom_group_id),
+          ),
           truncated: false,
         });
         return;
+      }
       case "groups": {
         const names = Array.isArray(body.names) ? (body.names as string[]) : [];
         const created = names.map((name, index) => {
