@@ -19,6 +19,8 @@ export type SafeRequestEvent = {
   costMicrocents?: number | undefined;
   attempts: 0 | 1;
   quotaReservationState?: "unresolved" | undefined;
+  /** The D1 attempt projection could not be finalised; the ledger is settled. */
+  attemptProjection?: "failed" | undefined;
 };
 
 export function logSafeEvent(event: SafeRequestEvent): void {

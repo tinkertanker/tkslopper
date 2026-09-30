@@ -111,6 +111,8 @@ type RequestContext = {
   tenantHash?: string;
   principalHash?: string;
   providerAttempted: boolean;
+  /** The provider definitively rejected the request without billable work. */
+  providerRejected?: boolean;
   quotaScope?: string;
   classroom?: { classId: string; groupId: string };
   classroomLimits?: ClassroomLimits;
@@ -507,7 +509,6 @@ async function finishIdempotency(
   env: GatewayEnv,
   context: RequestContext,
   status: "completed" | "failed",
-  providerRejected = false,
 ) {
   const key = request.headers.get("idempotency-key");
   const policy = context.policy;
@@ -524,7 +525,10 @@ async function finishIdempotency(
     ),
     pseudonymize(key, env.TOKEN_SIGNING_SECRET),
   ]);
-  if (status === "failed" && (!context.providerAttempted || providerRejected)) {
+  if (
+    status === "failed" &&
+    (!context.providerAttempted || context.providerRejected === true)
+  ) {
     await env.DB.prepare(
       "DELETE FROM idempotency_keys WHERE scope_hash = ? AND key_hash = ? AND request_id = ?",
     )
@@ -913,6 +917,7 @@ async function handleInference(
   let quotaMayBeAcquired = false;
   let quotaCompletionExhausted = false;
   let quotaReservationUnresolved = false;
+  let attemptProjectionFailed = false;
   let completionTokens = 0;
   let completionCost = 0;
   let reservedTokens = 0;
@@ -1083,7 +1088,9 @@ async function handleInference(
       throw new HttpError(
         400,
         "invalid_request",
-        "request exceeds the per-minute token limit on its own; lower max_tokens or shorten the input",
+        inspection.hasImages
+          ? "image requests reserve this model's full input limit, which exceeds the per-minute token limit; ask an administrator to raise it"
+          : "request exceeds the per-minute token limit on its own; lower max_tokens or shorten the input",
       );
     quotaMayBeAcquired = true;
     const quotaResponse = await quotaCallWithRetry(
@@ -1238,7 +1245,9 @@ async function handleInference(
           ...(typeof result.body.model === "string"
             ? { resolvedModel: result.body.model }
             : {}),
-        }).catch(() => undefined);
+        }).catch(() => {
+          attemptProjectionFailed = true;
+        });
       } else quotaReservationUnresolved = true;
       await finishIdempotency(request, env, context, "completed").catch(
         () => undefined,
@@ -1252,6 +1261,9 @@ async function handleInference(
           attempts: 1,
           ...(quotaReservationUnresolved
             ? { quotaReservationState: "unresolved" as const }
+            : {}),
+          ...(attemptProjectionFailed
+            ? { attemptProjection: "failed" as const }
             : {}),
         }),
       );
@@ -1267,6 +1279,7 @@ async function handleInference(
       const rejected =
         error.errorClass === "provider_rejected" &&
         definitiveProviderRejections.has(error.status);
+      context.providerRejected = rejected;
       const charged = providerAttempted && !rejected;
       completionTokens = charged ? reservedTokens : 0;
       completionCost = charged ? reservedCost : 0;
@@ -1300,7 +1313,7 @@ async function handleInference(
       } else {
         await discardAttemptIntent(env, context);
       }
-      await finishIdempotency(request, env, context, "failed", rejected);
+      await finishIdempotency(request, env, context, "failed");
       const failure = providerFailureResponse(error, rejected);
       logSafeEvent(
         safeEvent(context, {

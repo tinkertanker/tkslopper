@@ -964,14 +964,22 @@ describe("Stage 0 failure-path accounting", () => {
        BEFORE UPDATE ON provider_attempts
        BEGIN SELECT RAISE(ABORT, 'synthetic attempt finalization failure'); END`,
     ).run();
+    const logger = vi.spyOn(console, "log").mockImplementation(() => undefined);
     try {
       const token = await grant();
-      const response = await SELF.fetch(
+      const response = await handleGateway(
         chatRequest(token, { "idempotency-key": "finalize-fixture-0001" }),
+        env,
       );
       // The provider answered and quota settled; only the D1 projection
-      // failed, so the paid result is still returned.
+      // failed, so the paid result is still returned and flagged.
       expect(response.status).toBe(200);
+      const event = JSON.parse(String(logger.mock.calls.at(-1)?.[0])) as Record<
+        string,
+        unknown
+      >;
+      expect(event).toMatchObject({ status: 200, attemptProjection: "failed" });
+      expect(event).not.toHaveProperty("quotaReservationState");
       const attempt = await env.DB.prepare(
         `SELECT status_code, error_class, cost_microcents, created_at, stale_after
            FROM provider_attempts`,
@@ -1000,6 +1008,7 @@ describe("Stage 0 failure-path accounting", () => {
         )?.status,
       ).toBe("completed");
     } finally {
+      logger.mockRestore();
       await env.DB.prepare("DROP TRIGGER fail_attempt_finalization").run();
     }
   });
