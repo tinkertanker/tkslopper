@@ -640,6 +640,50 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       .alias-option span { overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
       .alias-option em { color: var(--alarm); font-style: normal; }
       .alias-editor input[type="text"] { max-width: 620px; }
+
+      /* Checkbox fields sit inline with their label rather than stretching like text inputs. */
+      .admin-fields label.check { display: flex; gap: 8px; align-items: center; align-self: end; min-height: 40px; color: var(--ink); font-size: 12.5px; font-weight: 600; }
+      .admin-fields label.check input { flex: none; width: auto; min-height: 0; margin: 0; }
+      .field-note.warn { color: var(--alarm); font-weight: 600; }
+      .limit-notes { margin: 0 0 6px; }
+      .limit-notes .field-note { margin: 2px 0 6px; }
+      button.quiet { border-color: var(--rule); background: transparent; color: var(--green-deep); }
+      button.quiet:hover { background: var(--green-wash); }
+
+      /* In-page confirmation: the action only runs from this bar's own button. */
+      .confirm-bar { margin: 10px 0 4px; padding: 12px 14px 2px; border: 1px solid var(--rule); border-left: 3px solid var(--band); border-radius: 6px; background: #f7f9f3; }
+      .confirm-bar p { max-width: 78ch; margin: 0; color: var(--ink); font-size: 13px; font-weight: 600; }
+      .confirm-bar .action-row { margin-top: 10px; }
+
+      /* Class kit: every student's key at once, shown once, so it carries the alarm edge. */
+      #class-kit { margin: 16px 0 4px; padding: 14px 16px 6px; border: 1px solid #e0b6b1; border-left: 3px solid var(--alarm); border-radius: 6px; background: var(--alarm-wash); }
+      #class-kit h3 { margin: 0 0 8px; }
+      #class-kit > p.kit-warning { max-width: 78ch; margin: 0 0 10px; color: var(--alarm); font-size: 13px; font-weight: 600; }
+      #class-kit .table-wrap { margin: 8px 0; border: 1px solid var(--rule); border-radius: 6px; background: var(--panel); }
+      #class-kit-keys td:nth-child(2) { user-select: all; }
+      #class-kit h4, .student-card h4 { margin: 12px 0 4px; font-size: 12px; font-weight: 650; }
+
+      /* Student card: the same element is used on screen (preview) and on paper. */
+      .student-card { min-width: 0; margin: 10px 0 12px; padding: 12px 14px; border: 1px solid var(--rule); border-radius: 6px; background: var(--panel); color: var(--ink); }
+      .student-card h3 { margin: 0; font-size: 15px; }
+      .student-card .card-class { margin: 2px 0 8px; color: var(--soft); font-size: 12px; }
+      .student-card dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 12px; margin: 0; font-size: 12px; }
+      .student-card dt { color: var(--soft); font-weight: 650; }
+      .student-card dd { margin: 0; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+      .student-card dd.missing { color: var(--alarm); font-weight: 650; }
+      .student-card pre { margin: 0 0 6px; padding: 8px 10px; border: 1px solid var(--hair); border-radius: 4px; background: #f7f9f3; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
+      .student-card .card-foot { margin: 6px 0 0; color: var(--soft); font-size: 11px; }
+      #print-cards { display: none; }
+
+      /* With a class kit on screen, printing produces only the student cards. */
+      @media print {
+        @page { margin: 10mm; }
+        body { min-width: 0; background: #fff; }
+        body.print-kit .app { display: none; }
+        body.print-kit #print-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5mm; }
+        #print-cards .student-card { margin: 0; padding: 4mm; border: 1px dashed #777; break-inside: avoid; font-size: 9pt; }
+        #print-cards .student-card pre { font-size: 7.5pt; }
+      }
     </style>
   </head>
   <body>
@@ -686,7 +730,8 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           </div>
 
           <div class="view" data-view="classes" hidden>
-            <p class="lede">Course-centred control. Create a class with approved aliases and a shared budget, distribute group API keys and join codes, then inspect group and class usage. Group API keys are direct gateway credentials; join codes still activate devices through the existing activation endpoint.</p>
+            <p class="lede">Course-centred control. Create a class with approved aliases and a shared budget, list your students to give each one an API key, then print their cards. Each student is a group with its own allocation; group API keys are direct gateway credentials, and join codes still activate devices through the existing activation endpoint.</p>
+            <p id="gateway-note" class="notice" role="status" hidden></p>
 
             <section>
               <div class="section-head"><h2 id="classes-heading">Classes</h2><p class="section-note">Bounded inventory; open a class to manage its groups, keys, and usage</p></div>
@@ -702,9 +747,13 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
                 <form id="class-create-form" autocomplete="off">
                   <div class="admin-fields" id="class-create-fields"></div>
                   <p class="field-note" id="class-create-schedule-note"></p>
+                  <div class="limit-notes" id="class-create-limits" role="status" aria-live="polite"></div>
                   <div class="alias-editor" id="class-create-aliases"></div>
                   <p class="field-note" id="class-create-alias-note"></p>
-                  <p class="field-note">Budgets are shared and scoped: <span class="scope">class</span> the class lifetime budget covers every group; <span class="scope">group</span> each group's budget is shared by all of its keys and activated devices; <span class="scope">key</span> and <span class="scope">device</span> access never adds a separate spend bucket. The default group daily budget is optional and applies per group in UTC; timezone is display and scheduling metadata.</p>
+                  <p class="field-note">Budgets are in US dollars and shared by scope: <span class="scope">class</span> the class total covers every group; <span class="scope">group</span> each group's (student's) budget is shared by all of its keys and activated devices; <span class="scope">key</span> and <span class="scope">device</span> access never adds a separate spend bucket. The optional daily budget applies per group and resets at 00:00 UTC.</p>
+                  <label for="class-create-students">Students (optional; one name per line, up to 100)</label>
+                  <textarea id="class-create-students" placeholder="Ada Lovelace&#10;Alan Turing"></textarea>
+                  <p class="field-note">Each name becomes a group with its own API key. Keys are issued as soon as the class is created and shown once, ready to copy, download or print as student cards.</p>
                   <button id="class-create-submit" type="submit">Create class</button>
                 </form>
                 <p id="class-create-status" class="status-line" role="status" aria-live="polite"></p>
@@ -715,20 +764,50 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
               <div class="section-head"><h2 id="class-detail-heading">Class</h2><p class="section-note" id="class-detail-meta"></p></div>
               <div class="classes-body">
                 <div class="action-row">
+                  <button id="class-issue-all" type="button">Issue keys for all students</button>
                   <button id="class-pause" type="button">Pause class</button>
                   <button id="class-duplicate" type="button">Duplicate configuration</button>
                   <button id="class-detail-refresh" type="button">Refresh groups and usage</button>
                 </div>
+                <div class="confirm-bar" id="class-issue-confirm" hidden>
+                  <p></p>
+                  <div class="action-row">
+                    <button type="button" data-confirm="yes">Issue keys</button>
+                    <button type="button" class="quiet" data-confirm="no">Cancel</button>
+                  </div>
+                </div>
                 <p id="class-action-status" class="status-line" role="status" aria-live="polite"></p>
+
+                <div id="class-kit" hidden>
+                  <h3 id="class-kit-heading">Class kit</h3>
+                  <p class="kit-warning">Copy, download or print these keys now: each is shown once and cannot be retrieved later. Keep them out of tickets, logs and browser storage. Clearing, refreshing or leaving this page removes them from the screen.</p>
+                  <p id="class-kit-gateway" class="field-note warn" hidden></p>
+                  <p id="class-kit-summary" class="status-line ok"></p>
+                  <div class="table-wrap" role="region" tabindex="0" aria-label="Issued student keys"><table id="class-kit-keys"></table></div>
+                  <div id="class-kit-skipped-block" hidden>
+                    <h4>Skipped</h4>
+                    <div class="table-wrap" role="region" tabindex="0" aria-label="Skipped groups"><table id="class-kit-skipped"></table></div>
+                  </div>
+                  <div class="action-row">
+                    <button id="class-kit-copy" type="button">Copy all (CSV)</button>
+                    <button id="class-kit-download" type="button">Download CSV</button>
+                    <button id="class-kit-print" type="button">Print student cards</button>
+                    <button id="class-kit-clear" type="button" class="quiet">Clear</button>
+                  </div>
+                  <p id="class-kit-status" class="status-line" role="status" aria-live="polite"></p>
+                  <h4>Card preview</h4>
+                  <div id="class-kit-preview"></div>
+                </div>
 
                 <div class="subpanel">
                   <h3 id="class-edit-heading">Adjust class budget, schedule, and aliases</h3>
                   <form id="class-edit-form" autocomplete="off">
                     <div class="admin-fields" id="class-edit-fields"></div>
                     <p class="field-note" id="class-edit-schedule-note"></p>
+                    <div class="limit-notes" id="class-edit-limits" role="status" aria-live="polite"></div>
                     <div class="alias-editor" id="class-edit-aliases"></div>
                     <p class="field-note" id="class-edit-alias-note"></p>
-                    <p class="field-note">Leave the daily budget blank to remove the class's default group daily cap; environment guardrails still apply. Class controls cannot expose aliases the environment has not approved.</p>
+                    <p class="field-note">Leave the daily budget blank to remove the class's default group daily cap; environment guardrails still apply. Changing the per-student budget affects new groups only; use the budget form under Groups for existing students. Class controls cannot expose aliases the environment has not approved.</p>
                     <button id="class-edit-submit" type="submit">Save class</button>
                   </form>
                   <p id="class-edit-status" class="status-line" role="status" aria-live="polite"></p>
@@ -754,6 +833,27 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
                 <p id="group-status" class="status-line" role="status" aria-live="polite"></p>
                 <p id="groups-truncated" class="field-note" role="status" hidden>Group, key, or join-code inventory is truncated; counts and rows shown may be incomplete.</p>
                 <div class="table-wrap" role="region" tabindex="0" aria-label="Class groups"><table id="class-groups"></table></div>
+
+                <div class="subpanel">
+                  <h3 id="group-budget-heading">Give every student more (or less) budget</h3>
+                  <form id="group-budget-form" autocomplete="off">
+                    <div class="admin-fields">
+                      <label>Change<select name="mode"><option value="add">Add to each student's allocation</option><option value="set">Set each student's allocation to</option></select></label>
+                      <label>Amount per student (US$)<input name="budget" type="text" inputmode="decimal" placeholder="1.00" required></label>
+                      <label>New class total (US$, optional)<input name="class_budget" type="text" inputmode="decimal" placeholder="Leave blank to keep"></label>
+                    </div>
+                    <p class="field-note">Applies to every group that is not revoked, including paused ones. Allocations are lifetime caps; the class total still caps everyone together, so raise it too if students would otherwise share too little.</p>
+                    <button id="group-budget-submit" type="submit">Review budget change</button>
+                  </form>
+                  <div class="confirm-bar" id="group-budget-confirm" hidden>
+                    <p></p>
+                    <div class="action-row">
+                      <button type="button" data-confirm="yes">Apply to every student</button>
+                      <button type="button" class="quiet" data-confirm="no">Cancel</button>
+                    </div>
+                  </div>
+                  <p id="group-budget-status" class="status-line" role="status" aria-live="polite"></p>
+                </div>
 
                 <div class="subpanel" id="group-edit-panel" hidden>
                   <h3 id="group-edit-heading">Adjust group</h3>
@@ -785,6 +885,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
                 <div id="class-secret" hidden>
                   <p>Copy this credential now: it is shown once and cannot be retrieved later. Do not put it in tickets or logs, and do not store it in browser storage.</p>
                   <pre id="class-secret-value"></pre>
+                  <div id="class-secret-card" hidden></div>
                   <div class="action-row">
                     <button id="class-secret-copy" type="button">Copy</button>
                     <button id="class-secret-download" type="button">Download</button>
@@ -867,6 +968,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         <footer>Operational metadata, not billing records.</footer>
       </div>
     </div>
+    <div id="print-cards"></div>
     <script nonce="__CSP_NONCE__">
       const refresh = document.getElementById("refresh");
       const status = document.getElementById("status");
@@ -880,10 +982,57 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       const cost = (value) => number(value) + " μ¢";
       const set = (id, value) => { document.getElementById(id).textContent = String(value); };
 
+      // Teachers read and enter money in US dollars; the API stores integer microcents.
+      // 1 US dollar = 100,000,000 μ¢, so any amount with at most eight decimal places
+      // converts exactly. Conversion works on the decimal string and BigInt, never floats.
+      const MICROCENTS_PER_DOLLAR = 100000000n;
+      function dollarParts(value) {
+        let amount;
+        try { amount = BigInt(String(value ?? 0)); } catch { return null; }
+        const negative = amount < 0n;
+        if (negative) amount = -amount;
+        let fraction = (amount % MICROCENTS_PER_DOLLAR).toString().padStart(8, "0").replace(/0+$/, "");
+        if (fraction.length < 2) fraction = fraction.padEnd(2, "0");
+        return { negative, whole: amount / MICROCENTS_PER_DOLLAR, fraction };
+      }
+      const money = (value) => {
+        const parts = dollarParts(value);
+        if (!parts) return String(value ?? "—");
+        return (parts.negative ? "-" : "") + "$" + new Intl.NumberFormat("en-US").format(parts.whole) + "." + parts.fraction;
+      };
+      // Plain decimal for prefilling inputs, e.g. 150000000 μ¢ becomes "1.50".
+      const dollarText = (value) => {
+        const parts = dollarParts(value);
+        return parts ? (parts.negative ? "-" : "") + parts.whole.toString() + "." + parts.fraction : "";
+      };
+      function parseDollars(text) {
+        const cleaned = String(text ?? "").trim().replace(/^(?:US)?\$\s*/i, "");
+        if (cleaned === "") return { empty: true };
+        if (/^[-−]/.test(cleaned)) return { error: "must not be negative" };
+        // Thousands separators are accepted only in their proper place, so "1,5" is never read as 15.
+        const plain = /^\d{1,3}(?:,\d{3})+(?:\.\d*)?$/.test(cleaned) ? cleaned.replace(/,/g, "") : cleaned;
+        const match = /^(\d*)(?:\.(\d*))?$/.exec(plain);
+        if (!match || (match[1] === "" && !match[2])) return { error: "must be an amount in US dollars, such as 5 or 2.50" };
+        const fraction = match[2] || "";
+        if (fraction.length > 8) return { error: "can have at most 8 decimal places (1 μ¢ is $0.00000001)" };
+        const microcents = BigInt(match[1] || "0") * MICROCENTS_PER_DOLLAR + BigInt(fraction.padEnd(8, "0"));
+        if (microcents > BigInt(Number.MAX_SAFE_INTEGER)) return { error: "is too large" };
+        return { value: Number(microcents) };
+      }
+      // Class times are shown in the class's own IANA timezone; UTC is the fallback.
+      function zonedTime(value, timeZone) {
+        if (value === null || value === undefined || value === "") return "—";
+        try {
+          return new Intl.DateTimeFormat("en-GB", { timeZone: timeZone || "UTC", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" }).format(new Date(Number(value) * 1000));
+        } catch {
+          return time(value);
+        }
+      }
+
       const PILL_KIND = { Enabled: "ok", Disabled: "off", KILLED: "bad", Admin: "ok", Active: "ok", Paused: "off", Revoked: "bad", Class: "ok", Group: "off" };
       const statusKind = (text) => /^2\d\d/.test(text) ? "ok" : text === "in flight" ? "off" : "bad";
       const pillKind = (column, text) => column.pill === "status" ? statusKind(text) : PILL_KIND[text] || "off";
-      const isNumeric = (column) => column.num === true || column.format === number || column.format === cost;
+      const isNumeric = (column) => column.num === true || column.format === number || column.format === cost || column.format === money;
 
       function renderTable(id, columns, rows) {
         const table = document.getElementById(id);
@@ -989,35 +1138,15 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         warning.textContent = warnings.join(" ");
         warning.hidden = warnings.length === 0;
 
-        const productNames = Object.fromEntries(data.products.map((item) => [item.id, item.display_name]));
         const policyState = (enabled, killed) => killed ? "KILLED" : enabled ? "Enabled" : "Disabled";
-        const boundedCount = (value, truncated) => truncated ? "≥" + number(value) : number(value);
         renderTable("products", [
           { label: "Product", value: "display_name" },
           { label: "ID", value: "id" },
           { label: "Slug", value: "slug" },
           { label: "State", value: (row) => policyState(row.enabled, row.kill_switch), pill: true },
         ], data.products);
-        renderTable("environments", [
-          { label: "Product", value: (row) => productNames[row.product_id] || row.product_id },
-          { label: "Environment", value: "name" },
-          { label: "Product state", value: (row) => policyState(row.product_enabled, row.product_kill_switch), pill: true },
-          { label: "Environment state", value: (row) => policyState(row.enabled, row.kill_switch), pill: true },
-          { label: "Policy", value: "policy_version", format: number },
-          { label: "RPM", value: "rpm_limit", format: number },
-          { label: "TPM", value: "tpm_limit", format: number },
-          { label: "Concurrency", value: "concurrency_limit", format: number },
-          { label: "Daily budget", value: "daily_budget_microcents", format: cost },
-          { label: "Max request", value: (row) => number(row.max_request_bytes) + " bytes", num: true },
-          { label: "Finalized", value: "finalized_attempts_24h", format: number },
-          { label: "Finalized failures", value: "failed_finalized_attempts_24h", format: number },
-          { label: "Accounted input", value: "accounted_input_tokens_24h", format: number },
-          { label: "Accounted output", value: "accounted_output_tokens_24h", format: number },
-          { label: "Accounted cost", value: "accounted_cost_microcents_24h", format: cost },
-          { label: "Aliases", value: (row) => boundedCount(row.aliases, row.aliases_truncated), num: true },
-          { label: "Active entitlements", value: (row) => boundedCount(row.active_entitlements, row.active_entitlements_truncated), num: true },
-          { label: "Effective grants", value: (row) => boundedCount(row.effective_grants, row.effective_grants_truncated), num: true },
-        ], data.environments);
+        dashboardData = data;
+        renderEnvironments();
         renderTable("attempts", [
           { label: "Time", value: "created_at", format: time },
           { label: "Product", value: "product_id" },
@@ -1053,8 +1182,51 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           { label: "Action", value: "action" },
           { label: "Resource", value: (row) => row.resource_type + " / " + row.resource_id },
         ], data.recent_admin_actions);
+      }
 
-        dashboardData = data;
+      // Environment IDs are what Settings and the API ask for, so they are shown and
+      // copyable. Editing limits is a named-admin action and only rendered for admins.
+      let isAdmin = false;
+      async function copyEnvironmentId(row) {
+        try {
+          await navigator.clipboard.writeText(row.id);
+          status.textContent = "Copied environment ID " + row.id + ".";
+        } catch {
+          status.textContent = "Copy failed; select the environment ID and copy it manually.";
+        }
+      }
+      function renderEnvironments() {
+        const data = dashboardData || { products: [], environments: [] };
+        const productNames = Object.fromEntries(data.products.map((item) => [item.id, item.display_name]));
+        const policyState = (enabled, killed) => killed ? "KILLED" : enabled ? "Enabled" : "Disabled";
+        const boundedCount = (value, truncated) => truncated ? "≥" + number(value) : number(value);
+        renderTable("environments", [
+          { label: "Product", value: (row) => productNames[row.product_id] || row.product_id },
+          { label: "Environment", value: "name" },
+          { label: "Environment ID", value: "id" },
+          { label: "Product state", value: (row) => policyState(row.product_enabled, row.product_kill_switch), pill: true },
+          { label: "Environment state", value: (row) => policyState(row.enabled, row.kill_switch), pill: true },
+          { label: "Policy", value: "policy_version", format: number },
+          { label: "Token TTL", value: (row) => row.token_ttl_seconds === undefined || row.token_ttl_seconds === null ? "—" : number(row.token_ttl_seconds) + " s", num: true },
+          { label: "RPM", value: "rpm_limit", format: number },
+          { label: "TPM", value: "tpm_limit", format: number },
+          { label: "Concurrency", value: "concurrency_limit", format: number },
+          { label: "Daily budget per principal (resets 00:00 UTC)", value: "daily_budget_microcents", format: money },
+          { label: "Max request", value: (row) => number(row.max_request_bytes) + " bytes", num: true },
+          { label: "Finalized", value: "finalized_attempts_24h", format: number },
+          { label: "Finalized failures", value: "failed_finalized_attempts_24h", format: number },
+          { label: "Accounted input", value: "accounted_input_tokens_24h", format: number },
+          { label: "Accounted output", value: "accounted_output_tokens_24h", format: number },
+          { label: "Accounted cost", value: "accounted_cost_microcents_24h", format: cost },
+          { label: "Aliases", value: (row) => boundedCount(row.aliases, row.aliases_truncated), num: true },
+          { label: "Active entitlements", value: (row) => boundedCount(row.active_entitlements, row.active_entitlements_truncated), num: true },
+          { label: "Effective grants", value: (row) => boundedCount(row.effective_grants, row.effective_grants_truncated), num: true },
+          { label: "Actions", buttons: (row) => {
+            const buttons = [{ label: "Copy ID", onClick: () => copyEnvironmentId(row) }];
+            if (isAdmin) buttons.push({ label: "Edit limits", onClick: () => editEnvironment(row) });
+            return buttons;
+          } },
+        ], data.environments);
       }
 
       const adminPanel = document.getElementById("admin-panel");
@@ -1077,10 +1249,12 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       // Admins get the richer "Who changed what" table inside Settings, so the
       // actor-blind copy is theirs to lose, not the viewers'. Classes is a named-admin
       // workflow too, so it is hidden for viewers.
-      function applyRole(isAdmin) {
-        document.getElementById("nav-admin").hidden = !isAdmin;
-        document.getElementById("nav-classes").hidden = !isAdmin;
-        document.getElementById("nav-activity").hidden = isAdmin;
+      function applyRole(admin) {
+        isAdmin = admin;
+        document.getElementById("nav-admin").hidden = !admin;
+        document.getElementById("nav-classes").hidden = !admin;
+        document.getElementById("nav-activity").hidden = admin;
+        renderEnvironments();
         const current = navItems.find((item) => item.hasAttribute("aria-current"));
         showView(current ? current.dataset.view : "overview");
       }
@@ -1093,13 +1267,14 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       const expiry = ["expires_at", "Expires at (local time)", "datetime-local"];
       const operations = [
         ["admins", "Manage admins", [["email", "Email", "email"], ["enabled", "Admin access", ["true", "false"]]]],
-        ["access-codes", "Issue classroom code", [...scopeFields, identityFields[0], capabilities, expiry, ["max_activations", "Maximum activations", "number"], ["max_failed_attempts", "Maximum failed attempts", "number", 8]]],
+        ["access-codes", "Issue classroom code", [...scopeFields, identityFields[0], capabilities, expiry, ["max_activations", "Maximum activations", "number"], ["max_failed_attempts", "Failed-attempt counter cap (a correct code is always accepted)", "number", 8]]],
         ["service-credentials", "Issue service key", [...scopeFields, ...identityFields, capabilities, [...expiry, "", true]]],
         ["revoke", "Revoke access", [["resource_type", "Resource type", ["access_code", "service_credential", "entitlement", "token_grant"]], ["resource_id", "Resource ID (not secret value)"]]],
         ["kill-switch", "Set kill switch", [["resource_type", "Resource type", ["environment", "product"]], ["resource_id", "Resource ID"], ["enabled", "Kill switch ON (true) / OFF (false)", ["true", "false"]]]],
         ["products", "Create product", [["slug", "Slug"], ["display_name", "Display name"]]],
-        ["environments", "Create environment", [scopeFields[0], ["name", "Environment name"], ["audience", "Token audience"], ["rpm_limit", "Requests per minute", "number", 30], ["tpm_limit", "Tokens per minute", "number", 100000], ["concurrency_limit", "Concurrency", "number", 2], ["daily_budget_microcents", "Daily budget (microcents)", "number", 1000000]]],
-        ["aliases", "Set model alias", [...scopeFields, ["alias", "Public alias"], ["endpoint", "Endpoint", ["chat", "responses"]], ["route_id", "Configured provider route ID"], ["max_input_tokens", "Maximum input tokens", "number"], ["max_output_tokens", "Maximum output tokens", "number"], ["input_cost_microcents_per_million", "Input microcents per million tokens", "number", 0], ["output_cost_microcents_per_million", "Output microcents per million tokens", "number", 0]]],
+        ["environments", "Create environment", [scopeFields[0], ["name", "Environment name"], ["audience", "Token audience"], ["rpm_limit", "Requests per minute, per principal", "number", 600], ["tpm_limit", "Tokens per minute, per principal", "number", 2000000], ["concurrency_limit", "Concurrent requests, per principal", "number", 20], ["daily_budget_microcents", "Daily budget per principal (US$; resets 00:00 UTC; not applied to classes)", "dollars", "20.00"]]],
+        ["environments/update", "Edit environment limits", [...scopeFields, ["token_ttl_seconds", "Token lifetime (seconds, 60–3600)", "number", "", true], ["rpm_limit", "Requests per minute, per principal", "number", "", true], ["tpm_limit", "Tokens per minute, per principal", "number", "", true], ["concurrency_limit", "Concurrent requests, per principal", "number", "", true], ["daily_budget_microcents", "Daily budget per principal (US$; resets 00:00 UTC; not applied to classes)", "dollars", "", true], ["max_request_bytes", "Maximum request size (bytes, 1024–10485760)", "number", "", true]]],
+        ["aliases", "Set model alias", [...scopeFields, ["alias", "Public alias"], ["endpoint", "Endpoint", ["chat", "responses"]], ["route_id", "Configured provider route ID"], ["max_input_tokens", "Maximum input tokens", "number"], ["max_output_tokens", "Maximum output tokens", "number"], ["input_cost_microcents_per_million", "Input price (US$ per million tokens)", "dollars", "0"], ["output_cost_microcents_per_million", "Output price (US$ per million tokens)", "dollars", "0"], ["allow_images", "Allow image input", "checkbox"], ["allow_reasoning", "Allow reasoning controls", "checkbox"], ["allow_structured_json", "Allow structured JSON output", "checkbox"]]],
         ["entitlements", "Create entitlement", [...scopeFields, ...identityFields, ["source", "Source", ["contract", "stripe", "storekit", "dev"]], capabilities, [...expiry, "", true]]],
       ];
       for (const [value, label] of operations) { const option = document.createElement("option"); option.value = value; option.textContent = label; operation.append(option); }
@@ -1112,23 +1287,49 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           const input = document.createElement(Array.isArray(type) ? "select" : "input");
           input.name = name; input.required = !optional;
           if (Array.isArray(type)) for (const value of type) { const option = document.createElement("option"); option.value = value; option.textContent = name === "enabled" && operation.value === "admins" ? (value === "true" ? "Grant admin" : "Remove admin") : value; input.append(option); }
+          else if (type === "checkbox") { input.type = "checkbox"; input.required = false; input.checked = Boolean(initial); wrapper.className = "check"; wrapper.prepend(input); fields.append(wrapper); continue; }
+          else if (type === "dollars") { input.type = "text"; input.inputMode = "decimal"; input.placeholder = "0.00"; input.value = initial; }
           else { input.type = type === "list" ? "text" : type; if (type === "number") { input.step = "1"; input.min = "0"; } input.value = initial; }
           wrapper.append(input); fields.append(wrapper);
         }
       }
       operation.addEventListener("change", renderFields); renderFields();
+      // "Edit limits" in the Environments table opens this form prefilled with the
+      // environment's current values; only what the admin submits is written.
+      function editEnvironment(row) {
+        showView("admin");
+        operation.value = "environments/update";
+        renderFields();
+        const current = { product_id: row.product_id, environment_id: row.id, token_ttl_seconds: row.token_ttl_seconds, rpm_limit: row.rpm_limit, tpm_limit: row.tpm_limit, concurrency_limit: row.concurrency_limit, daily_budget_microcents: dollarText(row.daily_budget_microcents), max_request_bytes: row.max_request_bytes };
+        for (const [name, value] of Object.entries(current)) {
+          const input = fields.querySelector('[name="' + name + '"]');
+          if (input && value !== undefined && value !== null) input.value = String(value);
+        }
+        set("admin-result-status", "Editing limits for environment " + row.name + " (" + row.id + "). Change what you need, then review and apply.");
+        document.getElementById("admin-form").scrollIntoView({ block: "start" });
+      }
       document.getElementById("admin-clear").addEventListener("click", clearResult);
       window.addEventListener("pagehide", clearResult);
       document.getElementById("admin-form").addEventListener("submit", async (event) => {
         event.preventDefault();
-        if (!window.confirm("Apply: " + operation.selectedOptions[0].textContent + "? This changes live state.")) return;
         const payload = {};
         const selected = operation.value;
-        for (const [name, , type] of operations.find((item) => item[0] === selected)[2]) {
-          const value = fields.querySelector('[name="' + name + '"]').value;
+        // Dollar amounts are converted to integer microcents before anything is sent.
+        for (const [name, label, type] of operations.find((item) => item[0] === selected)[2]) {
+          const input = fields.querySelector('[name="' + name + '"]');
+          if (type === "checkbox") { payload[name] = input.checked; continue; }
+          const value = input.value;
           if (value === "") continue;
+          if (type === "dollars") {
+            const parsed = parseDollars(value);
+            if (parsed.error) { set("admin-result-status", label + " " + parsed.error + "."); return; }
+            if (!parsed.empty) payload[name] = parsed.value;
+            continue;
+          }
           payload[name] = type === "number" ? Number(value) : type === "datetime-local" ? Math.floor(new Date(value).getTime() / 1000) : type === "list" ? value.split(",").map((item) => item.trim()).filter(Boolean) : Array.isArray(type) && type[0] === "true" ? value === "true" : value;
         }
+        if (selected === "environments/update" && Object.keys(payload).every((key) => key === "product_id" || key === "environment_id")) { set("admin-result-status", "Change at least one environment setting."); return; }
+        if (!window.confirm("Apply: " + operation.selectedOptions[0].textContent + "? This changes live state.")) return;
         clearResult(); adminSubmit.disabled = true; refresh.disabled = true; operation.disabled = true;
         set("admin-result-status", "Applying…");
         try {
@@ -1136,7 +1337,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           const result = await response.json();
           if (!response.ok) { if (response.status === 401 || response.status === 403) { adminPanel.hidden = true; applyRole(false); status.textContent = "Admin access expired or was revoked. Reload to check your login."; } throw new Error(response.status >= 500 ? "Server error; check activity before retrying because the operation may have completed." : result.error?.message || "Operation rejected."); }
           if (selected === "admins") await loadDashboard();
-          set("admin-result-status", "Operation completed. Copy any credentials before refreshing the dashboard.");
+          set("admin-result-status", selected === "environments/update" ? "Environment limits updated (policy version " + result.policy_version + "). Refresh to see them in Overview and Classes." : "Operation completed. Copy any credentials before refreshing the dashboard.");
           if (!adminPanel.hidden) { set("admin-result-data", JSON.stringify(result, null, 2)); document.getElementById("admin-result").hidden = false; }
         } catch (error) {
           set("admin-result-status", error instanceof TypeError || error instanceof SyntaxError ? "Connection failed; the operation may have completed. Check activity before retrying. Reload if your login expired." : error.message);
@@ -1154,6 +1355,14 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       // Credential-producing actions share one show-once panel, so only one may run at a
       // time: a second rotation must never overwrite a secret the operator has not seen.
       let credentialPending = false;
+      // The gateway origin printed on student cards comes from the admin session
+      // (GATEWAY_PUBLIC_URL); it is not secret, but cards say so plainly when it is unset.
+      let gatewayConfig = { public_url: null, status: "unset" };
+      const GATEWAY_MISSING = "<gateway URL not configured>";
+      const gatewayBase = () => gatewayConfig.public_url ? gatewayConfig.public_url + "/v1" : GATEWAY_MISSING;
+      // Bulk-issued keys live only in this object and the kit's DOM, never in storage;
+      // clearKit() drops both on Clear, class change, refresh, lost access and page exit.
+      const kitState = { classId: null, className: "", entries: [], skipped: [] };
 
       function setStatus(id, message, kind) {
         const element = document.getElementById(id);
@@ -1179,6 +1388,8 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           if (response.status === 401 || response.status === 403) {
             document.getElementById("nav-classes").hidden = true;
             document.getElementById("class-detail").hidden = true;
+            clearKit();
+            clearSecret();
             applyRole(false);
             status.textContent = "Admin access expired or was revoked. Reload to check your login.";
           }
@@ -1226,6 +1437,14 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
             input.step = "1";
             input.min = "0";
             input.value = values[name] === null || values[name] === undefined ? "" : String(values[name]);
+          } else if (type === "dollars") {
+            input = document.createElement("input");
+            input.type = "text";
+            input.inputMode = "decimal";
+            input.placeholder = "0.00";
+            input.dataset.kind = "dollars";
+            input.dataset.label = label;
+            input.value = values[name] === null || values[name] === undefined ? "" : dollarText(values[name]);
           } else {
             input = document.createElement("input");
             input.type = "text";
@@ -1243,10 +1462,20 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           if (!name) continue;
           if (input.type === "datetime-local") { payload[name] = input.value ? Math.floor(new Date(input.value).getTime() / 1000) : null; continue; }
           if (input.type === "number") { payload[name] = input.value === "" ? null : Number(input.value); continue; }
+          if (input.dataset.kind === "dollars") { const parsed = parseDollars(input.value); payload[name] = parsed.value === undefined ? null : parsed.value; continue; }
           if (name === "instructors") { payload[name] = input.value.split(",").map((item) => item.trim()).filter(Boolean); continue; }
           payload[name] = input.value;
         }
         return payload;
+      }
+      // Dollar fields are validated before a payload is built, so a typo is reported by
+      // name instead of silently becoming "blank".
+      function dollarProblem(container) {
+        for (const input of container.querySelectorAll('input[data-kind="dollars"]')) {
+          const parsed = parseDollars(input.value);
+          if (parsed.error) return input.dataset.label.replace(/ \(.*$/, "") + " " + parsed.error + ".";
+        }
+        return "";
       }
       function scopeSource() {
         if (classOptions && Array.isArray(classOptions.environments) && classOptions.environments.length) {
@@ -1380,6 +1609,8 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         const renderEnvironmentAliases = () => {
           renderAliasEditor(aliasContainer, environmentSelect.value, []);
           set("class-create-alias-note", aliasNoteText(environmentSelect.value));
+          applyCreateLimitDefaults();
+          renderCreateLimits();
         };
         // The option source is read on every run. A listener bound once must not keep the
         // environments array captured on its first call, or a refreshed or newly created
@@ -1450,25 +1681,28 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         ["name", "Class name", "text"],
         ["course", "Course", "text"],
         ["instructors", "Instructors (comma separated)", "list"],
-        ["timezone", "Timezone (IANA; display and scheduling metadata only, does not convert times)", "text"],
+        ["timezone", "Class timezone (IANA, e.g. Asia/Singapore; times are shown in it)", "text"],
         ["starts_at", "Starts at (browser local time)", "datetime-local"],
         ["expires_at", "Ends at (browser local time)", "datetime-local"],
-        ["budget_microcents", "Class lifetime budget (μ¢, shared by all groups)", "number"],
-        ["group_budget_microcents", "Default group budget (μ¢, each group)", "number"],
-        ["daily_budget_microcents", "Default group daily budget (μ¢, optional; applies in UTC)", "number"],
-        ["rpm_limit", "Default group requests per minute", "number"],
-        ["tpm_limit", "Default group tokens per minute", "number"],
-        ["concurrency_limit", "Default group concurrency", "number"],
+        ["budget_microcents", "Class total budget (US$, shared by every student)", "dollars"],
+        ["group_budget_microcents", "Budget per student (US$, lifetime; each new group)", "dollars"],
+        ["daily_budget_microcents", "Daily budget per student (US$, optional; resets 00:00 UTC)", "dollars"],
+        ["rpm_limit", "Requests per minute, per student", "number"],
+        ["tpm_limit", "Tokens per minute, per student", "number"],
+        ["concurrency_limit", "Concurrent requests, per student", "number"],
       ];
       const CLASS_SCOPE_FIELDS = [
         ["product_id", "Product", "select-product"],
         ["environment_id", "Environment", "select-environment"],
-        ["tenant_id", "Classroom / tenant ID", "text"],
+        ["tenant_id", "Classroom / tenant ID (suggested from the class name and date)", "text"],
       ];
+      // The create form leads with what a teacher knows (name, course), then where the
+      // class runs; the tenant ID is suggested so nobody has to invent one.
+      const CLASS_CREATE_FIELDS = CLASS_FIELDS.slice(0, 2).concat(CLASS_SCOPE_FIELDS, CLASS_FIELDS.slice(2));
       const GROUP_FIELDS = [
         ["name", "Group name", "text"],
-        ["budget_microcents", "Group budget (μ¢, shared by its keys and devices)", "number"],
-        ["daily_budget_microcents", "Daily group budget (μ¢; blank inherits class default; applies in UTC)", "number"],
+        ["budget_microcents", "Group budget (US$, lifetime; shared by its keys and devices)", "dollars"],
+        ["daily_budget_microcents", "Daily group budget (US$; blank inherits class default; resets 00:00 UTC)", "dollars"],
         ["rpm_limit", "Requests per minute (blank inherits)", "number"],
         ["tpm_limit", "Tokens per minute (blank inherits)", "number"],
         ["concurrency_limit", "Concurrency (blank inherits)", "number"],
@@ -1494,20 +1728,26 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         };
       }
       const statusLabel = (status) => status === "active" ? "Active" : status === "paused" ? "Paused" : "Revoked";
+      // Group pause is a flag beside the terminal status, so a paused group reads "Paused".
+      const groupStatusLabel = (row) => row.status === "revoked" ? "Revoked" : row.paused ? "Paused" : "Active";
       const ALIAS_PATTERN = /^[a-z][a-z0-9._:-]*\.v[1-9][0-9]*$/;
       const overrideText = (value, format) => value === null || value === undefined ? "Inherits class" : format(value);
       const browserTimeZone = (() => {
         try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "browser local time"; }
         catch { return "browser local time"; }
       })();
-      const scheduleNote = "Start and end times are entered in your browser's local time (" + browserTimeZone + ") and stored as Unix seconds; stored times are displayed in UTC. The class timezone field is display and scheduling metadata and does not convert these times. Daily budgets apply in UTC.";
+      const defaultTimeZone = browserTimeZone === "browser local time" ? "Asia/Singapore" : browserTimeZone;
+      const scheduleNote = "Start and end times are entered in your browser's local time (" + browserTimeZone + ") and stored as Unix seconds. Class tables show them in the class timezone, with UTC alongside in the class summary. Daily budgets reset at 00:00 UTC, whatever the class timezone.";
       function validateClassPayload(payload) {
         if (!payload.name || !String(payload.name).trim()) return "A class name is required.";
         if (!Array.isArray(payload.capabilities) || !payload.capabilities.length) return "Choose at least one approved alias.";
         const invalidAlias = payload.capabilities.find((alias) => !ALIAS_PATTERN.test(alias));
         if (invalidAlias) return "Alias \"" + invalidAlias + "\" is not a valid alias ID (expected a name like text.chat.v1).";
-        for (const field of ["budget_microcents", "group_budget_microcents", "rpm_limit", "tpm_limit", "concurrency_limit"]) {
-          if (payload[field] === null || payload[field] === undefined || !Number.isFinite(payload[field])) return "Budgets and limits must be whole numbers.";
+        for (const field of ["budget_microcents", "group_budget_microcents"]) {
+          if (payload[field] === null || payload[field] === undefined || !Number.isFinite(payload[field])) return "Enter the class total and per-student budgets in US dollars.";
+        }
+        for (const field of ["rpm_limit", "tpm_limit", "concurrency_limit"]) {
+          if (payload[field] === null || payload[field] === undefined || !Number.isInteger(payload[field]) || payload[field] < 1) return "Requests per minute, tokens per minute and concurrency must be whole numbers of at least 1.";
         }
         if (!payload.starts_at || !payload.expires_at) return "Start and end times are required.";
         if (payload.expires_at <= payload.starts_at) return "The end time must be after the start time.";
@@ -1518,12 +1758,12 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           { label: "Class", value: "name" },
           { label: "Course", value: (row) => row.course || "—" },
           { label: "Status", value: (row) => statusLabel(row.status), pill: true },
-          { label: "Timezone (metadata)", value: (row) => row.timezone || "—" },
-          { label: "Starts (UTC)", value: "starts_at", format: time },
-          { label: "Ends (UTC)", value: "expires_at", format: time },
-          { label: "Class budget", value: "budget_microcents", format: cost },
-          { label: "Group budget", value: "group_budget_microcents", format: cost },
-          { label: "Default group daily (UTC)", value: (row) => row.daily_budget_microcents === null || row.daily_budget_microcents === undefined ? "No class default" : cost(row.daily_budget_microcents) },
+          { label: "Starts (class time)", value: (row) => zonedTime(row.starts_at, row.timezone) },
+          { label: "Ends (class time)", value: (row) => zonedTime(row.expires_at, row.timezone) },
+          { label: "Timezone", value: (row) => row.timezone || "—" },
+          { label: "Class budget", value: "budget_microcents", format: money },
+          { label: "Per-student budget", value: "group_budget_microcents", format: money },
+          { label: "Daily per student (resets 00:00 UTC)", value: (row) => row.daily_budget_microcents === null || row.daily_budget_microcents === undefined ? "No class default" : money(row.daily_budget_microcents) },
           { label: "Approved aliases", value: (row) => (row.capabilities || []).join(", ") || "—" },
           { label: "Group defaults (RPM / TPM / concurrency)", value: (row) => number(row.rpm_limit) + " / " + number(row.tpm_limit) + " / " + number(row.concurrency_limit) },
           { label: "Updated", value: "updated_at", format: time },
@@ -1548,11 +1788,11 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         const parts = [
           row.course ? row.course : "No course",
           "Status: " + statusLabel(row.status),
-          "Timezone metadata: " + (row.timezone || "—") + " (display and scheduling only; does not convert times)",
-          "Schedule (UTC): " + time(row.starts_at) + " → " + time(row.expires_at),
-          "Class lifetime budget: " + cost(row.budget_microcents),
-          "Default group budget: " + cost(row.group_budget_microcents),
-          "Default group daily budget (UTC): " + (row.daily_budget_microcents === null || row.daily_budget_microcents === undefined ? "no class default" : cost(row.daily_budget_microcents)),
+          "Schedule (" + (row.timezone || "UTC") + "): " + zonedTime(row.starts_at, row.timezone) + " → " + zonedTime(row.expires_at, row.timezone),
+          "UTC: " + time(row.starts_at) + " → " + time(row.expires_at),
+          "Class total budget: " + money(row.budget_microcents),
+          "Per-student budget for new groups: " + money(row.group_budget_microcents),
+          "Daily per student (resets 00:00 UTC): " + (row.daily_budget_microcents === null || row.daily_budget_microcents === undefined ? "no class default" : money(row.daily_budget_microcents)),
           "Approved aliases: " + ((row.capabilities || []).join(", ") || "—"),
           "Tenant: " + row.tenant_id,
         ];
@@ -1572,6 +1812,11 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         renderUsage();
         document.getElementById("groups-truncated").hidden = true;
         clearSecret();
+        clearKit();
+        dismissInline("class-issue-confirm");
+        dismissInline("group-budget-confirm");
+        document.getElementById("group-budget-form").reset();
+        setStatus("group-budget-status", "", "");
         document.getElementById("group-edit-panel").hidden = true;
         document.getElementById("class-duplicate-panel").hidden = true;
         setStatus("class-duplicate-status", "", "");
@@ -1581,6 +1826,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         renderFieldSet(document.getElementById("class-edit-fields"), CLASS_FIELDS, row);
         renderAliasEditor(document.getElementById("class-edit-aliases"), row.environment_id, row.capabilities || []);
         set("class-edit-alias-note", aliasNoteText(row.environment_id));
+        renderEditLimits();
         updatePauseButton(row);
         setStatus("class-action-status", "", "");
         setStatus("class-edit-status", "", "");
@@ -1599,6 +1845,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         document.getElementById("group-edit-panel").hidden = true;
         document.getElementById("class-duplicate-panel").hidden = true;
         clearSecret();
+        clearKit();
       }
       function updatePauseButton(row) {
         const button = document.getElementById("class-pause");
@@ -1618,6 +1865,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           renderKeys();
           renderCodes();
           renderUsage();
+          renderEditLimits();
         } catch (error) {
           if (classState.selected !== classId) return;
           setStatus("group-status", messageFor(error), "error");
@@ -1630,26 +1878,29 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         const codes = Array.isArray(detail.codes) ? detail.codes : [];
         const keyCounts = {};
         const codeCounts = {};
-        for (const key of keys) keyCounts[key.group_id] = (keyCounts[key.group_id] || 0) + 1;
         for (const code of codes) codeCounts[code.classroom_group_id] = (codeCounts[code.classroom_group_id] || 0) + 1;
+        const zone = classTimeZone();
+        const inClassTime = (value) => zonedTime(value, zone);
+        for (const key of keys) if (!key.revoked_at) keyCounts[key.group_id] = (keyCounts[key.group_id] || 0) + 1;
         renderTable("class-groups", [
           { label: "Group", value: "name", bounded: true },
-          { label: "Status", value: (row) => statusLabel(row.status), pill: true },
+          { label: "Status", value: groupStatusLabel, pill: true },
           { label: "Aliases", value: (row) => (row.capabilities === null || row.capabilities === undefined ? "Inherits class" : ((row.capabilities || []).join(", ") || "Inherits class")) },
-          { label: "Group budget", value: "budget_microcents", format: cost },
-          { label: "Daily group budget (UTC)", value: (row) => overrideText(row.daily_budget_microcents, cost) },
+          { label: "Group budget", value: "budget_microcents", format: money },
+          { label: "Daily group budget (resets 00:00 UTC)", value: (row) => overrideText(row.daily_budget_microcents, money) },
           { label: "RPM", value: (row) => overrideText(row.rpm_limit, number) },
           { label: "TPM", value: (row) => overrideText(row.tpm_limit, number) },
           { label: "Concurrency", value: (row) => overrideText(row.concurrency_limit, number) },
-          { label: "Starts (UTC)", value: (row) => overrideText(row.starts_at, time) },
-          { label: "Ends (UTC)", value: (row) => overrideText(row.expires_at, time) },
-          { label: "Keys", value: (row) => number(keyCounts[row.id] || 0) },
+          { label: "Starts (class time)", value: (row) => overrideText(row.starts_at, inClassTime) },
+          { label: "Ends (class time)", value: (row) => overrideText(row.expires_at, inClassTime) },
+          { label: "Live keys", value: (row) => number(keyCounts[row.id] || 0) },
           { label: "Join codes", value: (row) => number(codeCounts[row.id] || 0) },
           { label: "Actions", buttons: (row) => {
             const buttons = [];
             if (row.status === "active") {
               buttons.push({ label: "API key", disabled: credentialPending, onClick: () => issueGroupAccess(row.id, "api_key") });
               buttons.push({ label: "Join code", disabled: credentialPending, onClick: () => issueGroupAccess(row.id, "join_code") });
+              buttons.push({ label: row.paused ? "Resume" : "Pause", onClick: () => setGroupPaused(row, !row.paused) });
             }
             buttons.push({ label: "Adjust", onClick: () => openGroupEditor(row) });
             if (row.status === "active") buttons.push({ label: "Revoke", danger: true, onClick: () => revokeGroup(row) });
@@ -1660,11 +1911,13 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       function renderKeys() {
         const detail = classState.detail || { groups: [], keys: [] };
         const groupNames = Object.fromEntries((detail.groups || []).map((group) => [group.id, group.name]));
+        const zone = classTimeZone();
         renderTable("class-keys", [
-          { label: "Key ID", value: "id" },
           { label: "Group", value: (row) => groupNames[row.group_id] || row.group_id },
-          { label: "Created (UTC)", value: "created_at", format: time },
-          { label: "Expires (UTC)", value: (row) => row.expires_at === null || row.expires_at === undefined ? "Inherits group schedule" : time(row.expires_at) },
+          { label: "Key ends in", value: (row) => row.key_hint ? "…" + row.key_hint : "not recorded" },
+          { label: "Key ID", value: "id" },
+          { label: "Created (class time)", value: (row) => zonedTime(row.created_at, zone) },
+          { label: "Expires (class time)", value: (row) => row.expires_at === null || row.expires_at === undefined ? "Inherits group schedule" : zonedTime(row.expires_at, zone) },
           { label: "State", value: (row) => row.revoked_at ? "Revoked" : "Active", pill: true },
           { label: "Actions", buttons: (row) => row.revoked_at ? [] : [
             { label: "Rotate", disabled: credentialPending, onClick: () => rotateKey(row.id) },
@@ -1678,7 +1931,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         renderTable("class-codes", [
           { label: "Code ID", value: "id" },
           { label: "Group", value: (row) => groupNames[row.classroom_group_id] || row.classroom_group_id },
-          { label: "Expires (UTC)", value: "expires_at", format: time },
+          { label: "Expires (class time)", value: (row) => zonedTime(row.expires_at, classTimeZone()) },
           { label: "State", value: (row) => row.disabled ? "Disabled" : "Active", pill: true },
           { label: "Activations (devices, not spend)", value: (row) => number(row.activation_count) + " / " + number(row.max_activations) },
           { label: "Actions", buttons: (row) => row.disabled ? [] : [{ label: "Revoke", danger: true, onClick: () => revokeCode(row.id) }] },
@@ -1712,13 +1965,13 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         renderTable("class-usage", [
           { label: "Scope", value: "scope_kind", pill: true },
           { label: "Group / total", value: "scope" },
-          { label: "Budget allocation", value: (row) => row.allocation_microcents === null || row.allocation_microcents === undefined ? "—" : cost(row.allocation_microcents) },
-          { label: "Requests", value: (row) => number(row.requests) },
-          { label: "Input tokens", value: (row) => number(row.input_tokens) },
-          { label: "Output tokens", value: (row) => number(row.output_tokens) },
-          { label: "Accounted lifetime cost", value: (row) => cost(row.cost_microcents) },
-          { label: "Pending requests", value: (row) => number(row.pending_requests) },
-          { label: "Pending reservation ceiling", value: (row) => cost(row.pending_cost_microcents) },
+          { label: "Budget allocation", value: (row) => row.allocation_microcents === null || row.allocation_microcents === undefined ? "—" : money(row.allocation_microcents), num: true },
+          { label: "Requests", value: (row) => number(row.requests), num: true },
+          { label: "Input tokens", value: (row) => number(row.input_tokens), num: true },
+          { label: "Output tokens", value: (row) => number(row.output_tokens), num: true },
+          { label: "Accounted lifetime cost", value: (row) => money(row.cost_microcents), num: true },
+          { label: "Pending requests", value: (row) => number(row.pending_requests), num: true },
+          { label: "Pending reservation ceiling", value: (row) => money(row.pending_cost_microcents), num: true },
         ], rows);
       }
       // Class-specific mutations finish after an await, during which the operator may
@@ -1792,16 +2045,362 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         const classroom = classState.classes.find((row) => row.id === classState.selected);
         return (group ? group.name : groupId) + " in " + (classroom ? classroom.name : classState.selected);
       }
-      function showSecret(result, context) {
+      function showSecret(result, context, groupId) {
         const value = result.api_key || result.access_code || "";
         document.getElementById("class-secret-value").textContent = value;
         document.getElementById("class-secret").hidden = !value;
+        // An API key gets the same student card as a bulk kit; join codes use the
+        // activation flow instead, so they get no card.
+        const cardBox = document.getElementById("class-secret-card");
+        cardBox.replaceChildren();
+        cardBox.hidden = true;
+        if (result.api_key) {
+          const classRow = classState.classes.find((row) => row.id === classState.selected);
+          const group = classState.detail?.groups?.find((row) => row.id === groupId);
+          cardBox.append(studentCard(cardEntry(classRow, group, { api_key: result.api_key, expires_at: null }, group ? group.name : context)));
+          cardBox.hidden = false;
+        }
         setStatus("class-secret-status", value ? ("For " + context + ". " + (result.api_key ? "Shown once. This is a direct gateway API key; it does not activate devices." : "Shown once. This join code activates devices through the existing activation endpoint.")) : "", value ? "ok" : "");
       }
       function clearSecret() {
         document.getElementById("class-secret").hidden = true;
         document.getElementById("class-secret-value").textContent = "";
+        document.getElementById("class-secret-card").replaceChildren();
+        document.getElementById("class-secret-card").hidden = true;
         setStatus("class-secret-status", "", "");
+      }
+      function classTimeZone() {
+        const row = classState.classes.find((item) => item.id === classState.selected);
+        return row && row.timezone ? row.timezone : "UTC";
+      }
+
+      // ---- Environment guardrails next to class limits ----
+      // The gateway enforces min(environment guardrail, class/group value) for RPM, TPM and
+      // concurrency, so a class value above the guardrail silently buys nothing.
+      function environmentLimits(environmentId) {
+        const option = classOptions && Array.isArray(classOptions.environments) ? classOptions.environments.find((item) => item.environment_id === environmentId) : null;
+        if (option && option.limits) return option.limits;
+        const row = dashboardData && Array.isArray(dashboardData.environments) ? dashboardData.environments.find((item) => item.id === environmentId) : null;
+        return row ? { rpm_limit: row.rpm_limit, tpm_limit: row.tpm_limit, concurrency_limit: row.concurrency_limit, max_request_bytes: row.max_request_bytes, daily_budget_microcents: row.daily_budget_microcents } : null;
+      }
+      const CLASS_LIMIT_DEFAULTS = { rpm_limit: 30, tpm_limit: 100000, concurrency_limit: 3 };
+      const LIMIT_NAMES = { rpm_limit: "Requests per minute", tpm_limit: "Tokens per minute", concurrency_limit: "Concurrent requests" };
+      function readLimitValue(container, name) {
+        const input = container.querySelector('[name="' + name + '"]');
+        if (!input || input.value === "") return null;
+        if (input.dataset.kind === "dollars") { const parsed = parseDollars(input.value); return parsed.value === undefined ? null : parsed.value; }
+        const value = Number(input.value);
+        return Number.isFinite(value) ? value : null;
+      }
+      function renderLimitNotes(targetId, container, environmentId, studentCount) {
+        const target = document.getElementById(targetId);
+        const notes = [];
+        const add = (text, warn) => {
+          const line = document.createElement("p");
+          line.className = "field-note" + (warn ? " warn" : "");
+          line.textContent = text;
+          notes.push(line);
+        };
+        const limits = environmentLimits(environmentId);
+        if (limits) {
+          add("Environment guardrails per student: " + number(limits.rpm_limit) + " requests/min, " + number(limits.tpm_limit) + " tokens/min, " + number(limits.concurrency_limit) + " concurrent, " + number(limits.max_request_bytes) + " bytes per request. Students get the lower of the class value and the guardrail.");
+          for (const name of ["rpm_limit", "tpm_limit", "concurrency_limit"]) {
+            const value = readLimitValue(container, name);
+            if (value !== null && value > limits[name]) add(LIMIT_NAMES[name] + " " + number(value) + " is above the environment guardrail of " + number(limits[name]) + ", so students get " + number(limits[name]) + ".", true);
+          }
+        } else {
+          add("Environment guardrails are unavailable; the gateway still applies the lower of the environment and class limits.");
+        }
+        const total = readLimitValue(container, "budget_microcents");
+        const each = readLimitValue(container, "group_budget_microcents");
+        if (studentCount > 0 && total !== null && each !== null && BigInt(each) * BigInt(studentCount) > BigInt(total)) {
+          add(number(studentCount) + " students × " + money(each) + " = " + money(BigInt(each) * BigInt(studentCount)) + ", more than the class total of " + money(total) + ". The class total is shared, so it can run out before every student has used their allocation.", true);
+        }
+        target.replaceChildren(...notes);
+      }
+      function createStudentNames() {
+        return document.getElementById("class-create-students").value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+      }
+      function renderCreateLimits() {
+        const container = document.getElementById("class-create-fields");
+        const environment = container.querySelector('[name="environment_id"]');
+        renderLimitNotes("class-create-limits", container, environment ? environment.value : "", createStudentNames().length);
+      }
+      function renderEditLimits() {
+        const row = classState.classes.find((item) => item.id === classState.selected);
+        if (!row) return;
+        const groups = (classState.detail && classState.detail.groups) || [];
+        renderLimitNotes("class-edit-limits", document.getElementById("class-edit-fields"), row.environment_id, groups.filter((group) => group.status !== "revoked").length);
+      }
+      // Defaults stay generous but never exceed the chosen environment's guardrails. A
+      // value the teacher has typed is left alone.
+      function applyCreateLimitDefaults() {
+        const container = document.getElementById("class-create-fields");
+        const environment = container.querySelector('[name="environment_id"]');
+        const limits = environmentLimits(environment ? environment.value : "");
+        for (const name of ["rpm_limit", "tpm_limit", "concurrency_limit"]) {
+          const input = container.querySelector('[name="' + name + '"]');
+          if (!input || input.dataset.touched) continue;
+          input.value = String(limits ? Math.min(CLASS_LIMIT_DEFAULTS[name], limits[name]) : CLASS_LIMIT_DEFAULTS[name]);
+        }
+      }
+
+      // ---- Suggested tenant ID: class-<slug>-<yyyymmdd>, always a valid identifier ----
+      function slugify(text, limit) {
+        return String(text || "").toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, limit).replace(/-+$/g, "");
+      }
+      function suggestedTenant(container) {
+        const name = container.querySelector('[name="name"]');
+        const starts = container.querySelector('[name="starts_at"]');
+        const day = starts && /^\d{4}-\d{2}-\d{2}/.test(starts.value) ? starts.value.slice(0, 10) : localDateTime(Math.floor(Date.now() / 1000)).slice(0, 10);
+        const slug = slugify(name ? name.value : "", 60);
+        return "class-" + (slug ? slug + "-" : "") + day.replace(/-/g, "");
+      }
+      function createDefaults() {
+        const start = Math.floor(Date.now() / 60000) * 60;
+        return {
+          timezone: defaultTimeZone,
+          starts_at: start,
+          expires_at: start + 3 * 3600,
+          budget_microcents: 2000000000,
+          group_budget_microcents: 100000000,
+          daily_budget_microcents: null,
+          ...CLASS_LIMIT_DEFAULTS,
+        };
+      }
+      function resetCreateForm() {
+        const container = document.getElementById("class-create-fields");
+        renderFieldSet(container, CLASS_CREATE_FIELDS, createDefaults());
+        const tenant = container.querySelector('[name="tenant_id"]');
+        tenant.value = suggestedTenant(container);
+        document.getElementById("class-create-students").value = "";
+      }
+      document.getElementById("class-create-fields").addEventListener("input", (event) => {
+        const container = document.getElementById("class-create-fields");
+        const name = event.target && event.target.name;
+        if (name === "tenant_id" || name === "rpm_limit" || name === "tpm_limit" || name === "concurrency_limit") event.target.dataset.touched = "true";
+        const tenant = container.querySelector('[name="tenant_id"]');
+        if ((name === "name" || name === "starts_at") && tenant && !tenant.dataset.touched) tenant.value = suggestedTenant(container);
+        renderCreateLimits();
+      });
+      document.getElementById("class-create-students").addEventListener("input", renderCreateLimits);
+      document.getElementById("class-edit-fields").addEventListener("input", renderEditLimits);
+
+      // ---- In-page confirmation bars (no blocking dialogs for bulk actions) ----
+      const confirmActions = new Map();
+      function askInline(barId, message, action) {
+        const bar = document.getElementById(barId);
+        bar.querySelector("p").textContent = message;
+        confirmActions.set(barId, action);
+        bar.hidden = false;
+        bar.querySelector('[data-confirm="yes"]').focus();
+      }
+      function dismissInline(barId) {
+        confirmActions.delete(barId);
+        document.getElementById(barId).hidden = true;
+      }
+      for (const bar of document.querySelectorAll(".confirm-bar")) {
+        bar.querySelector('[data-confirm="yes"]').addEventListener("click", () => {
+          const action = confirmActions.get(bar.id);
+          dismissInline(bar.id);
+          return action ? action() : undefined;
+        });
+        bar.querySelector('[data-confirm="no"]').addEventListener("click", () => dismissInline(bar.id));
+      }
+
+      // ---- Student cards and the class kit ----
+      // Allowed models are the class policy narrowed by any group override.
+      function studentModels(classRow, group) {
+        const policy = classRow && Array.isArray(classRow.capabilities) ? classRow.capabilities : [];
+        if (group && Array.isArray(group.capabilities) && group.capabilities.length) return policy.filter((alias) => group.capabilities.includes(alias));
+        return policy.slice();
+      }
+      function cardEntry(classRow, group, key, name) {
+        const ends = [classRow && classRow.expires_at, group && group.expires_at, key && key.expires_at].filter((value) => typeof value === "number");
+        return {
+          name: name || (group ? group.name : "Student"),
+          className: classRow ? classRow.name : "",
+          timeZone: classRow ? classRow.timezone : "UTC",
+          apiKey: key.api_key,
+          hint: key.key_hint || null,
+          groupId: group ? group.id : key.group_id,
+          models: studentModels(classRow, group),
+          endsAt: ends.length ? Math.min(...ends) : null,
+        };
+      }
+      const snippetModel = (models) => models.find((alias) => alias.includes("chat")) || models[0] || "text.chat.v1";
+      function pythonSnippet(base, key, model) {
+        return [
+          "from openai import OpenAI",
+          "",
+          "client = OpenAI(base_url=\"" + base + "\", api_key=\"" + key + "\")",
+          "reply = client.chat.completions.create(",
+          "    model=\"" + model + "\",",
+          "    messages=[{\"role\": \"user\", \"content\": \"Hello!\"}],",
+          ")",
+          "print(reply.choices[0].message.content)",
+        ].join("\n");
+      }
+      function curlSnippet(base, key, model) {
+        return [
+          "curl " + base + "/chat/completions \\",
+          "  -H \"Authorization: Bearer " + key + "\" \\",
+          "  -H \"Content-Type: application/json\" \\",
+          "  -d '{\"model\": \"" + model + "\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello!\"}]}'",
+        ].join("\n");
+      }
+      // Built from elements and text nodes only; nothing here is parsed as HTML.
+      function studentCard(entry) {
+        const base = gatewayBase();
+        const card = document.createElement("article");
+        card.className = "student-card";
+        const heading = document.createElement("h3");
+        heading.textContent = entry.name;
+        const classLine = document.createElement("p");
+        classLine.className = "card-class";
+        classLine.textContent = entry.className;
+        const list = document.createElement("dl");
+        const row = (label, value, missing) => {
+          const term = document.createElement("dt");
+          term.textContent = label;
+          const detail = document.createElement("dd");
+          detail.textContent = value;
+          if (missing) detail.className = "missing";
+          list.append(term, detail);
+        };
+        row("Base URL", base, !gatewayConfig.public_url);
+        row("API key", entry.apiKey);
+        row("Models", entry.models.join(", ") || "none approved");
+        row("Works until", entry.endsAt ? zonedTime(entry.endsAt, entry.timeZone) : "—");
+        const model = snippetModel(entry.models);
+        const pythonTitle = document.createElement("h4");
+        pythonTitle.textContent = "Python (pip install openai)";
+        const python = document.createElement("pre");
+        python.textContent = pythonSnippet(base, entry.apiKey, model);
+        const curlTitle = document.createElement("h4");
+        curlTitle.textContent = "curl";
+        const curl = document.createElement("pre");
+        curl.textContent = curlSnippet(base, entry.apiKey, model);
+        const foot = document.createElement("p");
+        foot.className = "card-foot";
+        foot.textContent = "Use a model name from the list above (GET " + base + "/models lists them). The Responses API is at " + base + "/responses. Keep this key private.";
+        card.append(heading, classLine, list, pythonTitle, python, curlTitle, curl, foot);
+        return card;
+      }
+      function gatewayWarning() {
+        if (gatewayConfig.public_url) return "";
+        if (gatewayConfig.status === "invalid") return "GATEWAY_PUBLIC_URL is set but is not a bare https origin, so student cards show " + GATEWAY_MISSING + ". Set it to the gateway origin, for example https://gateway.example.com, and redeploy the control plane.";
+        return "The gateway's public address is not configured, so student cards show " + GATEWAY_MISSING + ". Set GATEWAY_PUBLIC_URL on the control plane to the gateway's https origin and redeploy.";
+      }
+      function renderGatewayNote() {
+        const note = document.getElementById("gateway-note");
+        note.textContent = gatewayWarning();
+        note.hidden = !note.textContent;
+      }
+      function showKit(result, classRow, groups) {
+        const byId = new Map((groups || []).map((group) => [group.id, group]));
+        kitState.classId = classRow ? classRow.id : null;
+        kitState.className = classRow ? classRow.name : "";
+        kitState.entries = (result.keys || []).map((key) => cardEntry(classRow, byId.get(key.group_id), key, key.group_name));
+        kitState.skipped = Array.isArray(result.skipped) ? result.skipped : [];
+        set("class-kit-heading", "Class kit: " + kitState.className);
+        const gatewayNote = document.getElementById("class-kit-gateway");
+        gatewayNote.textContent = gatewayWarning();
+        gatewayNote.hidden = !gatewayNote.textContent;
+        const summary = ["Issued " + number(kitState.entries.length) + " key" + (kitState.entries.length === 1 ? "" : "s") + " for " + kitState.className + "."];
+        if (kitState.skipped.length) summary.push(number(kitState.skipped.length) + " skipped (see below).");
+        if (result.truncated) summary.push("Only the first 100 groups were included; issue again with the remaining groups.");
+        setStatus("class-kit-summary", summary.join(" "), kitState.entries.length ? "ok" : "error");
+        renderTable("class-kit-keys", [
+          { label: "Student", value: "name", bounded: true },
+          { label: "API key", value: "apiKey" },
+          { label: "Ends in", value: (row) => row.hint ? "…" + row.hint : "—" },
+          { label: "Models", value: (row) => row.models.join(", ") || "—" },
+          { label: "Actions", buttons: (row) => [{ label: "Copy", onClick: () => copyToClipboard(row.apiKey, "class-kit-status", "Copied the key for " + row.name + ".") }] },
+        ], kitState.entries);
+        renderTable("class-kit-skipped", [
+          { label: "Group", value: (row) => row.group_name || row.group_id },
+          { label: "Reason", value: "reason" },
+        ], kitState.skipped);
+        document.getElementById("class-kit-skipped-block").hidden = !kitState.skipped.length;
+        document.getElementById("class-kit-preview").replaceChildren(...(kitState.entries.length ? [studentCard(kitState.entries[0])] : []));
+        document.getElementById("print-cards").replaceChildren(...kitState.entries.map(studentCard));
+        document.body.classList.toggle("print-kit", kitState.entries.length > 0);
+        setStatus("class-kit-status", "", "");
+        const panel = document.getElementById("class-kit");
+        panel.hidden = false;
+        panel.scrollIntoView({ block: "start" });
+      }
+      function clearKit() {
+        kitState.classId = null;
+        kitState.className = "";
+        kitState.entries = [];
+        kitState.skipped = [];
+        document.getElementById("class-kit").hidden = true;
+        document.getElementById("class-kit-keys").replaceChildren();
+        document.getElementById("class-kit-skipped").replaceChildren();
+        document.getElementById("class-kit-preview").replaceChildren();
+        document.getElementById("print-cards").replaceChildren();
+        document.body.classList.remove("print-kit");
+        setStatus("class-kit-status", "", "");
+        setStatus("class-kit-summary", "", "");
+      }
+      // Spreadsheet apps execute cells starting with = + - @, so such names are quoted.
+      function csvCell(value) {
+        let text = String(value ?? "");
+        if (/^[=+\-@\t\r]/.test(text)) text = "'" + text;
+        return /[",\r\n]/.test(text) ? "\"" + text.replace(/"/g, "\"\"") + "\"" : text;
+      }
+      function kitCsv() {
+        const rows = [["name", "key", "base_url", "models"]].concat(kitState.entries.map((entry) => [entry.name, entry.apiKey, gatewayBase(), entry.models.join(" ")]));
+        return rows.map((row) => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
+      }
+      async function copyToClipboard(value, statusId, message) {
+        try {
+          await navigator.clipboard.writeText(value);
+          setStatus(statusId, message, "ok");
+        } catch {
+          setStatus(statusId, "Copy failed; select the value and copy it manually.", "error");
+        }
+      }
+      function downloadText(filename, text, type) {
+        const blob = new Blob([text], { type });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        document.body.append(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 0);
+      }
+      // Issues one new key per group through groups/access-bulk and shows the kit. With no
+      // group IDs the server picks every active, unpaused group (first 100 by name).
+      async function issueKit(classId, groupIds, statusId) {
+        if (credentialPending) return false;
+        let issued = false;
+        await runCredentialAction(async () => {
+          clearSecret();
+          clearKit();
+          issued = await runClassAction(statusId, async () => {
+            const result = await dashboardPost("groups/access-bulk", groupIds ? { class_id: classId, group_ids: groupIds } : { class_id: classId });
+            await loadGroups();
+            const classRow = classState.classes.find((row) => row.id === classId);
+            // Keys exist now whatever the operator did meanwhile, so the kit is always shown,
+            // headed with its own class name.
+            showKit(result, classRow || { id: classId, name: classId, capabilities: [], timezone: "UTC" }, classState.selected === classId && classState.detail ? classState.detail.groups : []);
+            return "Issued " + number((result.keys || []).length) + " student key(s)" + ((result.skipped || []).length ? "; " + number(result.skipped.length) + " skipped." : ".") + " Copy, download or print them now.";
+          }, classId);
+        });
+        return issued;
+      }
+      async function setGroupPaused(row, paused) {
+        const classId = classState.selected;
+        await runClassAction("group-status", async () => {
+          await dashboardPost("groups/update", { id: row.id, paused });
+          await loadGroups();
+          return paused ? "Paused " + row.name + ": their keys and devices are refused until resumed. Allocation and usage are kept." : "Resumed " + row.name + ".";
+        }, classId);
       }
       async function issueGroupAccess(groupId, kind) {
         if (credentialPending) return;
@@ -1813,7 +2412,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           clearSecret();
           await runClassAction("group-status", async () => {
             const result = await dashboardPost("groups/access", { group_id: groupId, kind });
-            showSecret(result, context);
+            showSecret(result, context, groupId);
             await loadGroups();
             return "Issued " + label + " for " + context + ".";
           }, classId);
@@ -1829,7 +2428,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           clearSecret();
           await runClassAction("group-status", async () => {
             const result = await dashboardPost("groups/rotate", { id });
-            showSecret(result, context);
+            showSecret(result, context, key?.group_id);
             await loadGroups();
             return "Rotated the API key for " + context + ". The group and its spend are unchanged.";
           }, classId);
@@ -1879,7 +2478,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         classState.groupEditorRevision += 1;
       });
 
-      renderFieldSet(document.getElementById("class-create-fields"), CLASS_SCOPE_FIELDS.concat(CLASS_FIELDS), { timezone: "Asia/Singapore" });
+      resetCreateForm();
       set("class-create-schedule-note", scheduleNote);
       set("class-edit-schedule-note", scheduleNote);
       set("group-edit-schedule-note", scheduleNote);
@@ -1888,27 +2487,56 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       document.getElementById("class-create-form").addEventListener("submit", async (event) => {
         event.preventDefault();
         const container = document.getElementById("class-create-fields");
+        const moneyProblem = dollarProblem(container);
+        if (moneyProblem) { setStatus("class-create-status", moneyProblem, "error"); return; }
         const payload = readFieldSet(container);
         payload.capabilities = readAliases(document.getElementById("class-create-aliases"));
         const problem = validateClassPayload(payload);
         if (problem) { setStatus("class-create-status", problem, "error"); return; }
         if (!payload.tenant_id || !String(payload.tenant_id).trim()) { setStatus("class-create-status", "A classroom / tenant ID is required.", "error"); return; }
+        if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{1,99}$/.test(payload.tenant_id)) { setStatus("class-create-status", "The tenant ID must be 2–100 letters, digits, dots, colons, hyphens or underscores, starting with a letter or digit.", "error"); return; }
         if (!payload.product_id || !payload.environment_id) { setStatus("class-create-status", "Choose a product and environment.", "error"); return; }
         if (!payload.course) delete payload.course;
         if (!payload.instructors || !payload.instructors.length) delete payload.instructors;
-        await runClassAction("class-create-status", async () => {
+        // Students are checked before anything is written, so a bad roster never leaves a
+        // half-made class behind.
+        const students = createStudentNames();
+        if (students.length > 100) { setStatus("class-create-status", "At most 100 students per class form; add the rest from the class afterwards.", "error"); return; }
+        const tooLong = students.find((name) => name.length > 200);
+        if (tooLong) { setStatus("class-create-status", "Student names can be at most 200 characters.", "error"); return; }
+        const seen = new Set();
+        const duplicate = students.find((name) => { const key = name.toLowerCase(); if (seen.has(key)) return true; seen.add(key); return false; });
+        if (duplicate) { setStatus("class-create-status", "\"" + duplicate + "\" is listed twice; each student needs a distinct name.", "error"); return; }
+        let createdId = null;
+        let groupIds = null;
+        const created = await runClassAction("class-create-status", async () => {
           const result = await dashboardPost("classes", payload);
-          renderFieldSet(container, CLASS_SCOPE_FIELDS.concat(CLASS_FIELDS), { timezone: "Asia/Singapore" });
+          createdId = result && result.id ? result.id : null;
+          resetCreateForm();
           refreshAliasEditors();
           await loadClasses();
-          if (result && result.id) await selectClass(result.id);
-          return "Class created.";
+          if (createdId) await selectClass(createdId);
+          if (!createdId || !students.length) return "Class created.";
+          try {
+            const groups = await dashboardPost("groups", { class_id: createdId, names: students });
+            groupIds = groups && Array.isArray(groups.groups) ? groups.groups.map((group) => group.id) : null;
+          } catch (error) {
+            throw new Error("The class was created, but adding students failed: " + messageFor(error) + " Open the class and add them under Groups.");
+          }
+          await loadGroups();
+          return "Class created with " + number(students.length) + " student" + (students.length === 1 ? "" : "s") + ". Issuing their keys…";
         });
+        if (created && createdId && groupIds && groupIds.length) {
+          const issued = await issueKit(createdId, groupIds, "class-action-status");
+          setStatus("class-create-status", issued ? "Class created with " + number(groupIds.length) + " students; their keys are in the class kit below." : "Class and students created, but keys were not issued. Use Issue keys for all students in the class.", issued ? "ok" : "error");
+        }
       });
       document.getElementById("class-edit-form").addEventListener("submit", async (event) => {
         event.preventDefault();
         const targetId = classState.selected;
         if (!targetId) return;
+        const moneyProblem = dollarProblem(document.getElementById("class-edit-fields"));
+        if (moneyProblem) { setStatus("class-edit-status", moneyProblem, "error"); return; }
         const payload = readFieldSet(document.getElementById("class-edit-fields"));
         payload.capabilities = readAliases(document.getElementById("class-edit-aliases"));
         const problem = validateClassPayload(payload);
@@ -2006,6 +2634,8 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           revision: classState.groupEditorRevision,
         };
         if (!owner.classId || !owner.groupId) return;
+        const moneyProblem = dollarProblem(document.getElementById("group-edit-fields"));
+        if (moneyProblem) { setStatus("group-edit-status", moneyProblem, "error"); return; }
         const payload = readFieldSet(document.getElementById("group-edit-fields"));
         payload.capabilities = readAliases(document.getElementById("group-edit-aliases"));
         if (Array.isArray(payload.capabilities) && !payload.capabilities.length) payload.capabilities = null;
@@ -2044,16 +2674,74 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       document.getElementById("class-secret-download").addEventListener("click", () => {
         const value = document.getElementById("class-secret-value").textContent;
         if (!value) return;
-        const blob = new Blob([value + "\n"], { type: "text/plain" });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = "tkslopper-group-credential.txt";
-        document.body.append(link);
-        link.click();
-        link.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 0);
+        downloadText("tkslopper-group-credential.txt", value + "\n", "text/plain");
         setStatus("class-secret-status", "Downloaded. Store it securely; it cannot be retrieved again.", "ok");
+      });
+      document.getElementById("class-issue-all").addEventListener("click", () => {
+        const classId = classState.selected;
+        const row = classState.classes.find((item) => item.id === classId);
+        if (!row || credentialPending) return;
+        const groups = (classState.detail && classState.detail.groups) || [];
+        const eligible = groups.filter((group) => group.status === "active" && !group.paused).length;
+        if (!eligible) { setStatus("class-action-status", "There are no active, unpaused students to issue keys for. Add students under Groups first.", "error"); return; }
+        const paused = groups.filter((group) => group.status === "active" && group.paused).length;
+        askInline("class-issue-confirm", "Issue a new API key for each of the " + number(Math.min(eligible, 100)) + " active, unpaused students in " + row.name + "?" + (paused ? " " + number(paused) + " paused student(s) are left out." : "") + " Existing keys keep working. The new keys are shown once, here.", () => {
+          if (classState.selected !== classId) return undefined;
+          return issueKit(classId, null, "class-action-status");
+        });
+      });
+      document.getElementById("class-kit-copy").addEventListener("click", () => {
+        if (!kitState.entries.length) return;
+        return copyToClipboard(kitCsv(), "class-kit-status", "Copied " + number(kitState.entries.length) + " rows as CSV (name, key, base_url, models).");
+      });
+      document.getElementById("class-kit-download").addEventListener("click", () => {
+        if (!kitState.entries.length) return;
+        downloadText("tkslopper-" + (slugify(kitState.className, 60) || "class") + "-student-keys.csv", kitCsv(), "text/csv");
+        setStatus("class-kit-status", "Downloaded the CSV. Store it securely and delete it after class; the keys cannot be retrieved again.", "ok");
+      });
+      document.getElementById("class-kit-print").addEventListener("click", () => {
+        if (!kitState.entries.length) return;
+        setStatus("class-kit-status", "Printing " + number(kitState.entries.length) + " student cards. Only the cards are printed.", "ok");
+        window.print();
+      });
+      document.getElementById("class-kit-clear").addEventListener("click", clearKit);
+      window.addEventListener("pagehide", clearKit);
+
+      document.getElementById("group-budget-form").addEventListener("submit", (event) => {
+        event.preventDefault();
+        const classId = classState.selected;
+        const row = classState.classes.find((item) => item.id === classId);
+        if (!row) return;
+        const form = event.target;
+        const mode = form.elements.mode.value === "set" ? "set" : "add";
+        const amount = parseDollars(form.elements.budget.value);
+        if (amount.error || amount.empty) { setStatus("group-budget-status", "Amount per student " + (amount.error || "is required") + ".", "error"); return; }
+        const total = parseDollars(form.elements.class_budget.value);
+        if (total.error) { setStatus("group-budget-status", "New class total " + total.error + ".", "error"); return; }
+        const groups = ((classState.detail && classState.detail.groups) || []).filter((group) => group.status !== "revoked");
+        if (!groups.length) { setStatus("group-budget-status", "There are no students to change yet.", "error"); return; }
+        const request = { class_id: classId, mode, budget_microcents: amount.value };
+        if (!total.empty) request.class_budget_microcents = total.value;
+        const change = mode === "set" ? "Set every student's allocation to " + money(amount.value) : "Add " + money(amount.value) + " to every student's allocation";
+        setStatus("group-budget-status", "", "");
+        askInline("group-budget-confirm", change + " (" + number(groups.length) + " students in " + row.name + ")" + (total.empty ? "" : " and set the class total to " + money(total.value)) + "?", () => {
+          if (classState.selected !== classId) return undefined;
+          return runClassAction("group-budget-status", async () => {
+            const result = await dashboardPost("groups/budget-bulk", request);
+            form.reset();
+            await Promise.all([loadClasses(), loadGroups(), loadUsage()]);
+            const updated = Array.isArray(result.groups) ? result.groups : [];
+            const sum = updated.reduce((acc, group) => acc + BigInt(group.budget_microcents), 0n);
+            const classRow = classState.classes.find((item) => item.id === classId);
+            if (classRow && classState.selected === classId) set("class-detail-meta", classMeta(classRow));
+            const classTotal = result.class_budget_microcents ?? (classRow ? classRow.budget_microcents : null);
+            const parts = [(mode === "set" ? "Set " : "Topped up ") + number(updated.length) + " student allocation(s)" + (mode === "set" ? " to " + money(amount.value) : " by " + money(amount.value)) + "."];
+            if (result.class_budget_microcents !== undefined) parts.push("Class total is now " + money(result.class_budget_microcents) + ".");
+            if ((result.skipped || []).length) parts.push(number(result.skipped.length) + " skipped.");
+            if (classTotal !== null && sum > BigInt(classTotal)) parts.push("Allocations now add up to " + money(sum) + ", more than the class total of " + money(classTotal) + "; the class total is reached first.");
+            return parts.join(" ");
+          }, classId);
+        });
       });
       document.getElementById("class-secret-clear").addEventListener("click", clearSecret);
       window.addEventListener("pagehide", clearSecret);
@@ -2063,6 +2751,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         document.body.classList.add("loading");
         clearResult();
         clearSecret();
+        clearKit();
         adminPanel.hidden = true;
         status.className = "";
         status.textContent = "Loading metadata…";
@@ -2080,6 +2769,8 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           const session = await sessionResponse.json();
           set("role-label", session.role === "admin" ? "Admin" : "Read-only");
           if (session.role === "admin") {
+            gatewayConfig = session.gateway && typeof session.gateway === "object" ? session.gateway : { public_url: null, status: "unset" };
+            renderGatewayNote();
             set("admin-identity", "Signed in as " + session.email);
             document.getElementById("admin-limit").hidden = !session.admins_truncated;
             renderTable("admin-members", [{ label: "Email", value: "email" }, { label: "Role", value: (row) => row.enabled ? "Admin" : "Viewer (revoked)", pill: true }], session.admins);
