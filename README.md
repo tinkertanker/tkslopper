@@ -105,7 +105,7 @@ pnpm audit --audit-level=high
 
 ## Deployment
 
-Deployment is deliberately not automated from this repository. Follow [the production roadmap and decision register](docs/production-decisions.md), [canary plan](docs/canary-plan.md), and [deployment runbook](docs/runbooks/deployment.md), and obtain separate authorization before creating or changing infrastructure. Secrets must be supplied with `wrangler secret put`; never place them in Wrangler vars or committed files.
+Deployment is deliberately not automated from this repository. For a first operator-run deployment, follow [the first deployment runbook](docs/runbooks/first-deploy.md). Follow [the production roadmap and decision register](docs/production-decisions.md), [canary plan](docs/canary-plan.md), and [deployment runbook](docs/runbooks/deployment.md), and obtain separate authorization before creating or changing infrastructure. Secrets must be supplied with `wrangler secret put`; never place them in Wrangler vars or committed files.
 
 ## Security
 
