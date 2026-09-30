@@ -46,6 +46,8 @@ export type ControlPlaneEnv = {
   CREDENTIAL_PEPPER: string;
   ADMIN_TOKEN: string;
   DASHBOARD_ACCESS_AUD?: string;
+  /** Optional https origin of the gateway, printed on student cards. */
+  GATEWAY_PUBLIC_URL?: string;
   TOKEN_ISSUER: string;
   DEPLOYMENT_ENV: string;
   ENABLE_DEV_ISSUER: string;

@@ -24,6 +24,7 @@ type EnvironmentRow = {
   enabled: number;
   kill_switch: number;
   policy_version: number;
+  token_ttl_seconds: number;
   rpm_limit: number;
   tpm_limit: number;
   concurrency_limit: number;
@@ -101,7 +102,7 @@ export const DASHBOARD_STALE_DETAIL_LIMIT = 50;
 export const DASHBOARD_ENVIRONMENTS_SQL = `WITH selected_environments AS (
   SELECT e.id, e.product_id, e.name, e.audience,
          p.enabled AS product_enabled, p.kill_switch AS product_kill_switch,
-         e.enabled, e.kill_switch, e.policy_version, e.rpm_limit, e.tpm_limit,
+         e.enabled, e.kill_switch, e.policy_version, e.token_ttl_seconds, e.rpm_limit, e.tpm_limit,
          e.concurrency_limit, e.daily_budget_microcents, e.max_request_bytes
     FROM environments e
     JOIN products p ON p.id = e.product_id
