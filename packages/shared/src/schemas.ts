@@ -353,29 +353,53 @@ export const productCreateSchema = z
   .object({ slug: identifierSchema, display_name: z.string().min(1).max(200) })
   .strict();
 
+const tokenTtlSecondsSchema = z.number().int().min(60).max(3600);
+const environmentRpmLimitSchema = z.number().int().min(1).max(100_000);
+const environmentTpmLimitSchema = z.number().int().min(1).max(100_000_000);
+const environmentConcurrencyLimitSchema = z.number().int().min(1).max(1000);
+const environmentDailyBudgetSchema = z
+  .number()
+  .int()
+  .min(0)
+  .max(1_000_000_000_000_000);
+const maxRequestBytesSchema = z.number().int().min(1024).max(10_485_760);
+
+// Defaults are sized for one class of about 30 students sharing an
+// environment; per-group classroom limits narrow them further.
 export const environmentCreateSchema = z
   .object({
     product_id: identifierSchema,
     name: identifierSchema,
     audience: z.string().min(3).max(200),
-    token_ttl_seconds: z.number().int().min(60).max(3600).default(900),
-    rpm_limit: z.number().int().min(1).max(100_000).default(30),
-    tpm_limit: z.number().int().min(1).max(100_000_000).default(100_000),
-    concurrency_limit: z.number().int().min(1).max(1000).default(2),
-    daily_budget_microcents: z
-      .number()
-      .int()
-      .min(0)
-      .max(1_000_000_000_000_000)
-      .default(1_000_000),
-    max_request_bytes: z
-      .number()
-      .int()
-      .min(1024)
-      .max(10_485_760)
-      .default(1_048_576),
+    token_ttl_seconds: tokenTtlSecondsSchema.default(900),
+    rpm_limit: environmentRpmLimitSchema.default(600),
+    tpm_limit: environmentTpmLimitSchema.default(2_000_000),
+    concurrency_limit: environmentConcurrencyLimitSchema.default(20),
+    daily_budget_microcents:
+      environmentDailyBudgetSchema.default(2_000_000_000),
+    max_request_bytes: maxRequestBytesSchema.default(1_048_576),
   })
   .strict();
+
+export const environmentUpdateSchema = z
+  .object({
+    product_id: identifierSchema,
+    environment_id: identifierSchema,
+    token_ttl_seconds: tokenTtlSecondsSchema.optional(),
+    rpm_limit: environmentRpmLimitSchema.optional(),
+    tpm_limit: environmentTpmLimitSchema.optional(),
+    concurrency_limit: environmentConcurrencyLimitSchema.optional(),
+    daily_budget_microcents: environmentDailyBudgetSchema.optional(),
+    max_request_bytes: maxRequestBytesSchema.optional(),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      Object.keys(value).some(
+        (key) => key !== "product_id" && key !== "environment_id",
+      ),
+    { message: "at least one environment setting is required" },
+  );
 
 export const aliasUpsertSchema = z
   .object({

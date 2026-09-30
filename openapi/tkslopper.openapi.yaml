@@ -223,6 +223,13 @@ paths:
       tags: [Grants]
       operationId: activateAccessCode
       summary: Bootstrap a pseudonymous device activation and short-lived grant
+      description: >-
+        The access-code secret is always verified. A wrong secret returns 401
+        and increments a bounded failure record, but never locks out the
+        correct secret, so already-activated devices can keep renewing.
+        Classroom join codes also return 403 while their class is paused or
+        revoked, their group is paused or revoked, or the class/group schedule
+        is not active.
       security: []
       requestBody:
         required: true
@@ -252,7 +259,7 @@ components:
       description: >-
         High-entropy classroom group API key, used directly at the gateway.
         All keys and activated devices for a group share its allocation and
-        the class total budget. Class/group schedules, pause, model policy and
+        the class total budget. Class/group schedules, class/group pause, model policy and
         revocation are checked on every request. Rotation does not reset spend.
         Join codes are separate credentials used only with /v1/activations.
     serviceCredential:

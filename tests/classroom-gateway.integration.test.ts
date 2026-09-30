@@ -547,6 +547,56 @@ describe("classroom authorization", () => {
     expect((await SELF.fetch(chatRequest(groupKeyAlpha))).status).toBe(403);
   });
 
+  it("applies reversible group pause to an already-issued grant and a valid key", async () => {
+    const token = await classroomGrant();
+    expect((await SELF.fetch(chatRequest(token))).status).toBe(200);
+    await env.DB.prepare(
+      "UPDATE classroom_groups SET paused_at = ? WHERE id = ?",
+    )
+      .bind(now(), GROUP)
+      .run();
+    const pausedGrant = await SELF.fetch(chatRequest(token));
+    expect(pausedGrant.status).toBe(403);
+    expect(await pausedGrant.json()).toMatchObject({
+      error: { message: "classroom group is paused" },
+    });
+    expect((await SELF.fetch(chatRequest(groupKeyAlpha))).status).toBe(403);
+    await env.DB.prepare(
+      "UPDATE classroom_groups SET paused_at = NULL WHERE id = ?",
+    )
+      .bind(GROUP)
+      .run();
+    expect((await SELF.fetch(chatRequest(token))).status).toBe(200);
+    expect((await SELF.fetch(chatRequest(groupKeyAlpha))).status).toBe(200);
+  });
+
+  it("requires the group pause column in gateway readiness", async () => {
+    const healthRequest = () =>
+      new Request("https://gateway.example.invalid/healthz");
+    const configured = classroomUpstreamEnv();
+    expect((await handleGateway(healthRequest(), configured)).status).toBe(200);
+    const realDb = configured.DB;
+    const withoutPause = {
+      prepare(sql: string) {
+        const statement = realDb.prepare(sql);
+        return {
+          first: async () => ({
+            ...(await statement.first<Record<string, unknown>>()),
+            group_paused_column: 0,
+          }),
+        };
+      },
+    } as unknown as D1Database;
+    expect(
+      (
+        await handleGateway(healthRequest(), {
+          ...configured,
+          DB: withoutPause,
+        })
+      ).status,
+    ).toBe(500);
+  });
+
   it("enforces the effective class and group schedule on an existing grant", async () => {
     const token = await classroomGrant();
     const future = now() + 3600;

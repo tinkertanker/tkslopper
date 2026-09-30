@@ -1507,13 +1507,16 @@ export async function handleGateway(
                   (SELECT COUNT(*) FROM pragma_table_info('access_codes')
                     WHERE name = 'classroom_group_id') AS access_code_classroom_group,
                   (SELECT COUNT(*) FROM pragma_table_info('provider_attempts')
-                    WHERE name = 'classroom_group_id') AS attempt_classroom_group
+                    WHERE name = 'classroom_group_id') AS attempt_classroom_group,
+                  (SELECT COUNT(*) FROM pragma_table_info('classroom_groups')
+                    WHERE name = 'paused_at') AS group_paused_column
              FROM schema_metadata WHERE key = 'schema_version'`,
         ).first<{
           value: string;
           classroom_tables: number;
           access_code_classroom_group: number;
           attempt_classroom_group: number;
+          group_paused_column: number;
         }>(),
         quota.fetch("https://quota.internal/healthz", {
           signal: controller.signal,
@@ -1530,6 +1533,7 @@ export async function handleGateway(
         schema.classroom_tables !== 3 ||
         schema.access_code_classroom_group !== 1 ||
         schema.attempt_classroom_group !== 1 ||
+        schema.group_paused_column !== 1 ||
         quotaBody?.status !== "ok" ||
         quotaBody.protocolVersion !== QUOTA_PROTOCOL_VERSION
       ) {

@@ -1573,6 +1573,283 @@ describe("product environment integrity", () => {
   });
 });
 
+describe("environment settings", () => {
+  type EnvironmentSettings = {
+    id: string;
+    product_id: string;
+    policy_version: number;
+    enabled: boolean;
+    kill_switch: boolean;
+    token_ttl_seconds: number;
+    rpm_limit: number;
+    tpm_limit: number;
+    concurrency_limit: number;
+    daily_budget_microcents: number;
+    max_request_bytes: number;
+  };
+
+  it("creates environments with classroom-sized defaults", async () => {
+    const response = await admin("/admin/v1/environments", {
+      product_id: "prod_control",
+      name: "classroom",
+      audience: "control:classroom",
+    });
+    expect(response.status, await response.clone().text()).toBe(201);
+    const created = await response.json<{ id: string }>();
+    const row = await env.DB.prepare(
+      `SELECT token_ttl_seconds, rpm_limit, tpm_limit, concurrency_limit,
+              daily_budget_microcents, max_request_bytes
+         FROM environments WHERE id = ?`,
+    )
+      .bind(created.id)
+      .first();
+    expect(row).toEqual({
+      token_ttl_seconds: 900,
+      rpm_limit: 600,
+      tpm_limit: 2_000_000,
+      concurrency_limit: 20,
+      daily_budget_microcents: 2_000_000_000,
+      max_request_bytes: 1_048_576,
+    });
+  });
+
+  it("writes only supplied limits, bumps the policy version, and audits", async () => {
+    const response = await admin("/admin/v1/environments/update", {
+      product_id: "prod_control",
+      environment_id: "env_control",
+      rpm_limit: 900,
+      daily_budget_microcents: 5_000_000_000,
+    });
+    expect(response.status, await response.clone().text()).toBe(200);
+    const updated = await response.json<EnvironmentSettings>();
+    expect(updated).toMatchObject({
+      id: "env_control",
+      product_id: "prod_control",
+      name: "test",
+      audience: "control:test",
+      enabled: true,
+      kill_switch: false,
+      policy_version: 2,
+      token_ttl_seconds: 900,
+      rpm_limit: 900,
+      tpm_limit: 100_000,
+      concurrency_limit: 2,
+      daily_budget_microcents: 5_000_000_000,
+      max_request_bytes: 1_048_576,
+    });
+    const again = await admin("/admin/v1/environments/update", {
+      product_id: "prod_control",
+      environment_id: "env_control",
+      token_ttl_seconds: 600,
+      tpm_limit: 3_000_000,
+      concurrency_limit: 30,
+      max_request_bytes: 2048,
+    });
+    expect(await again.json()).toMatchObject({
+      policy_version: 3,
+      token_ttl_seconds: 600,
+      rpm_limit: 900,
+      tpm_limit: 3_000_000,
+      concurrency_limit: 30,
+      daily_budget_microcents: 5_000_000_000,
+      max_request_bytes: 2048,
+    });
+    const audits = await env.DB.prepare(
+      `SELECT action, resource_type, resource_id FROM admin_audit
+        WHERE resource_type = 'environment'`,
+    ).all();
+    expect(audits.results).toEqual([
+      {
+        action: "update",
+        resource_type: "environment",
+        resource_id: "env_control",
+      },
+      {
+        action: "update",
+        resource_type: "environment",
+        resource_id: "env_control",
+      },
+    ]);
+  });
+
+  it("rejects empty, unknown, out-of-bounds, and mismatched updates", async () => {
+    const base = { product_id: "prod_control", environment_id: "env_control" };
+    for (const body of [
+      base,
+      { ...base, name: "renamed" },
+      { ...base, audience: "control:other" },
+      { ...base, rpm_limit: 0 },
+      { ...base, rpm_limit: 100_001 },
+      { ...base, tpm_limit: 100_000_001 },
+      { ...base, concurrency_limit: 1001 },
+      { ...base, token_ttl_seconds: 59 },
+      { ...base, max_request_bytes: 1023 },
+      { ...base, daily_budget_microcents: -1 },
+    ]) {
+      const response = await admin("/admin/v1/environments/update", body);
+      expect(response.status, JSON.stringify(body)).toBe(400);
+    }
+    for (const body of [
+      { ...base, environment_id: "env_missing", rpm_limit: 10 },
+      { ...base, product_id: "prod_missing", rpm_limit: 10 },
+    ]) {
+      const response = await admin("/admin/v1/environments/update", body);
+      expect(response.status, JSON.stringify(body)).toBe(404);
+    }
+    const row = await env.DB.prepare(
+      "SELECT policy_version, rpm_limit FROM environments WHERE id = 'env_control'",
+    ).first();
+    expect(row).toEqual({ policy_version: 1, rpm_limit: 30 });
+    const audits = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM admin_audit",
+    ).first<{ count: number }>();
+    expect(audits).toEqual({ count: 0 });
+    expect(
+      (
+        await handleControlPlane(
+          request("/admin/v1/environments/update", { ...base, rpm_limit: 10 }),
+          controlEnv,
+        )
+      ).status,
+    ).toBe(401);
+  });
+
+  it("rolls back an environment update when audit insertion fails", async () => {
+    await env.DB.prepare(
+      `CREATE TRIGGER fail_admin_audit
+       BEFORE INSERT ON admin_audit
+       BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END`,
+    ).run();
+    try {
+      const response = await admin("/admin/v1/environments/update", {
+        product_id: "prod_control",
+        environment_id: "env_control",
+        rpm_limit: 900,
+      });
+      expect(response.status).toBe(500);
+      const row = await env.DB.prepare(
+        "SELECT policy_version, rpm_limit FROM environments WHERE id = 'env_control'",
+      ).first();
+      expect(row).toEqual({ policy_version: 1, rpm_limit: 30 });
+    } finally {
+      await env.DB.prepare("DROP TRIGGER fail_admin_audit").run();
+    }
+  });
+
+  it("exposes environment IDs and limits to the dashboard overview", async () => {
+    await admin("/admin/v1/environments/update", {
+      product_id: "prod_control",
+      environment_id: "env_control",
+      rpm_limit: 900,
+    });
+    const response = await handleControlPlane(
+      get("/admin/v1/dashboard"),
+      controlEnv,
+      dashboardContext,
+    );
+    expect(response.status).toBe(200);
+    const overview = await response.json<{
+      environments: Record<string, unknown>[];
+    }>();
+    expect(overview.environments[0]).toMatchObject({
+      id: "env_control",
+      product_id: "prod_control",
+      policy_version: 2,
+      rpm_limit: 900,
+      tpm_limit: 100_000,
+      concurrency_limit: 2,
+      daily_budget_microcents: 1_000_000,
+      max_request_bytes: 1_048_576,
+    });
+  });
+});
+
+describe("duplicate admin names", () => {
+  it("maps duplicate product slugs and environment names to 409", async () => {
+    const product = await admin("/admin/v1/products", {
+      slug: "control-fixture",
+      display_name: "Duplicate",
+    });
+    expect(product.status).toBe(409);
+    expect(await product.json()).toMatchObject({
+      error: {
+        code: "conflict",
+        message: "a product with that slug already exists",
+      },
+    });
+    for (const body of [
+      { product_id: "prod_control", name: "test", audience: "control:fresh" },
+      { product_id: "prod_control", name: "fresh", audience: "control:test" },
+    ]) {
+      const response = await admin("/admin/v1/environments", body);
+      expect(response.status, JSON.stringify(body)).toBe(409);
+      expect(await response.json()).toMatchObject({
+        error: { code: "conflict" },
+      });
+    }
+    const counts = await env.DB.prepare(
+      `SELECT (SELECT COUNT(*) FROM products) AS products,
+              (SELECT COUNT(*) FROM environments) AS environments,
+              (SELECT COUNT(*) FROM admin_audit) AS audits`,
+    ).first();
+    expect(counts).toEqual({ products: 1, environments: 1, audits: 0 });
+  });
+});
+
+describe("access-code failed attempts", () => {
+  it("never locks a correct secret out, for new or already-activated devices", async () => {
+    const created = await admin("/admin/v1/access-codes", {
+      product_id: "prod_control",
+      environment_id: "env_control",
+      tenant_id: "classroom_fixture",
+      capabilities: ["text.chat.v1"],
+      expires_at: now() + 3600,
+      max_activations: 5,
+      max_failed_attempts: 3,
+    });
+    expect(created.status).toBe(201);
+    const code = await created.json<{ id: string; access_code: string }>();
+    const activate = (accessCode: string, device: string) =>
+      handleControlPlane(
+        request("/v1/activations", {
+          access_code: accessCode,
+          device_id: device,
+        }),
+        controlEnv,
+      );
+    expect(
+      (await activate(code.access_code, "public-fixture-device-a")).status,
+    ).toBe(200);
+
+    const wrongSecret = `tkac_${code.id}_${"A".repeat(43)}`;
+    for (let attempt = 0; attempt < 10; attempt += 1)
+      expect(
+        (await activate(wrongSecret, `public-fixture-attacker-${attempt}`))
+          .status,
+      ).toBe(401);
+    // The failure record stays bounded by the configured maximum.
+    expect(
+      await env.DB.prepare(
+        "SELECT failed_attempts FROM access_codes WHERE id = ?",
+      )
+        .bind(code.id)
+        .first("failed_attempts"),
+    ).toBe(3);
+
+    const renewal = await activate(code.access_code, "public-fixture-device-a");
+    expect(renewal.status, await renewal.clone().text()).toBe(200);
+    const fresh = await activate(code.access_code, "public-fixture-device-b");
+    expect(fresh.status, await fresh.clone().text()).toBe(200);
+    expect(
+      await env.DB.prepare(
+        "SELECT activation_count FROM access_codes WHERE id = ?",
+      )
+        .bind(code.id)
+        .first("activation_count"),
+    ).toBe(2);
+  });
+});
+
 describe("atomic admin auditing", () => {
   it("rolls back one-time credential state when audit insertion fails", async () => {
     await env.DB.prepare(

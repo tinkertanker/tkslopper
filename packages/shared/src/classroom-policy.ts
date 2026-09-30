@@ -47,6 +47,7 @@ type ClassroomPolicyRow = {
   group_id: string;
   class_id: string;
   group_status: string;
+  group_paused_at: number | null;
   group_capabilities_json: string | null;
   group_budget_microcents: number;
   group_daily_budget_microcents: number | null;
@@ -116,7 +117,7 @@ export function intersectClassroomCapabilities(
 
 /**
  * Loads and normalizes live classroom policy for a group, or throws an
- * `HttpError`. Status, schedule, capabilities, limits, and budgets are all
+ * `HttpError`. Status, group pause, schedule, capabilities, limits, and budgets are all
  * enforced here so every caller fails closed on the same conditions.
  *
  * `enforceSchedule: false` still normalizes the policy but skips the
@@ -132,6 +133,7 @@ export async function loadClassroomPolicy(
   const row = await db
     .prepare(
       `SELECT g.id AS group_id, g.class_id, g.status AS group_status,
+              g.paused_at AS group_paused_at,
               g.capabilities_json AS group_capabilities_json,
               g.budget_microcents AS group_budget_microcents,
               g.daily_budget_microcents AS group_daily_budget_microcents,
@@ -160,6 +162,12 @@ export async function loadClassroomPolicy(
     );
   if (row.class_status !== "active" || row.group_status !== "active")
     throw new HttpError(403, "authorization_failed", "classroom is not active");
+  if (row.group_paused_at !== null)
+    throw new HttpError(
+      403,
+      "authorization_failed",
+      "classroom group is paused",
+    );
   const classStartsAt = requireClassroomInteger(
     row.class_starts_at,
     "class start",

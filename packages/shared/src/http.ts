@@ -22,6 +22,21 @@ export class HttpError extends Error {
   }
 }
 
+/**
+ * True for a D1/SQLite UNIQUE constraint failure, so a caller can map a known
+ * duplicate-name write to 409 instead of an opaque 500.
+ */
+export function isUniqueConstraintError(error: unknown): boolean {
+  for (
+    let current: unknown = error, depth = 0;
+    current instanceof Error && depth < 3;
+    current = current.cause, depth += 1
+  ) {
+    if (current.message.includes("UNIQUE constraint failed")) return true;
+  }
+  return false;
+}
+
 export function jsonResponse(
   body: unknown,
   status = 200,

@@ -197,6 +197,10 @@ async function stageForwardMigration(
     resolve("db/migrations/0004_classrooms.sql"),
     join(migrationsDirectory, "0004_classrooms.sql"),
   );
+  await copyFile(
+    resolve("db/migrations/0005_classroom_group_pause.sql"),
+    join(migrationsDirectory, "0005_classroom_group_pause.sql"),
+  );
 }
 
 async function checkCurrentSchema(rootDirectory: string): Promise<void> {
@@ -389,6 +393,10 @@ async function checkLegacyUpgrade(rootDirectory: string): Promise<void> {
        (SELECT COUNT(*) FROM classroom_group_keys) AS classroom_group_keys,
        (SELECT COUNT(*) FROM access_codes WHERE classroom_group_id IS NULL) AS legacy_access_codes,
        (SELECT COUNT(*) FROM provider_attempts WHERE classroom_group_id IS NULL) AS legacy_attempts,
+       (SELECT COUNT(*) FROM pragma_table_info('classroom_groups')
+         WHERE name = 'paused_at' AND "notnull" = 0) AS group_paused_columns,
+       (SELECT COUNT(*) FROM pragma_table_info('classroom_group_keys')
+         WHERE name = 'key_hint' AND "notnull" = 0) AS group_key_hint_columns,
        (SELECT COUNT(*) FROM pragma_table_info('idempotency_keys')
          WHERE name = 'request_hash') AS request_hash_columns,
        (SELECT request_id FROM idempotency_keys
@@ -443,6 +451,8 @@ async function checkLegacyUpgrade(rootDirectory: string): Promise<void> {
     classroom_group_keys: 0,
     legacy_access_codes: 1,
     legacy_attempts: 2,
+    group_paused_columns: 1,
+    group_key_hint_columns: 1,
     request_hash_columns: 0,
     idempotency_request_id: "legacy-request",
     stale_after_offset: 0,
