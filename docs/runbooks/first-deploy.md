@@ -105,7 +105,7 @@ Both health checks must return `"status":"ok"`. A 500 usually means a missing se
 
 ## 6. Protect the dashboard with Cloudflare Access
 
-In Cloudflare Zero Trust, create one self-hosted Access application covering **both** `<control-plane host>/dashboard*` and `<control-plane host>/admin/v1/dashboard`, with an allow policy listing your operators' emails. (On `workers.dev` you can instead enable Access from the Worker's settings.) Copy the application's audience (AUD) tag into `DASHBOARD_ACCESS_AUD` in `deploy/control-plane.jsonc` and deploy the control plane again.
+In Cloudflare Zero Trust, create one self-hosted Access application covering **both** `<control-plane host>/dashboard*` and `<control-plane host>/admin/v1/dashboard`, with an allow policy listing your operators' emails. Use a path-scoped application on `workers.dev` too. Do not enable Access from the Worker's settings: that protects every route, including the `/v1/activations` join-code route students use. Copy the application's audience (AUD) tag into `DASHBOARD_ACCESS_AUD` in `deploy/control-plane.jsonc` and deploy the control plane again.
 
 Do not add a bypass policy. Only `/dashboard*` and `/admin/v1/dashboard` are behind Access; the rest of `/admin/v1/*` requires `ADMIN_TOKEN`.
 

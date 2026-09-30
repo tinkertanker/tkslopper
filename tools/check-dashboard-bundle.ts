@@ -8,7 +8,6 @@
  * served inline script contains that wrapper, does not compile, or its money
  * helpers give wrong answers.
  */
-import { pathToFileURL } from "node:url";
 import { Script, createContext } from "node:vm";
 
 type ControlPlaneModule = {
@@ -25,9 +24,7 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-const module = (await import(
-  pathToFileURL(bundle.pathname).href
-)) as ControlPlaneModule;
+const module = (await import(bundle.href)) as ControlPlaneModule;
 
 // Synthetic, public values: only configuration shape is checked for this route.
 const env = {

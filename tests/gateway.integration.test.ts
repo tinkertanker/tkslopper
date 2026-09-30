@@ -997,8 +997,10 @@ describe("Stage 0 failure-path accounting", () => {
       expect(attempt!.stale_after - attempt!.created_at).toBe(40);
       const quota = await quotaState();
       expect(quota.reservations).toEqual({});
-      expect(quota.spentTodayMicrocents).toBeLessThanOrEqual(
-        attempt!.cost_microcents,
+      // The ledger settled at the fixture's reported usage (8 input and 3
+      // output tokens); only the D1 projection kept its reservation ceiling.
+      expect(quota.spentTodayMicrocents).toBe(
+        costMicrocents(8, 1000) + costMicrocents(3, 2000),
       );
       expect(
         (
