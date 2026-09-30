@@ -2036,6 +2036,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       // secret the operator has not read yet.
       function setCredentialPending(pending) {
         credentialPending = pending;
+        document.getElementById("class-issue-all").disabled = pending;
         renderGroups();
         renderKeys();
       }
