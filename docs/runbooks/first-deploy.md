@@ -44,7 +44,7 @@ In `deploy/control-plane.jsonc` also:
 
 - delete the whole `"access"` block (it only simulates Access locally);
 - set `"DASHBOARD_ACCESS_AUD"` to `"pending"` for now; step 6 replaces it;
-- set `"GATEWAY_PUBLIC_URL"` to the gateway origin, for example `"https://tkslopper-gateway.<subdomain>.workers.dev"`, so student cards show the right base URL;
+- set `"GATEWAY_PUBLIC_URL"` to the gateway origin (no `/v1` or other path), for example `"https://tkslopper-gateway.<subdomain>.workers.dev"`, so student cards show the right base URL;
 - keep `"ENABLE_DEV_ISSUER": "false"`.
 
 In `deploy/gateway.jsonc` replace `PROVIDER_ROUTES_JSON` with one real route. It must be a JSON string; the fixture routes are refused in production. For OpenAI:

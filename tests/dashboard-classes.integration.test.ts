@@ -337,6 +337,24 @@ describe("course-centred dashboard UI", () => {
 });
 
 describe("teacher class kit", () => {
+  it("runs class creation once at a time and only issues keys into an open class", async () => {
+    const html = await pageHtml();
+
+    expect(html).toContain("if (creatingClass) return;");
+    expect(html).toContain("setCreateBusy(true);");
+    expect(html).toContain("setCreateBusy(false);");
+    expect(html).toContain("async function openCreatedClass(id)");
+    expect(html).toContain("so no keys were issued");
+    // An unused roster survives a failure; the kit survives reopening its class.
+    expect(html).toContain("Your student list is still in the Students box");
+    expect(html).toContain("if (kitState.classId !== id) clearKit();");
+    // A bulk budget change refreshes the edit form's class total.
+    expect(html).toContain(
+      'renderFieldSet(document.getElementById("class-edit-fields"), CLASS_FIELDS, classRow);',
+    );
+    expect(html).toContain('" (class timezone invalid)"');
+  });
+
   it("enters and shows money in US dollars, converting exactly to integer microcents", async () => {
     const html = await pageHtml();
 
@@ -354,13 +372,12 @@ describe("teacher class kit", () => {
     }
     expect(html).not.toContain("(μ¢, shared by all groups)");
     expect(html).not.toContain('"Daily budget (microcents)"');
-    // Conversion is decimal-string and BigInt based, never floating point.
-    expect(html).toContain("const MICROCENTS_PER_DOLLAR = 100000000n;");
+    // Conversion rules are unit-tested in dashboard-money.test.ts; the page embeds
+    // those exact functions and routes every dollar display through them.
+    expect(html).toContain("const parseDollars = (");
     expect(html).toContain(
-      'BigInt(match[1] || "0") * MICROCENTS_PER_DOLLAR + BigInt(fraction.padEnd(8, "0"))',
+      "const money = (value) => formatDollars(value, true);",
     );
-    expect(html).toContain('return { error: "must not be negative" };');
-    expect(html).toContain("can have at most 8 decimal places");
     // Operator diagnostics keep microcents.
     expect(html).toContain(
       '{ label: "Cost ceiling", value: "cost_microcents", format: cost }',
@@ -388,9 +405,15 @@ describe("teacher class kit", () => {
     expect(html).toContain('id="class-issue-all"');
     // Bulk issuance is confirmed in the page, not with a blocking dialog.
     expect(html).toContain(
-      '<div class="confirm-bar" id="class-issue-confirm" hidden>',
+      '<div class="confirm-bar" id="class-issue-confirm" role="group" aria-labelledby="class-issue-confirm-text" hidden>',
     );
     expect(html).toContain('askInline("class-issue-confirm"');
+    // Focus returns to the control that opened a confirmation.
+    expect(html).toContain("pending.trigger.focus()");
+    // Re-issuing warns before clearing keys that are still on screen.
+    expect(html).toContain(
+      "keys currently shown in the class kit will be cleared",
+    );
     // Guardrails are shown next to class limits, with a warning when exceeded.
     expect(html).toContain("is above the environment guardrail of");
     expect(html).toContain(
@@ -416,15 +439,23 @@ describe("teacher class kit", () => {
     }
     expect(html).toContain('[["name", "key", "base_url", "models"]]');
     // Spreadsheet formula injection is neutralised in exported names.
+    expect(html).toContain("const csvCell = (");
+    expect(html).toContain("row.map(csvCell)");
+    // Keys never repeat in a tooltip.
     expect(html).toContain(
-      'if (/^[=+\\-@\\t\\r]/.test(text)) text = "\'" + text;',
+      '{ label: "API key", value: "apiKey", secret: true }',
     );
+    expect(html).toContain("if (!column.secret) cell.title");
+    expect(html).toContain("printing the page (including Ctrl+P or Cmd+P)");
     // Cards print on their own and carry the OpenAI-compatible snippets.
     expect(html).toContain("@media print");
     expect(html).toContain("body.print-kit .app { display: none; }");
     expect(html).toContain('"from openai import OpenAI"');
     expect(html).toContain("client.chat.completions.create(");
-    expect(html).toContain('"curl " + base + "/chat/completions');
+    // Aliases without Chat Completions get a Responses example instead.
+    expect(html).toContain("client.responses.create(");
+    expect(html).toContain('(responses ? "/responses" : "/chat/completions")');
+    expect(html).toContain("option.alias_endpoints");
     expect(html).toContain(
       'const GATEWAY_MISSING = "<gateway URL not configured>";',
     );

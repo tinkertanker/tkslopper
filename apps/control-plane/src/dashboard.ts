@@ -1,5 +1,6 @@
 import { jsonResponse, randomSecret } from "@tkslopper/shared";
 import { requireAccessEmail } from "./admin-access";
+import { csvCell, formatDollars, parseDollars } from "./dashboard-money";
 
 export type DashboardEnv = {
   DB: D1Database;
@@ -777,8 +778,8 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
                   <button id="class-duplicate" type="button">Duplicate configuration</button>
                   <button id="class-detail-refresh" type="button">Refresh groups and usage</button>
                 </div>
-                <div class="confirm-bar" id="class-issue-confirm" hidden>
-                  <p></p>
+                <div class="confirm-bar" id="class-issue-confirm" role="group" aria-labelledby="class-issue-confirm-text" hidden>
+                  <p id="class-issue-confirm-text"></p>
                   <div class="action-row">
                     <button type="button" data-confirm="yes">Issue keys</button>
                     <button type="button" class="quiet" data-confirm="no">Cancel</button>
@@ -788,7 +789,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
 
                 <div id="class-kit" hidden>
                   <h3 id="class-kit-heading">Class kit</h3>
-                  <p class="kit-warning">Copy, download or print these keys now: each is shown once and cannot be retrieved later. Keep them out of tickets, logs and browser storage. Clearing, refreshing or leaving this page removes them from the screen.</p>
+                  <p class="kit-warning">Copy, download or print these keys now: each is shown once and cannot be retrieved later. Keep them out of tickets, logs and browser storage. While this kit is shown, printing the page (including Ctrl+P or Cmd+P) prints every student's card and key. Clearing, refreshing or leaving this page removes them from the screen.</p>
                   <p id="class-kit-gateway" class="field-note warn" hidden></p>
                   <p id="class-kit-summary" class="status-line ok"></p>
                   <div class="action-row">
@@ -853,8 +854,8 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
                     <p class="field-note">Applies to every group that is not revoked, including paused ones. Allocations are lifetime caps; the class total still caps everyone together, so raise it too if students would otherwise share too little.</p>
                     <button id="group-budget-submit" type="submit">Review budget change</button>
                   </form>
-                  <div class="confirm-bar" id="group-budget-confirm" hidden>
-                    <p></p>
+                  <div class="confirm-bar" id="group-budget-confirm" role="group" aria-labelledby="group-budget-confirm-text" hidden>
+                    <p id="group-budget-confirm-text"></p>
                     <div class="action-row">
                       <button type="button" data-confirm="yes">Apply to every student</button>
                       <button type="button" class="quiet" data-confirm="no">Cancel</button>
@@ -991,49 +992,19 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       const set = (id, value) => { document.getElementById(id).textContent = String(value); };
 
       // Teachers read and enter money in US dollars; the API stores integer microcents.
-      // 1 US dollar = 100,000,000 μ¢, so any amount with at most eight decimal places
-      // converts exactly. Conversion works on the decimal string and BigInt, never floats.
-      const MICROCENTS_PER_DOLLAR = 100000000n;
-      function dollarParts(value) {
-        let amount;
-        try { amount = BigInt(String(value ?? 0)); } catch { return null; }
-        const negative = amount < 0n;
-        if (negative) amount = -amount;
-        let fraction = (amount % MICROCENTS_PER_DOLLAR).toString().padStart(8, "0").replace(/0+$/, "");
-        if (fraction.length < 2) fraction = fraction.padEnd(2, "0");
-        return { negative, whole: amount / MICROCENTS_PER_DOLLAR, fraction };
-      }
-      const money = (value) => {
-        const parts = dollarParts(value);
-        if (!parts) return String(value ?? "—");
-        return (parts.negative ? "-" : "") + "$" + new Intl.NumberFormat("en-US").format(parts.whole) + "." + parts.fraction;
-      };
+      // formatDollars, parseDollars and csvCell are embedded from dashboard-money.ts,
+      // where they are unit-tested; see that module for the exact rules.
+      __DASHBOARD_HELPERS__
+      const money = (value) => formatDollars(value, true);
       // Plain decimal for prefilling inputs, e.g. 150000000 μ¢ becomes "1.50".
-      const dollarText = (value) => {
-        const parts = dollarParts(value);
-        return parts ? (parts.negative ? "-" : "") + parts.whole.toString() + "." + parts.fraction : "";
-      };
-      function parseDollars(text) {
-        const cleaned = String(text ?? "").trim().replace(/^(?:US)?\$\s*/i, "");
-        if (cleaned === "") return { empty: true };
-        if (/^[-−]/.test(cleaned)) return { error: "must not be negative" };
-        // Thousands separators are accepted only in their proper place, so "1,5" is never read as 15.
-        const plain = /^\d{1,3}(?:,\d{3})+(?:\.\d*)?$/.test(cleaned) ? cleaned.replace(/,/g, "") : cleaned;
-        const match = /^(\d*)(?:\.(\d*))?$/.exec(plain);
-        if (!match || (match[1] === "" && !match[2])) return { error: "must be an amount in US dollars, such as 5 or 2.50" };
-        const fraction = match[2] || "";
-        if (fraction.length > 8) return { error: "can have at most 8 decimal places (1 μ¢ is $0.00000001)" };
-        const microcents = BigInt(match[1] || "0") * MICROCENTS_PER_DOLLAR + BigInt(fraction.padEnd(8, "0"));
-        if (microcents > BigInt(Number.MAX_SAFE_INTEGER)) return { error: "is too large" };
-        return { value: Number(microcents) };
-      }
+      const dollarText = (value) => formatDollars(value, false);
       // Class times are shown in the class's own IANA timezone; UTC is the fallback.
       function zonedTime(value, timeZone) {
         if (value === null || value === undefined || value === "") return "—";
         try {
           return new Intl.DateTimeFormat("en-GB", { timeZone: timeZone || "UTC", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" }).format(new Date(Number(value) * 1000));
         } catch {
-          return time(value);
+          return time(value) + " (class timezone invalid)";
         }
       }
 
@@ -1084,7 +1055,8 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
               }
               const raw = typeof column.value === "function" ? column.value(item) : item[column.value];
               const text = String(column.format ? column.format(raw) : raw ?? "—");
-              cell.title = String(raw ?? "");
+              // Secret cells (issued keys) never repeat their value in a tooltip.
+              if (!column.secret) cell.title = String(raw ?? "");
               if (column.pill) {
                 const pill = document.createElement("span");
                 const kind = pillKind(column, text);
@@ -1820,7 +1792,8 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         renderUsage();
         document.getElementById("groups-truncated").hidden = true;
         clearSecret();
-        clearKit();
+        // Reopening the class a kit belongs to keeps it; any other class clears it.
+        if (kitState.classId !== id) clearKit();
         dismissInline("class-issue-confirm");
         dismissInline("group-budget-confirm");
         document.getElementById("group-budget-form").reset();
@@ -2177,12 +2150,33 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           ...CLASS_LIMIT_DEFAULTS,
         };
       }
-      function resetCreateForm() {
+      // keepStudents leaves the roster in place when it has not been used yet, so a
+      // failure after the class was created never loses the teacher's list.
+      function resetCreateForm(keepStudents) {
         const container = document.getElementById("class-create-fields");
         renderFieldSet(container, CLASS_CREATE_FIELDS, createDefaults());
         const tenant = container.querySelector('[name="tenant_id"]');
         tenant.value = suggestedTenant(container);
-        document.getElementById("class-create-students").value = "";
+        if (!keepStudents) document.getElementById("class-create-students").value = "";
+      }
+      // The whole create → students → keys flow runs once at a time: a second click
+      // must not create a second, keyless copy of the class.
+      let creatingClass = false;
+      function setCreateBusy(busy) {
+        creatingClass = busy;
+        for (const control of document.getElementById("class-create-form").querySelectorAll("input, select, textarea, button")) control.disabled = busy;
+      }
+      // A new class must be open before its students' keys are issued, otherwise the
+      // kit would land in a hidden panel. One retry covers a transient list failure.
+      async function openCreatedClass(id) {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          await loadClasses();
+          if (classState.classes.some((row) => row.id === id)) {
+            await selectClass(id);
+            if (classState.selected === id && !document.getElementById("class-detail").hidden) return true;
+          }
+        }
+        return false;
       }
       document.getElementById("class-create-fields").addEventListener("input", (event) => {
         const container = document.getElementById("class-create-fields");
@@ -2196,25 +2190,28 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       document.getElementById("class-edit-fields").addEventListener("input", renderEditLimits);
 
       // ---- In-page confirmation bars (no blocking dialogs for bulk actions) ----
+      // Each bar remembers the control that opened it so focus returns there afterwards.
       const confirmActions = new Map();
-      function askInline(barId, message, action) {
+      function askInline(barId, message, action, trigger) {
         const bar = document.getElementById(barId);
         bar.querySelector("p").textContent = message;
-        confirmActions.set(barId, action);
+        confirmActions.set(barId, { action, trigger: trigger || null });
         bar.hidden = false;
         bar.querySelector('[data-confirm="yes"]').focus();
       }
-      function dismissInline(barId) {
+      function dismissInline(barId, restoreFocus) {
+        const pending = confirmActions.get(barId);
         confirmActions.delete(barId);
         document.getElementById(barId).hidden = true;
+        if (restoreFocus && pending && pending.trigger && pending.trigger.isConnected) pending.trigger.focus();
       }
       for (const bar of document.querySelectorAll(".confirm-bar")) {
         bar.querySelector('[data-confirm="yes"]').addEventListener("click", () => {
-          const action = confirmActions.get(bar.id);
-          dismissInline(bar.id);
-          return action ? action() : undefined;
+          const pending = confirmActions.get(bar.id);
+          dismissInline(bar.id, true);
+          return pending ? pending.action() : undefined;
         });
-        bar.querySelector('[data-confirm="no"]').addEventListener("click", () => dismissInline(bar.id));
+        bar.querySelector('[data-confirm="no"]').addEventListener("click", () => dismissInline(bar.id, true));
       }
 
       // ---- Student cards and the class kit ----
@@ -2233,29 +2230,45 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           apiKey: key.api_key,
           hint: key.key_hint || null,
           groupId: group ? group.id : key.group_id,
+          environmentId: classRow ? classRow.environment_id : "",
           models: studentModels(classRow, group),
           endsAt: ends.length ? Math.min(...ends) : null,
         };
       }
-      const snippetModel = (models) => models.find((alias) => alias.includes("chat")) || models[0] || "text.chat.v1";
-      function pythonSnippet(base, key, model) {
-        return [
-          "from openai import OpenAI",
-          "",
-          "client = OpenAI(base_url=\"" + base + "\", api_key=\"" + key + "\")",
-          "reply = client.chat.completions.create(",
-          "    model=\"" + model + "\",",
-          "    messages=[{\"role\": \"user\", \"content\": \"Hello!\"}],",
-          ")",
-          "print(reply.choices[0].message.content)",
-        ].join("\n");
+      // classes/options reports each alias's endpoints. The example prefers an alias
+      // with Chat Completions and falls back to the Responses API when the student's
+      // aliases only support that; an older control plane without endpoint data is
+      // treated as chat.
+      function aliasEndpoints(environmentId, alias) {
+        const option = classOptions && Array.isArray(classOptions.environments) ? classOptions.environments.find((item) => item.environment_id === environmentId) : null;
+        const entry = option && Array.isArray(option.alias_endpoints) ? option.alias_endpoints.find((item) => item.alias === alias) : null;
+        return entry && Array.isArray(entry.endpoints) ? entry.endpoints : null;
       }
-      function curlSnippet(base, key, model) {
+      function snippetChoice(models, environmentId) {
+        const chat = models.find((alias) => {
+          const endpoints = aliasEndpoints(environmentId, alias);
+          return endpoints ? endpoints.includes("chat") : alias.includes("chat");
+        });
+        if (chat) return { model: chat, endpoint: "chat" };
+        const responses = models.find((alias) => (aliasEndpoints(environmentId, alias) || []).includes("responses"));
+        if (responses) return { model: responses, endpoint: "responses" };
+        return { model: models[0] || "text.chat.v1", endpoint: "chat" };
+      }
+      function pythonSnippet(base, key, choice) {
+        const call = choice.endpoint === "responses"
+          ? ["reply = client.responses.create(", "    model=\"" + choice.model + "\",", "    input=\"Hello!\",", ")", "print(reply.output_text)"]
+          : ["reply = client.chat.completions.create(", "    model=\"" + choice.model + "\",", "    messages=[{\"role\": \"user\", \"content\": \"Hello!\"}],", ")", "print(reply.choices[0].message.content)"];
+        return ["from openai import OpenAI", "", "client = OpenAI(base_url=\"" + base + "\", api_key=\"" + key + "\")"].concat(call).join("\n");
+      }
+      function curlSnippet(base, key, choice) {
+        const responses = choice.endpoint === "responses";
         return [
-          "curl " + base + "/chat/completions \\",
+          "curl " + base + (responses ? "/responses" : "/chat/completions") + " \\",
           "  -H \"Authorization: Bearer " + key + "\" \\",
           "  -H \"Content-Type: application/json\" \\",
-          "  -d '{\"model\": \"" + model + "\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello!\"}]}'",
+          responses
+            ? "  -d '{\"model\": \"" + choice.model + "\", \"input\": \"Hello!\"}'"
+            : "  -d '{\"model\": \"" + choice.model + "\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello!\"}]}'",
         ].join("\n");
       }
       // Built from elements and text nodes only; nothing here is parsed as HTML.
@@ -2281,18 +2294,18 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         row("API key", entry.apiKey);
         row("Models", entry.models.join(", ") || "none approved");
         row("Works until", entry.endsAt ? zonedTime(entry.endsAt, entry.timeZone) : "—");
-        const model = snippetModel(entry.models);
+        const choice = snippetChoice(entry.models, entry.environmentId);
         const pythonTitle = document.createElement("h4");
         pythonTitle.textContent = "Python (pip install openai)";
         const python = document.createElement("pre");
-        python.textContent = pythonSnippet(base, entry.apiKey, model);
+        python.textContent = pythonSnippet(base, entry.apiKey, choice);
         const curlTitle = document.createElement("h4");
         curlTitle.textContent = "curl";
         const curl = document.createElement("pre");
-        curl.textContent = curlSnippet(base, entry.apiKey, model);
+        curl.textContent = curlSnippet(base, entry.apiKey, choice);
         const foot = document.createElement("p");
         foot.className = "card-foot";
-        foot.textContent = "Use a model name from the list above (GET " + base + "/models lists them). The Responses API is at " + base + "/responses. Keep this key private.";
+        foot.textContent = "Use a model name from the list above (GET " + base + "/models lists them). Chat Completions is at " + base + "/chat/completions and the Responses API at " + base + "/responses; each model works with the endpoints it is enabled for. Keep this key private.";
         card.append(heading, classLine, list, pythonTitle, python, curlTitle, curl, foot);
         return card;
       }
@@ -2322,7 +2335,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         setStatus("class-kit-summary", summary.join(" "), kitState.entries.length ? "ok" : "error");
         renderTable("class-kit-keys", [
           { label: "Student", value: "name", bounded: true },
-          { label: "API key", value: "apiKey" },
+          { label: "API key", value: "apiKey", secret: true },
           { label: "Ends in", value: (row) => row.hint ? "…" + row.hint : "—" },
           { label: "Models", value: (row) => row.models.join(", ") || "—" },
           { label: "Actions", buttons: (row) => [{ label: "Copy", onClick: () => copyToClipboard(row.apiKey, "class-kit-status", "Copied the key for " + row.name + ".") }] },
@@ -2354,12 +2367,6 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         setStatus("class-kit-status", "", "");
         setStatus("class-kit-summary", "", "");
       }
-      // Spreadsheet apps execute cells starting with = + - @, so such names are quoted.
-      function csvCell(value) {
-        let text = String(value ?? "");
-        if (/^[=+\-@\t\r]/.test(text)) text = "'" + text;
-        return /[",\r\n]/.test(text) ? "\"" + text.replace(/"/g, "\"\"") + "\"" : text;
-      }
       function kitCsv() {
         const rows = [["name", "key", "base_url", "models"]].concat(kitState.entries.map((entry) => [entry.name, entry.apiKey, gatewayBase(), entry.models.join(" ")]));
         return rows.map((row) => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
@@ -2388,18 +2395,26 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       async function issueKit(classId, groupIds, statusId) {
         if (credentialPending) return false;
         let issued = false;
+        const className = () => {
+          const row = classState.classes.find((item) => item.id === classId);
+          return row ? row.name : classId;
+        };
         await runCredentialAction(async () => {
           clearSecret();
           clearKit();
-          issued = await runClassAction(statusId, async () => {
+          setStatus(statusId, "Issuing keys for " + className() + "…", "");
+          try {
             const result = await dashboardPost("groups/access-bulk", groupIds ? { class_id: classId, group_ids: groupIds } : { class_id: classId });
             await loadGroups();
             const classRow = classState.classes.find((row) => row.id === classId);
             // Keys exist now whatever the operator did meanwhile, so the kit is always shown,
-            // headed with its own class name.
+            // headed with its own class name, and the status names that class too.
             showKit(result, classRow || { id: classId, name: classId, capabilities: [], timezone: "UTC" }, classState.selected === classId && classState.detail ? classState.detail.groups : []);
-            return "Issued " + number((result.keys || []).length) + " student key(s)" + ((result.skipped || []).length ? "; " + number(result.skipped.length) + " skipped." : ".") + " Copy, download or print them now.";
-          }, classId);
+            issued = true;
+            setStatus(statusId, "Issued " + number((result.keys || []).length) + " student key(s) for " + className() + ((result.skipped || []).length ? "; " + number(result.skipped.length) + " skipped." : ".") + " Copy, download or print them now.", "ok");
+          } catch (error) {
+            setStatus(statusId, "Keys for " + className() + " were not issued: " + messageFor(error), "error");
+          }
         });
         return issued;
       }
@@ -2516,28 +2531,53 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         const seen = new Set();
         const duplicate = students.find((name) => { const key = name.toLowerCase(); if (seen.has(key)) return true; seen.add(key); return false; });
         if (duplicate) { setStatus("class-create-status", "\"" + duplicate + "\" is listed twice; each student needs a distinct name.", "error"); return; }
-        let createdId = null;
-        let groupIds = null;
-        const created = await runClassAction("class-create-status", async () => {
-          const result = await dashboardPost("classes", payload);
-          createdId = result && result.id ? result.id : null;
-          resetCreateForm();
-          refreshAliasEditors();
-          await loadClasses();
-          if (createdId) await selectClass(createdId);
-          if (!createdId || !students.length) return "Class created.";
+        if (creatingClass) return;
+        const className = String(payload.name).trim();
+        setCreateBusy(true);
+        let resetMode = "none";
+        try {
+          setStatus("class-create-status", "Creating " + className + "…", "");
+          let createdId = null;
+          try {
+            const result = await dashboardPost("classes", payload);
+            createdId = result && result.id ? result.id : null;
+          } catch (error) {
+            setStatus("class-create-status", messageFor(error), "error");
+            return;
+          }
+          // From here the class exists: the class fields are reset so a resubmit cannot
+          // create a duplicate, while an unused roster stays in its box.
+          resetMode = "keep-students";
+          const opened = createdId ? await openCreatedClass(createdId) : false;
+          if (!students.length) {
+            resetMode = "all";
+            setStatus("class-create-status", opened ? "Created " + className + "." : "Created " + className + ", but the class list could not be reloaded. Select Refresh, then open it.", opened ? "ok" : "error");
+            return;
+          }
+          let groupIds = [];
           try {
             const groups = await dashboardPost("groups", { class_id: createdId, names: students });
-            groupIds = groups && Array.isArray(groups.groups) ? groups.groups.map((group) => group.id) : null;
+            groupIds = groups && Array.isArray(groups.groups) ? groups.groups.map((group) => group.id) : [];
           } catch (error) {
-            throw new Error("The class was created, but adding students failed: " + messageFor(error) + " Open the class and add them under Groups.");
+            setStatus("class-create-status", "Created " + className + ", but adding students failed: " + messageFor(error) + " Your student list is still in the Students box; open the class and add it under Groups.", "error");
+            return;
+          }
+          resetMode = "all";
+          if (!opened) {
+            setStatus("class-create-status", "Created " + className + " with " + number(groupIds.length) + " students, but the class could not be opened, so no keys were issued. Select Refresh, open " + className + " and use Issue keys for all students.", "error");
+            return;
           }
           await loadGroups();
-          return "Class created with " + number(students.length) + " student" + (students.length === 1 ? "" : "s") + ". Issuing their keys…";
-        });
-        if (created && createdId && groupIds && groupIds.length) {
-          const issued = await issueKit(createdId, groupIds, "class-action-status");
-          setStatus("class-create-status", issued ? "Class created with " + number(groupIds.length) + " students; their keys are in the class kit below." : "Class and students created, but keys were not issued. Use Issue keys for all students in the class.", issued ? "ok" : "error");
+          setStatus("class-create-status", "Created " + className + " with " + number(groupIds.length) + " students. Issuing their keys…", "");
+          const issued = groupIds.length ? await issueKit(createdId, groupIds, "class-action-status") : false;
+          setStatus("class-create-status", issued ? "Created " + className + " with " + number(groupIds.length) + " students; their keys are in the class kit for " + className + " below." : "Created " + className + " with " + number(groupIds.length) + " students, but keys were not issued. Open " + className + " and use Issue keys for all students.", issued ? "ok" : "error");
+        } finally {
+          // A failed first write keeps every field, including the chosen aliases.
+          if (resetMode !== "none") {
+            resetCreateForm(resetMode === "keep-students");
+            refreshAliasEditors();
+          }
+          setCreateBusy(false);
         }
       });
       document.getElementById("class-edit-form").addEventListener("submit", async (event) => {
@@ -2694,10 +2734,11 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         const eligible = groups.filter((group) => group.status === "active" && !group.paused).length;
         if (!eligible) { setStatus("class-action-status", "There are no active, unpaused students to issue keys for. Add students under Groups first.", "error"); return; }
         const paused = groups.filter((group) => group.status === "active" && group.paused).length;
-        askInline("class-issue-confirm", "Issue a new API key for each of the " + number(Math.min(eligible, 100)) + " active, unpaused students in " + row.name + "?" + (paused ? " " + number(paused) + " paused student(s) are left out." : "") + " Existing keys keep working. The new keys are shown once, here.", () => {
+        const visibleKit = kitState.entries.length ? " The " + number(kitState.entries.length) + " keys currently shown in the class kit will be cleared from the screen, so copy, download or print them first." : "";
+        askInline("class-issue-confirm", "Issue a new API key for each of the " + number(Math.min(eligible, 100)) + " active, unpaused students in " + row.name + "?" + (paused ? " " + number(paused) + " paused student(s) are left out." : "") + " Existing keys keep working. The new keys are shown once, here." + visibleKit, () => {
           if (classState.selected !== classId) return undefined;
           return issueKit(classId, null, "class-action-status");
-        });
+        }, document.getElementById("class-issue-all"));
       });
       document.getElementById("class-kit-copy").addEventListener("click", () => {
         if (!kitState.entries.length) return;
@@ -2742,7 +2783,13 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
             const updated = Array.isArray(result.groups) ? result.groups : [];
             const sum = updated.reduce((acc, group) => acc + BigInt(group.budget_microcents), 0n);
             const classRow = classState.classes.find((item) => item.id === classId);
-            if (classRow && classState.selected === classId) set("class-detail-meta", classMeta(classRow));
+            if (classRow && classState.selected === classId) {
+              // The class total may have changed: refresh the summary and the edit form so
+              // a stale total cannot be saved back over it.
+              set("class-detail-meta", classMeta(classRow));
+              renderFieldSet(document.getElementById("class-edit-fields"), CLASS_FIELDS, classRow);
+              renderEditLimits();
+            }
             const classTotal = result.class_budget_microcents ?? (classRow ? classRow.budget_microcents : null);
             const parts = [(mode === "set" ? "Set " : "Topped up ") + number(updated.length) + " student allocation(s)" + (mode === "set" ? " to " + money(amount.value) : " by " + money(amount.value)) + "."];
             if (result.class_budget_microcents !== undefined) parts.push("Class total is now " + money(result.class_budget_microcents) + ".");
@@ -2750,7 +2797,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
             if (classTotal !== null && sum > BigInt(classTotal)) parts.push("Allocations now add up to " + money(sum) + ", more than the class total of " + money(classTotal) + "; the class total is reached first.");
             return parts.join(" ");
           }, classId);
-        });
+        }, document.getElementById("group-budget-submit"));
       });
       document.getElementById("class-secret-clear").addEventListener("click", clearSecret);
       window.addEventListener("pagehide", clearSecret);
@@ -2811,6 +2858,23 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
   </body>
 </html>`;
 
+/**
+ * Self-contained helpers embedded into the inline script under fixed names, so
+ * the page runs exactly the functions the unit tests exercise.
+ */
+export const DASHBOARD_EMBEDDED_HELPERS = [
+  ["formatDollars", formatDollars],
+  ["parseDollars", parseDollars],
+  ["csvCell", csvCell],
+]
+  .map(([name, helper]) => `const ${String(name)} = (${String(helper)});`)
+  .join("\n      ");
+
+const DASHBOARD_PAGE_HTML = DASHBOARD_HTML.replace(
+  "__DASHBOARD_HELPERS__",
+  () => DASHBOARD_EMBEDDED_HELPERS,
+);
+
 const FAVICON_SVG = String.raw`<svg xmlns="http://www.w3.org/2000/svg" viewBox="201 257 843 727"><g transform="translate(0 1254) scale(.1 -.1)" fill="#60ae0a"><path d="M5528 9949 c-425 -41 -800 -297 -993 -679 -87 -174 -120 -332 -112 -540 6 -148 19 -209 92 -425 65 -193 78 -278 72 -470 -4 -118 -11 -180 -27 -238 -88 -326 -280 -603 -605 -877 -131 -109 -401 -298 -519 -363 -252 -137 -402 -243 -536 -378 -184 -185 -291 -368 -358 -618 -23 -87 -26 -114 -26 -286 0 -176 2 -198 27 -290 53 -197 164 -381 294 -489 112 -93 272 -176 370 -192 l41 -6 -29 111 c-39 152 -53 273 -46 416 8 152 27 255 78 403 136 393 416 708 794 892 314 153 581 186 920 115 26 -5 51 8 202 112 390 267 1419 963 2017 1364 l640 429 324 -486 c178 -268 320 -490 315 -494 -4 -4 -287 -196 -628 -426 -341 -230 -811 -549 -1045 -709 -234 -159 -541 -368 -681 -464 l-256 -173 33 -97 c58 -169 69 -245 69 -456 0 -246 -27 -368 -123 -560 -124 -250 -299 -446 -536 -603 -151 -99 -305 -162 -509 -207 -33 -7 -33 -18 8 -118 37 -94 86 -168 155 -238 75 -76 131 -111 233 -146 102 -36 279 -38 382 -6 179 57 319 184 460 419 146 243 283 362 475 410 90 23 222 14 313 -20 138 -52 228 -134 380 -345 126 -176 223 -277 340 -355 162 -108 310 -156 480 -156 166 0 303 43 432 134 173 124 254 281 243 475 -7 112 -29 165 -153 366 -124 202 -175 308 -220 464 -47 163 -62 318 -46 480 42 441 259 831 796 1426 88 98 192 217 230 265 236 295 292 589 163 855 -73 150 -186 247 -375 321 -157 62 -220 112 -297 238 -69 113 -208 352 -272 466 -76 139 -161 226 -271 277 -71 34 -87 37 -184 41 -156 6 -214 -14 -429 -144 -164 -99 -263 -125 -395 -104 -98 16 -166 50 -240 121 -106 101 -163 238 -185 442 -28 254 -90 433 -218 626 -188 284 -482 461 -816 491 -123 11 -124 11 -248 -1z M9527 9339 c-251 -34 -489 -202 -605 -427 -72 -138 -87 -205 -87 -382 0 -172 10 -219 71 -345 134 -275 410 -445 721 -445 236 0 432 84 590 254 259 277 290 697 74 1014 -105 155 -278 274 -462 318 -77 18 -220 25 -302 13z M2775 8400 c-417 -65 -723 -402 -752 -826 -21 -325 156 -654 438 -813 258 -145 566 -147 838 -6 177 92 329 258 401 439 50 123 63 198 63 341 0 144 -16 223 -74 360 -53 129 -178 278 -305 366 -68 47 -181 97 -269 119 -93 24 -254 33 -340 20z M4335 5536 c-169 -44 -294 -115 -422 -239 -304 -293 -374 -770 -167 -1133 126 -220 294 -357 544 -440 80 -27 95 -28 260 -28 165 0 180 1 260 28 167 56 297 135 406 248 171 178 258 372 271 609 21 382 -192 738 -540 899 -126 58 -191 72 -367 76 -139 4 -164 2 -245 -20z M9455 4874 c-256 -57 -477 -246 -574 -491 -53 -136 -67 -347 -31 -489 71 -282 280 -496 562 -574 420 -117 865 136 995 565 14 46 18 93 18 205 0 138 -2 150 -33 240 -94 270 -272 446 -537 530 -93 30 -298 37 -400 14z"/></g></svg>`;
 
 export function dashboardFavicon(): Response {
@@ -2825,7 +2889,7 @@ export function dashboardFavicon(): Response {
 
 export function dashboardPage(): Response {
   const nonce = randomSecret(16);
-  return new Response(DASHBOARD_HTML.replaceAll("__CSP_NONCE__", nonce), {
+  return new Response(DASHBOARD_PAGE_HTML.replaceAll("__CSP_NONCE__", nonce), {
     headers: {
       "cache-control": "no-store",
       "content-security-policy": `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,

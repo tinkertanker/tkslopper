@@ -8,7 +8,8 @@
  *
  * Run: pnpm exec tsx tests/dashboard-classes.browser.ts [port]
  * Then drive http://127.0.0.1:<port>/ with a browser. Switch fixtures at runtime with
- * `curl -X POST /__scenario -d '{"scenario":"empty"}'` and reload.
+ * `curl -X POST /__scenario -d '{"scenario":"empty"}'` and reload. `POST /__fail` with
+ * `{"operation":"classes/list","times":1}` fails the next N calls of one operation.
  */
 import {
   createServer,
@@ -479,6 +480,13 @@ const LAB_LIMITS = {
   concurrency_limit: 2,
 };
 
+// text.structured.v1 is Responses-only so cards can show the Responses example.
+const PRODUCTION_ENDPOINTS = [
+  { alias: "text.chat.v1", endpoints: ["chat", "responses"] },
+  { alias: "text.structured.v1", endpoints: ["responses"] },
+  { alias: "text.vision.v1", endpoints: ["chat"] },
+];
+
 function optionsFixture(scenario: Scenario): Json {
   if (scenario === "twoproducts") {
     return {
@@ -489,6 +497,7 @@ function optionsFixture(scenario: Scenario): Json {
           product_name: "School products",
           environment_name: "production",
           aliases: ["text.chat.v1", "text.vision.v1", "text.structured.v1"],
+          alias_endpoints: PRODUCTION_ENDPOINTS,
           limits: ENVIRONMENT_LIMITS,
         },
         {
@@ -497,6 +506,7 @@ function optionsFixture(scenario: Scenario): Json {
           product_name: "Arts academy",
           environment_name: "studio",
           aliases: ["text.chat.v1"],
+          alias_endpoints: [{ alias: "text.chat.v1", endpoints: ["chat"] }],
           limits: ENVIRONMENT_LIMITS,
         },
       ],
@@ -511,6 +521,7 @@ function optionsFixture(scenario: Scenario): Json {
         product_name: "School products",
         environment_name: "production",
         aliases: ["text.chat.v1", "text.vision.v1", "text.structured.v1"],
+        alias_endpoints: PRODUCTION_ENDPOINTS,
         limits: ENVIRONMENT_LIMITS,
       },
       {
@@ -519,6 +530,7 @@ function optionsFixture(scenario: Scenario): Json {
         product_name: "School products",
         environment_name: "lab",
         aliases: ["text.chat.v1"],
+        alias_endpoints: [{ alias: "text.chat.v1", endpoints: ["chat"] }],
         limits: LAB_LIMITS,
       },
     ],
@@ -644,6 +656,9 @@ async function main(): Promise<void> {
   const port = Number(process.argv[2] ?? 8790);
   let { scenario, store } = buildScenario();
   let updateDelayMs = 0;
+  // POST /__fail {"operation": "classes/list", "times": 1} makes the next N calls of
+  // that operation return 500, to exercise partial-failure handling.
+  const failures = new Map<string, number>();
   const html = (await dashboardPage().text()).replace(
     "<script nonce=",
     `${HANDLER_SETTLEMENT_PROBE}<script nonce=`,
@@ -686,6 +701,16 @@ async function main(): Promise<void> {
         ? Math.max(0, Math.min(5_000, requested))
         : 0;
       sendJson(response, 200, { ok: true, ms: updateDelayMs });
+      return;
+    }
+    if (request.method === "POST" && path === "/__fail") {
+      const body = await readBody(request);
+      const times = Number(body.times ?? 1);
+      failures.set(
+        str(body.operation),
+        Number.isFinite(times) ? Math.max(0, times) : 1,
+      );
+      sendJson(response, 200, { ok: true });
       return;
     }
     if (request.method === "POST" && path === "/__scenario") {
@@ -746,6 +771,14 @@ async function main(): Promise<void> {
     ) {
       sendJson(response, 500, {
         error: { message: "Fixture: class service is unavailable." },
+      });
+      return;
+    }
+    const remainingFailures = failures.get(operation) ?? 0;
+    if (remainingFailures > 0) {
+      failures.set(operation, remainingFailures - 1);
+      sendJson(response, 500, {
+        error: { message: `Fixture: ${operation} failed on purpose.` },
       });
       return;
     }
