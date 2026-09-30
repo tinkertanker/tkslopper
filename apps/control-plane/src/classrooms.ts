@@ -896,6 +896,8 @@ async function adminRotateGroupKey(
     throw new HttpError(409, "conflict", "class is revoked");
   if (group.status === "revoked")
     throw new HttpError(409, "conflict", "group is revoked");
+  const blocker = groupIssuanceBlocker(class_, group, nowSeconds());
+  if (blocker) throw new HttpError(409, "conflict", blocker);
 
   const replacement = newGroupKey();
   const now = nowSeconds();
@@ -1148,16 +1150,19 @@ async function adminGroupBudgetBulk(
 
   const skipped: ClassroomGroupBulkSkip[] = [];
   let targets: ClassroomGroupRow[];
+  let truncated = false;
   if (body.group_ids === undefined) {
     const rows = await env.DB.prepare(
       `SELECT ${GROUP_ROW_COLUMNS}
          FROM classroom_groups
         WHERE class_id = ? AND status <> 'revoked'
-        ORDER BY name, id`,
+        ORDER BY name, id
+        LIMIT ?`,
     )
-      .bind(class_.id)
+      .bind(class_.id, CLASSROOM_GROUP_BULK_LIMIT + 1)
       .all<ClassroomGroupRow>();
-    targets = rows.results;
+    targets = rows.results.slice(0, CLASSROOM_GROUP_BULK_LIMIT);
+    truncated = rows.results.length > CLASSROOM_GROUP_BULK_LIMIT;
   } else {
     const requested = await requestedClassGroups(
       env,
@@ -1265,6 +1270,7 @@ async function adminGroupBudgetBulk(
       budget_microcents: row.budget_microcents,
     })),
     skipped,
+    truncated,
   };
   if (body.class_budget_microcents !== undefined)
     response.class_budget_microcents = classState.budget_microcents;

@@ -109,6 +109,8 @@ In Cloudflare Zero Trust, create one self-hosted Access application covering **b
 
 Do not add a bypass policy. Only `/dashboard*` and `/admin/v1/dashboard` are behind Access; the rest of `/admin/v1/*` requires `ADMIN_TOKEN`.
 
+Add a Cloudflare rate-limiting rule for `POST <control-plane host>/v1/activations` (for example 20 requests per minute per IP). A correct join code is never locked out, so this edge limit is what bounds repeated wrong-code attempts and their hashing cost.
+
 ## 7. Make yourself an admin
 
 ```bash

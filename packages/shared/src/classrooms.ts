@@ -322,6 +322,8 @@ export type ClassroomGroupBudgetBulkResponse = {
   mode: "set" | "add";
   groups: { group_id: string; group_name: string; budget_microcents: number }[];
   skipped: ClassroomGroupBulkSkip[];
+  /** True when more than the bulk limit of groups matched the default selection. */
+  truncated: boolean;
   /** The class total after the write; present only when it was supplied. */
   class_budget_microcents?: number;
 };

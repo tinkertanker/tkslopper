@@ -1923,11 +1923,23 @@ describe("classroom group key issuance", () => {
     const timestamp = now();
     const classId = await createClass();
     const [alpha, beta] = await createGroups(classId, ["Alpha", "Beta"]);
+    const issuedResponse = await admin("/admin/v1/groups/access", {
+      group_id: String(alpha?.id),
+      kind: "api_key",
+    });
+    expect(issuedResponse.status).toBe(201);
+    const issued = await json<{ id: string }>(issuedResponse);
     await env.DB.prepare(
       "UPDATE classroom_groups SET expires_at = ? WHERE id = ?",
     )
       .bind(timestamp - 1, String(alpha?.id))
       .run();
+    // Rotation applies the same issuance checks as a new key.
+    const rotated = await admin("/admin/v1/groups/rotate", { id: issued.id });
+    expect(rotated.status).toBe(409);
+    expect(await rotated.json()).toMatchObject({
+      error: { message: "class or group schedule has already ended" },
+    });
     for (const kind of ["api_key", "join_code"]) {
       const response = await admin("/admin/v1/groups/access", {
         group_id: String(alpha?.id),
@@ -1975,7 +1987,8 @@ describe("classroom group key issuance", () => {
         })
       ).status,
     ).toBe(409);
-    expect(await countRows("classroom_group_keys")).toBe(0);
+    // Only the key issued before the schedule ended exists.
+    expect(await countRows("classroom_group_keys")).toBe(1);
   });
 });
 
@@ -2271,6 +2284,7 @@ describe("classroom bulk budgets", () => {
         { group_id: beta?.id, group_name: "Beta", budget_microcents: 1500 },
       ],
       skipped: [],
+      truncated: false,
       class_budget_microcents: 9_000_000,
     });
     const set = await json<BudgetResponse>(
