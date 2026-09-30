@@ -16,6 +16,7 @@ export class HttpError extends Error {
     readonly status: number,
     readonly code: ErrorCode,
     message: string,
+    readonly headers?: Record<string, string>,
   ) {
     super(message);
   }
@@ -37,10 +38,12 @@ export function errorResponse(
   code: ErrorCode,
   message: string,
   requestId?: string,
+  extraHeaders?: Record<string, string>,
 ): Response {
-  const headers = requestId
-    ? { "x-tkslopper-request-id": requestId }
-    : undefined;
+  const headers = {
+    ...extraHeaders,
+    ...(requestId ? { "x-tkslopper-request-id": requestId } : {}),
+  };
   return jsonResponse(
     { error: { message, type: code, code }, request_id: requestId },
     status,

@@ -17,8 +17,10 @@ import {
   responsesRequestSchema,
   sha256,
   verifyGrant,
+  withOutputTokenLimit,
   zodMessage,
   type Endpoint,
+  type ErrorCode,
   type ParsedGatewayRequest,
   type PreparedProvider,
   type ProviderRoute,
@@ -386,6 +388,25 @@ async function authenticateRequest(
   return await authenticateGrant(request, env);
 }
 
+/**
+ * Explains the two rejections standard SDK users hit first. Everything else
+ * keeps the schema's field-level message.
+ */
+function requestSchemaMessage(
+  value: unknown,
+  error: Parameters<typeof zodMessage>[0],
+): string {
+  const body =
+    typeof value === "object" && value !== null
+      ? (value as Record<string, unknown>)
+      : {};
+  if (error.issues.some((issue) => issue.path[0] === "model"))
+    return "model must be a capability alias such as text.chat.v1; GET /v1/models lists the aliases this credential can use";
+  if (body.stream === true)
+    return "streaming is not supported; set stream to false or omit it";
+  return zodMessage(error);
+}
+
 function parseGatewayRequest(
   endpoint: Endpoint,
   value: unknown,
@@ -393,12 +414,20 @@ function parseGatewayRequest(
   if (endpoint === "chat") {
     const parsed = chatRequestSchema.safeParse(value);
     if (!parsed.success)
-      throw new HttpError(400, "invalid_request", zodMessage(parsed.error));
+      throw new HttpError(
+        400,
+        "invalid_request",
+        requestSchemaMessage(value, parsed.error),
+      );
     return { endpoint, body: parsed.data };
   }
   const parsed = responsesRequestSchema.safeParse(value);
   if (!parsed.success)
-    throw new HttpError(400, "invalid_request", zodMessage(parsed.error));
+    throw new HttpError(
+      400,
+      "invalid_request",
+      requestSchemaMessage(value, parsed.error),
+    );
   return { endpoint, body: parsed.data };
 }
 
@@ -461,6 +490,11 @@ async function acquireIdempotency(
   }
 }
 
+/**
+ * Records the outcome for an idempotency key. A request that failed before any
+ * provider dispatch releases its key, so a client may retry a quota or
+ * validation denial with the same key instead of receiving 409 for a day.
+ */
 async function finishIdempotency(
   request: Request,
   env: GatewayEnv,
@@ -482,6 +516,14 @@ async function finishIdempotency(
     ),
     pseudonymize(key, env.TOKEN_SIGNING_SECRET),
   ]);
+  if (status === "failed" && !context.providerAttempted) {
+    await env.DB.prepare(
+      "DELETE FROM idempotency_keys WHERE scope_hash = ? AND key_hash = ? AND request_id = ?",
+    )
+      .bind(scopeHash, keyHash, context.requestId)
+      .run();
+    return;
+  }
   await env.DB.prepare(
     "UPDATE idempotency_keys SET status = ? WHERE scope_hash = ? AND key_hash = ? AND request_id = ?",
   )
@@ -782,6 +824,49 @@ async function discardAttemptIntent(
     .run();
 }
 
+/** Upstream statuses that mean the provider refused before doing billable work. */
+const definitiveProviderRejections = new Set([
+  400, 401, 403, 404, 413, 415, 422, 429,
+]);
+
+const clientFixableProviderRejections = new Set([400, 413, 415, 422]);
+
+/**
+ * Maps a provider failure to the public response. A request the provider found
+ * invalid is the caller's to fix; an upstream rate limit is retryable; an
+ * upstream credential, permission or unknown-model failure is ours and stays a
+ * 502.
+ */
+function providerFailureResponse(
+  error: ProviderError,
+  rejected: boolean,
+): {
+  status: number;
+  code: ErrorCode;
+  message: string;
+  headers?: Record<string, string>;
+} {
+  if (rejected && error.status === 429)
+    return {
+      status: 429,
+      code: "rate_limit_exceeded",
+      message: "upstream provider is rate limited; retry shortly",
+      headers: { "retry-after": String(error.retryAfterSeconds ?? 10) },
+    };
+  if (rejected && clientFixableProviderRejections.has(error.status))
+    return {
+      status: 400,
+      code: "invalid_request",
+      message:
+        "upstream provider rejected the request; check its parameters, image URLs and schema",
+    };
+  return {
+    status: error.errorClass === "provider_timeout" ? 504 : 502,
+    code: "provider_unavailable",
+    message: "upstream provider request failed",
+  };
+}
+
 function safeEvent(
   context: RequestContext,
   values: Omit<SafeRequestEvent, "requestId" | "latencyMs">,
@@ -883,13 +968,12 @@ async function handleInference(
         "estimated input exceeds capability limit",
       );
     }
-    if (inspection.maxOutputTokens > aliasPolicy.max_output_tokens) {
-      throw new HttpError(
-        400,
-        "invalid_request",
-        "requested output exceeds capability limit",
-      );
-    }
+    // Clamp rather than reject: SDKs often send a generous default, and the
+    // provider reports truncation through finish_reason/status instead.
+    const maxOutputTokens = Math.min(
+      inspection.maxOutputTokens,
+      aliasPolicy.max_output_tokens,
+    );
     if (inspection.hasImages && aliasPolicy.allow_images !== 1) {
       throw new HttpError(
         400,
@@ -965,23 +1049,22 @@ async function handleInference(
     }
     await acquireIdempotency(request, env, context);
 
-    // Classroom settlement must never exceed its reservation, otherwise
-    // concurrent requests could each settle above the shared class cap. Reserve
-    // the configured input ceiling (the envelope images already use) so the
-    // provider-reported input can only settle at or below it. Legacy traffic
-    // keeps its existing estimate-based reservation.
-    const reservedInputTokens =
-      inspection.hasImages || context.classroom !== undefined
-        ? aliasPolicy.max_input_tokens
-        : inspection.estimatedInputTokens;
-    reservedTokens = reservedInputTokens + inspection.maxOutputTokens;
+    // Text input reserves the serialised-byte estimate, which bounds the
+    // tokenizer count. Images reserve the alias input ceiling because their
+    // token cost is unrelated to URL or data length. Classroom settlement is
+    // capped at this reservation below, so concurrent requests can never
+    // settle above the shared class cap.
+    const reservedInputTokens = inspection.hasImages
+      ? aliasPolicy.max_input_tokens
+      : Math.min(inspection.estimatedInputTokens, aliasPolicy.max_input_tokens);
+    reservedTokens = reservedInputTokens + maxOutputTokens;
     reservedCost =
       costMicrocents(
         reservedInputTokens,
         aliasPolicy.input_cost_microcents_per_million,
       ) +
       costMicrocents(
-        inspection.maxOutputTokens,
+        maxOutputTokens,
         aliasPolicy.output_cost_microcents_per_million,
       );
     quotaMayBeAcquired = true;
@@ -1003,14 +1086,37 @@ async function handleInference(
         );
       }
       quotaMayBeAcquired = false;
-      const reason = (await quotaResponse.json<{ reason?: string }>()).reason;
-      const budget = isBudgetDenial(reason);
+      const reason = await quotaResponse
+        .json<{ reason?: string }>()
+        .then((body) => body.reason)
+        .catch(() => undefined);
+      if (isBudgetDenial(reason))
+        throw new HttpError(
+          402,
+          "budget_exceeded",
+          budgetDenialMessage(context, reason),
+        );
+      if (reason === "rpm" || reason === "tpm" || reason === "concurrency")
+        throw new HttpError(
+          429,
+          "rate_limit_exceeded",
+          reason === "concurrency"
+            ? "too many requests are in progress; retry shortly"
+            : `${reason === "rpm" ? "request" : "token"} rate limit exceeded; retry shortly`,
+          {
+            // Rate windows reset on the UTC minute; concurrency frees as soon
+            // as an in-flight request finishes.
+            "retry-after": String(
+              reason === "concurrency" ? 2 : 60 - (nowSeconds() % 60),
+            ),
+          },
+        );
       throw new HttpError(
-        budget ? 402 : 429,
-        budget ? "budget_exceeded" : "rate_limit_exceeded",
-        budget
-          ? budgetDenialMessage(context, reason)
-          : "rate or concurrency limit exceeded",
+        reason === "request_completed" ? 409 : 503,
+        reason === "request_completed" ? "conflict" : "internal_error",
+        reason === "request_completed"
+          ? "request was already completed"
+          : "quota accounting admission failed",
       );
     }
     if (!(await quotaAcquisitionSucceeded(quotaResponse))) {
@@ -1023,7 +1129,7 @@ async function handleInference(
 
     await recordAttemptStart(env, context, {
       inputTokens: reservedInputTokens,
-      outputTokens: inspection.maxOutputTokens,
+      outputTokens: maxOutputTokens,
       costMicrocents: reservedCost,
     });
 
@@ -1034,7 +1140,13 @@ async function handleInference(
     );
     try {
       const result = await callProvider({
-        request: parsedRequest,
+        // Always send the reserved output envelope upstream; without it a
+        // provider may exceed the reservation and the answer would be lost.
+        request: withOutputTokenLimit(
+          parsedRequest,
+          maxOutputTokens,
+          route.profile,
+        ),
         prepared: preparedProvider,
         maxResponseBytes: Math.min(maxBody, 8_388_608),
         signal: controller.signal,
@@ -1057,14 +1169,13 @@ async function handleInference(
         (result.usage.inputTokens !== undefined &&
           result.usage.inputTokens > aliasPolicy.max_input_tokens) ||
         (result.usage.outputTokens !== undefined &&
-          result.usage.outputTokens > inspection.maxOutputTokens)
+          result.usage.outputTokens > maxOutputTokens)
       ) {
         throw new ProviderError("provider_protocol", 502, result.latencyMs);
       }
       const inputTokens = result.usage.inputTokens ?? reservedInputTokens;
-      const outputTokens =
-        result.usage.outputTokens ?? inspection.maxOutputTokens;
-      const actualCost =
+      const outputTokens = result.usage.outputTokens ?? maxOutputTokens;
+      const measuredCost =
         costMicrocents(
           inputTokens,
           aliasPolicy.input_cost_microcents_per_million,
@@ -1073,6 +1184,12 @@ async function handleInference(
           outputTokens,
           aliasPolicy.output_cost_microcents_per_million,
         );
+      // A classroom never settles above its reservation (see above); the
+      // byte-based input estimate makes a higher measured cost exceptional.
+      const actualCost =
+        context.classroom === undefined
+          ? measuredCost
+          : Math.min(measuredCost, reservedCost);
       completionTokens = inputTokens + outputTokens;
       completionCost = actualCost;
       const completion = await quotaCallWithRetry(
@@ -1083,25 +1200,28 @@ async function handleInference(
           actualCostMicrocents: completionCost,
         }),
       ).catch(() => undefined);
-      if (!(await quotaCompletionSucceeded(completion))) {
-        quotaCompletionExhausted = true;
-        quotaReservationUnresolved = true;
-        throw new HttpError(
-          503,
-          "internal_error",
-          "quota accounting completion failed",
-        );
-      }
+      // The provider has already answered and been paid for. A failed ledger
+      // write must not turn that into an error the client would retry and pay
+      // for again: the reservation stays conservatively charged instead, and
+      // the attempt intent remains visible as unresolved.
+      const settled = await quotaCompletionSucceeded(completion);
       quotaMayBeAcquired = false;
-      await recordAttempt(env, context, {
-        statusCode: result.status,
-        errorClass: null,
-        latencyMs: result.latencyMs,
-        inputTokens,
-        outputTokens,
-        costMicrocents: actualCost,
-      });
-      await finishIdempotency(request, env, context, "completed");
+      quotaCompletionExhausted = true;
+      if (settled) {
+        await recordAttempt(env, context, {
+          statusCode: result.status,
+          errorClass: null,
+          latencyMs: result.latencyMs,
+          inputTokens,
+          outputTokens,
+          costMicrocents: actualCost,
+        }).catch(() => {
+          quotaReservationUnresolved = true;
+        });
+      } else quotaReservationUnresolved = true;
+      await finishIdempotency(request, env, context, "completed").catch(
+        () => undefined,
+      );
       logSafeEvent(
         safeEvent(context, {
           status: 200,
@@ -1109,6 +1229,9 @@ async function handleInference(
           outputTokens,
           costMicrocents: actualCost,
           attempts: 1,
+          ...(quotaReservationUnresolved
+            ? { quotaReservationState: "unresolved" as const }
+            : {}),
         }),
       );
       return jsonResponse({ ...result.body, model: inspection.alias }, 200, {
@@ -1117,8 +1240,15 @@ async function handleInference(
     } catch (error) {
       if (!(error instanceof ProviderError)) throw error;
       const providerAttempted = context.providerAttempted;
-      completionTokens = providerAttempted ? reservedTokens : 0;
-      completionCost = providerAttempted ? reservedCost : 0;
+      // A definitive upstream rejection did no billable work, so it releases
+      // the reservation. Timeouts, 5xx and malformed bodies stay ambiguous and
+      // keep the conservative full charge.
+      const rejected =
+        error.errorClass === "provider_rejected" &&
+        definitiveProviderRejections.has(error.status);
+      const charged = providerAttempted && !rejected;
+      completionTokens = charged ? reservedTokens : 0;
+      completionCost = charged ? reservedCost : 0;
       const completion = await quotaCallWithRetry(
         env,
         quotaScope,
@@ -1142,23 +1272,23 @@ async function handleInference(
           statusCode: error.status,
           errorClass: error.errorClass,
           latencyMs: error.latencyMs,
-          inputTokens: reservedInputTokens,
-          outputTokens: inspection.maxOutputTokens,
-          costMicrocents: reservedCost,
+          inputTokens: charged ? reservedInputTokens : 0,
+          outputTokens: charged ? maxOutputTokens : 0,
+          costMicrocents: completionCost,
         });
       } else {
         await discardAttemptIntent(env, context);
       }
       await finishIdempotency(request, env, context, "failed");
-      const status = error.errorClass === "provider_timeout" ? 504 : 502;
+      const failure = providerFailureResponse(error, rejected);
       logSafeEvent(
         safeEvent(context, {
-          status,
+          status: failure.status,
           errorClass: error.errorClass,
-          ...(providerAttempted
+          ...(charged
             ? {
                 inputTokens: reservedInputTokens,
-                outputTokens: inspection.maxOutputTokens,
+                outputTokens: maxOutputTokens,
                 costMicrocents: reservedCost,
               }
             : {}),
@@ -1166,10 +1296,11 @@ async function handleInference(
         }),
       );
       return errorResponse(
-        status,
-        "provider_unavailable",
-        "upstream provider request failed",
+        failure.status,
+        failure.code,
+        failure.message,
         context.requestId,
+        failure.headers,
       );
     } finally {
       clearTimeout(timeout);
@@ -1210,6 +1341,7 @@ async function handleInference(
         error.code,
         error.message,
         context.requestId,
+        error.headers,
       );
     }
     logSafeEvent(
@@ -1227,6 +1359,108 @@ async function handleInference(
       "internal_error",
       "gateway request failed",
       context.requestId,
+    );
+  }
+}
+
+type ModelListRow = {
+  alias: string;
+  endpoint: Endpoint;
+  allow_images: number;
+  allow_reasoning: number;
+  allow_structured_json: number;
+  max_input_tokens: number;
+  max_output_tokens: number;
+};
+
+/**
+ * OpenAI-shaped model listing, limited to aliases this credential may call.
+ * SDKs and tools use it to discover and validate model names; physical models
+ * and routes are never disclosed.
+ */
+async function handleModels(
+  request: Request,
+  env: GatewayEnv,
+  modelId?: string,
+): Promise<Response> {
+  const requestId = randomId("req");
+  try {
+    ensureNoAttributionOverride(request);
+    const { policy, tokenCapabilities } = await authenticateRequest(
+      request,
+      env,
+    );
+    const rows =
+      tokenCapabilities.length === 0
+        ? []
+        : (
+            await env.DB.prepare(
+              `SELECT alias, endpoint, allow_images, allow_reasoning, allow_structured_json,
+                      max_input_tokens, max_output_tokens
+                 FROM aliases
+                WHERE product_id = ? AND environment_id = ? AND enabled = 1
+                  AND alias IN (SELECT value FROM json_each(?))
+                ORDER BY alias, endpoint`,
+            )
+              .bind(
+                policy.product_id,
+                policy.environment_id,
+                JSON.stringify(tokenCapabilities),
+              )
+              .all<ModelListRow>()
+          ).results;
+    const models = new Map<string, ModelListRow[]>();
+    for (const row of rows)
+      models.set(row.alias, [...(models.get(row.alias) ?? []), row]);
+    const data = [...models].map(([id, entries]) => ({
+      id,
+      object: "model" as const,
+      created: 0,
+      owned_by: "tkslopper",
+      endpoints: entries.map((entry) =>
+        entry.endpoint === "chat" ? "/v1/chat/completions" : "/v1/responses",
+      ),
+      max_input_tokens: Math.min(
+        ...entries.map((entry) => entry.max_input_tokens),
+      ),
+      max_output_tokens: Math.min(
+        ...entries.map((entry) => entry.max_output_tokens),
+      ),
+      supports_images: entries.some((entry) => entry.allow_images === 1),
+      supports_reasoning_effort: entries.some(
+        (entry) => entry.allow_reasoning === 1,
+      ),
+      supports_structured_json: entries.some(
+        (entry) => entry.allow_structured_json === 1,
+      ),
+    }));
+    const headers = { "x-tkslopper-request-id": requestId };
+    if (modelId === undefined)
+      return jsonResponse({ object: "list", data }, 200, headers);
+    let decodedId: string;
+    try {
+      decodedId = decodeURIComponent(modelId);
+    } catch {
+      decodedId = modelId;
+    }
+    const model = data.find((entry) => entry.id === decodedId);
+    if (!model)
+      return errorResponse(404, "not_found", "model not found", requestId);
+    return jsonResponse(model, 200, headers);
+  } catch (error) {
+    if (error instanceof HttpError)
+      return errorResponse(
+        error.status,
+        error.code,
+        error.message,
+        requestId,
+        error.headers,
+      );
+    return errorResponse(
+      500,
+      "internal_error",
+      "gateway request failed",
+      requestId,
     );
   }
 }
@@ -1291,6 +1525,10 @@ export async function handleGateway(
       streaming: false,
     });
   }
+  if (request.method === "GET" && url.pathname === "/v1/models")
+    return handleModels(request, env);
+  if (request.method === "GET" && url.pathname.startsWith("/v1/models/"))
+    return handleModels(request, env, url.pathname.slice("/v1/models/".length));
   if (request.method !== "POST")
     return errorResponse(404, "not_found", "not found");
   if (url.pathname === "/v1/chat/completions")

@@ -100,6 +100,8 @@ const providerResponsesResponseSchema = z
 const routeFields = {
   id: z.string().min(1).max(100),
   model: z.string().min(1).max(200),
+  /** Exact alternative model names the provider may report for this route. */
+  acceptedModels: z.array(z.string().min(1).max(200)).max(20).optional(),
   endpoints: z.array(z.enum(["chat", "responses"])).min(1),
   supportsImages: z.boolean(),
   supportsReasoning: z.boolean(),
@@ -311,9 +313,34 @@ export class ProviderError extends Error {
       | "provider_protocol",
     readonly status: number,
     readonly latencyMs: number,
+    /** Upstream Retry-After in seconds, when a rejection supplied one. */
+    readonly retryAfterSeconds?: number,
   ) {
     super(errorClass);
   }
+}
+
+/** Parses a delta-seconds Retry-After header, bounded to one hour. */
+function retryAfterSeconds(value: string | null): number | undefined {
+  if (value === null || !/^\d{1,6}$/u.test(value.trim())) return undefined;
+  return Math.min(3600, Math.max(1, Number(value.trim())));
+}
+
+/**
+ * Providers commonly report a dated snapshot of the configured model, such as
+ * `gpt-4o-mini-2024-07-18` for `gpt-4o-mini`. Accept the exact model, an
+ * explicitly allowed alternative, or a date/version suffix of the exact model.
+ */
+export function providerModelMatchesRoute(
+  reported: string,
+  route: Pick<ProviderRoute, "model" | "acceptedModels">,
+): boolean {
+  if (reported === route.model) return true;
+  if (route.acceptedModels?.includes(reported)) return true;
+  if (!reported.startsWith(`${route.model}-`)) return false;
+  return /^(?:\d{4}-\d{2}-\d{2}|\d{8}|\d{4})$/u.test(
+    reported.slice(route.model.length + 1),
+  );
 }
 
 function abortedProviderError(latencyMs: number) {
@@ -617,6 +644,7 @@ export async function callProvider(options: {
             "provider_rejected",
             response.status,
             Date.now() - startedAt,
+            retryAfterSeconds(response.headers.get("retry-after")),
           );
         }
         const declaredLength = Number(
@@ -681,7 +709,8 @@ export async function callProvider(options: {
     const projected = projectProviderBody(parsed, request.endpoint);
     if (
       !projected ||
-      projected.body.model !== route.model ||
+      typeof projected.body.model !== "string" ||
+      !providerModelMatchesRoute(projected.body.model, route) ||
       containsSecret(projected.body, credential) ||
       (options.prepared.gatewayCredential &&
         containsSecret(projected.body, options.prepared.gatewayCredential))

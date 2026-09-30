@@ -676,31 +676,31 @@ describe("classroom authorization", () => {
     expect((await SELF.fetch(chatRequest(groupKeyAlpha))).status).toBe(200);
   });
 
-  it("reserves the input ceiling so an asymmetric settle cannot exceed the class cap", async () => {
-    const conservativeReservation =
+  it("reserves the text byte estimate and caps an asymmetric settle at the reservation", async () => {
+    const inputCeilingReservation =
       costMicrocents(500_000, 1000) + costMicrocents(100, 2000);
     const inspection = inspectGatewayRequest({
       endpoint: "chat",
       body: chatRequestSchema.parse(defaultChatBody),
     });
-    const estimateOnlyReservation =
+    const estimateReservation =
       costMicrocents(inspection.estimatedInputTokens, 1000) +
       costMicrocents(inspection.maxOutputTokens, 2000);
-    expect(estimateOnlyReservation).toBeLessThan(conservativeReservation);
+    expect(estimateReservation).toBeLessThan(inputCeilingReservation);
 
-    // A cap the estimate-based reservation would have admitted must deny,
-    // because classroom admission reserves the configured input ceiling.
+    // Text admission needs only the byte-estimate envelope, not the alias's
+    // whole input ceiling, so small class budgets remain usable.
     await env.DB.prepare(
       "UPDATE classroom_classes SET budget_microcents = ? WHERE id = ?",
     )
-      .bind(conservativeReservation - 1, CLASS)
+      .bind(estimateReservation - 1, CLASS)
       .run();
     expect((await SELF.fetch(chatRequest(groupKeyAlpha))).status).toBe(402);
 
     await env.DB.prepare(
       "UPDATE classroom_classes SET budget_microcents = ? WHERE id = ?",
     )
-      .bind(conservativeReservation, CLASS)
+      .bind(estimateReservation, CLASS)
       .run();
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       Response.json({
@@ -729,15 +729,19 @@ describe("classroom authorization", () => {
       vi.unstubAllGlobals();
     }
 
-    const actualCost = costMicrocents(3000, 1000) + costMicrocents(100, 2000);
-    // The provider reported far more input than the estimate, and the settle
-    // still stayed within the reservation.
-    expect(actualCost).toBeGreaterThan(estimateOnlyReservation);
-    expect(actualCost).toBeLessThanOrEqual(conservativeReservation);
+    const measuredCost = costMicrocents(3000, 1000) + costMicrocents(100, 2000);
+    // The provider reported more input than the estimate; settlement is capped
+    // at the reservation, so the class cap still holds.
+    expect(measuredCost).toBeGreaterThan(estimateReservation);
     const state = await classroomState(CLASS);
     expect(state.lifetimeReservedMicrocents).toBe(0);
-    expect(state.lifetimeSpentMicrocents).toBe(actualCost);
-    expect(state.groups[GROUP]?.lifetimeSpentMicrocents).toBe(actualCost);
+    expect(state.lifetimeSpentMicrocents).toBe(estimateReservation);
+    expect(state.groups[GROUP]?.lifetimeSpentMicrocents).toBe(
+      estimateReservation,
+    );
+    expect(state.lifetimeSpentMicrocents).toBeLessThanOrEqual(
+      estimateReservation,
+    );
   });
 
   it("rejects client attribution overrides on the classroom path", async () => {
@@ -754,6 +758,23 @@ describe("classroom authorization", () => {
     );
     expect(response.status).toBe(400);
     await expect(rawClassroomState(CLASS)).resolves.toBeUndefined();
+  });
+
+  it("does not apply the per-principal environment daily budget to classrooms", async () => {
+    await env.DB.prepare(
+      "UPDATE environments SET daily_budget_microcents = 0 WHERE id = ?",
+    )
+      .bind(ENVIRONMENT)
+      .run();
+    // No class or group daily budget: only the lifetime caps apply.
+    expect((await SELF.fetch(chatRequest(groupKeyAlpha))).status).toBe(200);
+    await env.DB.prepare(
+      "UPDATE classroom_classes SET daily_budget_microcents = 0 WHERE id = ?",
+    )
+      .bind(CLASS)
+      .run();
+    // An explicit class daily budget still applies.
+    expect((await SELF.fetch(chatRequest(groupKeyAlpha))).status).toBe(402);
   });
 
   it("names the exhausted classroom budget dimension without claiming a daily cap", async () => {
@@ -855,7 +876,7 @@ describe("classroom authorization", () => {
     expect(afterRequest.groups[GROUP]?.lifetimeReservedMicrocents).toBe(0);
   });
 
-  it("fails closed when classroom completion cannot be confirmed", async () => {
+  it("returns the paid result and leaves the reservation charged when completion cannot be confirmed", async () => {
     const operations: Array<Record<string, unknown>> = [];
     const quotaStub = {
       fetch(_url: string, init?: RequestInit): Promise<Response> {
@@ -880,7 +901,9 @@ describe("classroom authorization", () => {
         ...(env as unknown as GatewayEnv),
         QUOTA: quotaNamespace,
       });
-      expect(response.status).toBe(503);
+      // The provider already answered; the paid result is returned and the
+      // reservation stays conservatively charged instead of a retryable 5xx.
+      expect(response.status).toBe(200);
       expect(operations.map(({ operation }) => operation)).toEqual([
         "classroom_acquire",
         "classroom_complete",
@@ -888,7 +911,7 @@ describe("classroom authorization", () => {
       ]);
       expect(JSON.parse(String(logger.mock.calls.at(-1)?.[0]))).toMatchObject({
         event: "inference_request",
-        status: 503,
+        status: 200,
         attempts: 1,
         quotaReservationState: "unresolved",
       });

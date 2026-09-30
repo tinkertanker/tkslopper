@@ -17,9 +17,12 @@ or capability narrowing. Grant product/environment/tenant must match the class.
 
 One Durable Object per `(classroom, product, environment, class)` atomically admits
 the class and group budgets and group limits. Its classroom state is separate from
-legacy per-principal accounting. Classroom requests reserve the alias's full input
-ceiling plus requested output before dispatch; accepted provider usage cannot
-exceed those envelopes. Completion is bound to the group and uses bounded retry
+legacy per-principal accounting. Classroom text requests reserve the serialised-byte
+input estimate (images reserve the alias input ceiling) plus the effective output
+limit before dispatch, and settlement is capped at that reservation, so accepted
+provider usage cannot push spending past the envelope. The environment's
+per-principal daily budget does not apply to classrooms; its rate, token and
+concurrency limits remain guardrails. Completion is bound to the group and uses bounded retry
 receipts. Uncertain dispatch and expired reservations retain conservative charges.
 
 ## Alternatives

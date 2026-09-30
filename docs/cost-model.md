@@ -4,9 +4,11 @@ All monetary database fields use integer **microcents** to avoid floating-point 
 
 `reserved cost = ceil(estimated input tokens × input rate / 1,000,000) + ceil(max output tokens × output rate / 1,000,000)`
 
-The tokenizer-independent input estimate uses serialized UTF-8 bytes as a conservative upper bound. Requests containing images reserve the configured alias input ceiling because remote image contents are not available at admission time.
+The tokenizer-independent input estimate uses serialized UTF-8 bytes as a conservative upper bound, capped at the alias input ceiling. Requests containing images reserve the configured alias input ceiling because remote image contents are not available at admission time. Max output tokens is the client's limit clamped to the alias ceiling, or 4,096 (clamped) when omitted; the same limit is sent to the provider.
 
-`actual cost` substitutes normalized actual token counts when the provider supplies them. Ambiguous failures retain the conservative reservation estimate.
+Classroom settlement is capped at the reservation so the shared class cap cannot be exceeded by concurrent requests. Because the byte estimate bounds tokenizer counts for text, the cap only matters for exceptional provider usage reports.
+
+`actual cost` substitutes normalized actual token counts when the provider supplies them. Ambiguous failures retain the conservative reservation estimate; definitive provider rejections are not charged.
 
 Before canary, record privately for every route:
 

@@ -969,7 +969,9 @@ describe("Stage 0 failure-path accounting", () => {
       const response = await SELF.fetch(
         chatRequest(token, { "idempotency-key": "finalize-fixture-0001" }),
       );
-      expect(response.status).toBe(500);
+      // The provider answered and quota settled; only the D1 projection
+      // failed, so the paid result is still returned.
+      expect(response.status).toBe(200);
       const attempt = await env.DB.prepare(
         `SELECT status_code, error_class, cost_microcents, created_at, stale_after
            FROM provider_attempts`,
@@ -987,14 +989,16 @@ describe("Stage 0 failure-path accounting", () => {
       expect(attempt!.stale_after - attempt!.created_at).toBe(40);
       const quota = await quotaState();
       expect(quota.reservations).toEqual({});
-      expect(quota.spentTodayMicrocents).toBe(attempt!.cost_microcents);
+      expect(quota.spentTodayMicrocents).toBeLessThanOrEqual(
+        attempt!.cost_microcents,
+      );
       expect(
         (
           await env.DB.prepare("SELECT status FROM idempotency_keys").first<{
             status: string;
           }>()
         )?.status,
-      ).toBe("failed");
+      ).toBe("completed");
     } finally {
       await env.DB.prepare("DROP TRIGGER fail_attempt_finalization").run();
     }
@@ -1073,7 +1077,7 @@ describe("Stage 0 failure-path accounting", () => {
     },
   );
 
-  it("retries quota completion once and leaves a bounded stale signal if it still fails", async () => {
+  it("retries quota completion once, returns the paid result and leaves a bounded stale signal", async () => {
     const operations: Array<Record<string, unknown>> = [];
     const quotaStub = {
       fetch(_url: string, init?: RequestInit): Promise<Response> {
@@ -1100,7 +1104,9 @@ describe("Stage 0 failure-path accounting", () => {
       chatRequest(token, { "idempotency-key": "quota-failure-fixture-0001" }),
       { ...(env as unknown as GatewayEnv), QUOTA: quotaNamespace },
     );
-    expect(response.status).toBe(503);
+    // The paid result is returned; the unsettled reservation keeps its
+    // conservative charge and the attempt stays visible as stale.
+    expect(response.status).toBe(200);
     expect(operations.map(({ operation }) => operation)).toEqual([
       "acquire",
       "complete",
@@ -1127,7 +1133,7 @@ describe("Stage 0 failure-path accounting", () => {
           status: string;
         }>()
       )?.status,
-    ).toBe("failed");
+    ).toBe("completed");
 
     await env.DB.prepare(
       "UPDATE provider_attempts SET stale_after = unixepoch()",
@@ -1197,7 +1203,7 @@ describe("Stage 0 failure-path accounting", () => {
       QUOTA: quotaNamespace,
     });
 
-    expect(response.status).toBe(503);
+    expect(response.status).toBe(200);
     expect(operations.map(({ operation }) => operation)).toEqual([
       "acquire",
       "complete",
@@ -1781,5 +1787,334 @@ describe("exact quota reservations", () => {
       (await acquire("quota-tpm-fixture", "tpm-b", { rpm: 10, tpm: 100 }, 50))
         .status,
     ).toBe(429);
+  });
+});
+
+describe("student-facing gateway behaviour", () => {
+  function upstreamProfileEnv(
+    profile: "custom" | "openai",
+    route: Record<string, unknown> = {},
+  ): GatewayEnv {
+    const base = upstreamEnv(5000);
+    const routes = JSON.parse(base.PROVIDER_ROUTES_JSON) as Record<
+      string,
+      Record<string, unknown>
+    >;
+    routes["fixture-text-v1"] = {
+      ...routes["fixture-text-v1"],
+      provider: profile,
+      profile,
+      ...route,
+    };
+    return { ...base, PROVIDER_ROUTES_JSON: JSON.stringify(routes) };
+  }
+
+  async function sentBody(
+    fetcher: ReturnType<typeof vi.fn<typeof fetch>>,
+  ): Promise<Record<string, unknown>> {
+    const init = fetcher.mock.calls[0]?.[1];
+    return JSON.parse(String(init?.body)) as Record<string, unknown>;
+  }
+
+  it.each([
+    { profile: "custom" as const, field: "max_tokens" },
+    { profile: "openai" as const, field: "max_completion_tokens" },
+  ])(
+    "sends a default output limit upstream when the client omits one ($profile)",
+    async ({ profile, field }) => {
+      const token = await grant();
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(
+          providerChatResponse({ prompt_tokens: 5, completion_tokens: 2000 }),
+        );
+      vi.stubGlobal("fetch", fetcher);
+      try {
+        const response = await handleGateway(
+          chatRequest(token, undefined, {
+            model: "text.chat.v1",
+            messages: [{ role: "user", content: "hello" }],
+          }),
+          upstreamProfileEnv(profile),
+        );
+        // More than the old implicit 1,024 tokens is now a normal answer.
+        expect(response.status).toBe(200);
+        const wire = await sentBody(fetcher);
+        expect(wire[field]).toBe(4096);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
+  it("clamps an oversized output request to the alias limit instead of rejecting it", async () => {
+    const token = await grant();
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(providerChatResponse({ prompt_tokens: 5 }));
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      const response = await handleGateway(
+        chatRequest(token, undefined, {
+          model: "text.chat.v1",
+          messages: [{ role: "user", content: "hello" }],
+          max_tokens: 100_000,
+        }),
+        upstreamEnv(5000),
+      );
+      expect(response.status).toBe(200);
+      expect((await sentBody(fetcher)).max_tokens).toBe(4096);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
+    { reported: "physical-fixture-v1-2024-07-18", status: 200 },
+    { reported: "physical-fixture-v1-20240718", status: 200 },
+    { reported: "physical-fixture-v1-0613", status: 200 },
+    { reported: "physical-fixture-v1-mini", status: 502 },
+    { reported: "other-model", status: 502 },
+  ])(
+    "accepts dated provider snapshots of the route model ($reported)",
+    async ({ reported, status }) => {
+      const token = await grant();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>().mockResolvedValue(
+          Response.json({
+            id: "chatcmpl_snapshot",
+            object: "chat.completion",
+            model: reported,
+            choices: [
+              {
+                index: 0,
+                message: { role: "assistant", content: "ok" },
+                finish_reason: "stop",
+              },
+            ],
+          }),
+        ),
+      );
+      try {
+        const response = await handleGateway(
+          chatRequest(token),
+          upstreamEnv(5000),
+        );
+        expect(response.status).toBe(status);
+        if (status === 200)
+          await expect(response.json()).resolves.toMatchObject({
+            model: "text.chat.v1",
+          });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
+  it("accepts a route's explicitly allowed alternative model name", async () => {
+    const token = await grant();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        Response.json({
+          id: "chatcmpl_alternative",
+          object: "chat.completion",
+          model: "vendor/physical-fixture",
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: "ok" },
+              finish_reason: "stop",
+            },
+          ],
+        }),
+      ),
+    );
+    try {
+      const response = await handleGateway(
+        chatRequest(token),
+        upstreamProfileEnv("custom", {
+          acceptedModels: ["vendor/physical-fixture"],
+        }),
+      );
+      expect(response.status).toBe(200);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
+    { upstream: 400, status: 400, code: "invalid_request", charged: false },
+    { upstream: 422, status: 400, code: "invalid_request", charged: false },
+    {
+      upstream: 429,
+      status: 429,
+      code: "rate_limit_exceeded",
+      charged: false,
+    },
+    {
+      upstream: 401,
+      status: 502,
+      code: "provider_unavailable",
+      charged: false,
+    },
+    {
+      upstream: 404,
+      status: 502,
+      code: "provider_unavailable",
+      charged: false,
+    },
+    {
+      upstream: 500,
+      status: 502,
+      code: "provider_unavailable",
+      charged: true,
+    },
+  ])(
+    "maps upstream $upstream to $status and charges only ambiguous failures",
+    async ({ upstream, status, code, charged }) => {
+      const token = await grant();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>().mockResolvedValue(
+          new Response(JSON.stringify({ error: { message: "synthetic" } }), {
+            status: upstream,
+            headers:
+              upstream === 429
+                ? { "content-type": "application/json", "retry-after": "7" }
+                : { "content-type": "application/json" },
+          }),
+        ),
+      );
+      try {
+        const response = await handleGateway(
+          chatRequest(token),
+          upstreamEnv(5000),
+        );
+        expect(response.status).toBe(status);
+        await expect(response.json()).resolves.toMatchObject({
+          error: { code },
+        });
+        if (upstream === 429)
+          expect(response.headers.get("retry-after")).toBe("7");
+        const attempt = await env.DB.prepare(
+          "SELECT status_code, cost_microcents FROM provider_attempts",
+        ).first<{ status_code: number; cost_microcents: number }>();
+        expect(attempt?.status_code).toBe(upstream);
+        const quota = await quotaState();
+        expect(quota.reservations).toEqual({});
+        if (charged) {
+          expect(attempt?.cost_microcents).toBeGreaterThan(0);
+          expect(quota.spentTodayMicrocents).toBe(attempt?.cost_microcents);
+        } else {
+          expect(attempt?.cost_microcents).toBe(0);
+          expect(quota.spentTodayMicrocents).toBe(0);
+        }
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
+  it("tells the client when to retry a local rate limit", async () => {
+    await env.DB.prepare(
+      "UPDATE environments SET rpm_limit = 1 WHERE id = 'env_vibbit'",
+    ).run();
+    const token = await grant();
+    expect((await SELF.fetch(chatRequest(token))).status).toBe(200);
+    const limited = await SELF.fetch(chatRequest(token));
+    expect(limited.status).toBe(429);
+    const retryAfter = Number(limited.headers.get("retry-after"));
+    expect(retryAfter).toBeGreaterThanOrEqual(1);
+    expect(retryAfter).toBeLessThanOrEqual(60);
+  });
+
+  it("releases an idempotency key when the request is denied before dispatch", async () => {
+    await env.DB.prepare(
+      "UPDATE environments SET daily_budget_microcents = 0 WHERE id = 'env_vibbit'",
+    ).run();
+    const token = await grant();
+    const headers = { "idempotency-key": "retry-after-denial-0001" };
+    expect((await SELF.fetch(chatRequest(token, headers))).status).toBe(402);
+    await env.DB.prepare(
+      "UPDATE environments SET daily_budget_microcents = 1000000 WHERE id = 'env_vibbit'",
+    ).run();
+    expect((await SELF.fetch(chatRequest(token, headers))).status).toBe(200);
+    // A dispatched request still fences its key against replay.
+    expect((await SELF.fetch(chatRequest(token, headers))).status).toBe(409);
+  });
+
+  it("explains alias and streaming rejections", async () => {
+    const token = await grant();
+    const physical = await SELF.fetch(
+      chatRequest(token, undefined, {
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    );
+    expect(physical.status).toBe(400);
+    expect(
+      (await physical.json<{ error: { message: string } }>()).error.message,
+    ).toContain("GET /v1/models");
+    const streaming = await SELF.fetch(
+      chatRequest(token, undefined, {
+        model: "text.chat.v1",
+        messages: [{ role: "user", content: "hello" }],
+        stream: true,
+      }),
+    );
+    expect(streaming.status).toBe(400);
+    expect(
+      (await streaming.json<{ error: { message: string } }>()).error.message,
+    ).toContain("streaming is not supported");
+  });
+
+  it("lists only the aliases the credential may call", async () => {
+    const token = await grant();
+    const response = await SELF.fetch(
+      new Request("https://gateway.example.invalid/v1/models", {
+        headers: { authorization: `Bearer ${token}` },
+      }),
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json<{
+      object: string;
+      data: Array<Record<string, unknown>>;
+    }>();
+    expect(body.object).toBe("list");
+    expect(body.data).toEqual([
+      {
+        id: "text.chat.v1",
+        object: "model",
+        created: 0,
+        owned_by: "tkslopper",
+        endpoints: ["/v1/chat/completions"],
+        max_input_tokens: 500000,
+        max_output_tokens: 4096,
+        supports_images: false,
+        supports_reasoning_effort: false,
+        supports_structured_json: false,
+      },
+    ]);
+    expect(JSON.stringify(body)).not.toContain("fixture-chat-v1");
+
+    const single = await SELF.fetch(
+      new Request("https://gateway.example.invalid/v1/models/text.chat.v1", {
+        headers: { authorization: `Bearer ${token}` },
+      }),
+    );
+    expect(single.status).toBe(200);
+    const missing = await SELF.fetch(
+      new Request(
+        "https://gateway.example.invalid/v1/models/vision.classify.v1",
+        { headers: { authorization: `Bearer ${token}` } },
+      ),
+    );
+    expect(missing.status).toBe(404);
+    const anonymous = await SELF.fetch(
+      new Request("https://gateway.example.invalid/v1/models"),
+    );
+    expect(anonymous.status).toBe(401);
   });
 });

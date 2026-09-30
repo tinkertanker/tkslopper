@@ -241,9 +241,14 @@ export type ParsedGatewayRequest =
   | { endpoint: "chat"; body: ChatRequest }
   | { endpoint: "responses"; body: ResponsesRequest };
 
+/** Output limit applied when a client omits one, before the alias ceiling. */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
+
 export function inspectGatewayRequest(request: ParsedGatewayRequest): {
   alias: string;
   estimatedInputTokens: number;
+  /** The client's explicit output limit, if it supplied one. */
+  requestedOutputTokens: number | undefined;
   maxOutputTokens: number;
   hasImages: boolean;
   hasStructuredJson: boolean;
@@ -272,16 +277,16 @@ export function inspectGatewayRequest(request: ParsedGatewayRequest): {
     }
   };
   visit(body);
-  let requestedOutput: number;
+  let requestedOutput: number | undefined;
   let hasStructuredJson: boolean;
   let reasoningEffort: "low" | "medium" | "high" | undefined;
   if (request.endpoint === "chat") {
     requestedOutput =
-      request.body.max_completion_tokens ?? request.body.max_tokens ?? 1024;
+      request.body.max_completion_tokens ?? request.body.max_tokens;
     hasStructuredJson = request.body.response_format !== undefined;
     reasoningEffort = request.body.reasoning_effort;
   } else {
-    requestedOutput = request.body.max_output_tokens ?? 1024;
+    requestedOutput = request.body.max_output_tokens;
     hasStructuredJson =
       request.body.text?.format.type === "json_schema" ||
       request.body.text?.format.type === "json_object";
@@ -295,11 +300,37 @@ export function inspectGatewayRequest(request: ParsedGatewayRequest): {
       1,
       new TextEncoder().encode(JSON.stringify(body)).byteLength,
     ),
-    maxOutputTokens: requestedOutput,
+    requestedOutputTokens: requestedOutput,
+    maxOutputTokens: requestedOutput ?? DEFAULT_MAX_OUTPUT_TOKENS,
     hasImages: images > 0,
     hasStructuredJson,
     reasoningEffort,
   };
+}
+
+/**
+ * Returns the request with an explicit output limit, so the provider enforces
+ * the same envelope the gateway reserved. A client-chosen Chat spelling is
+ * kept; otherwise OpenAI routes get `max_completion_tokens` (required by its
+ * reasoning models) and other compatible routes get `max_tokens`.
+ */
+export function withOutputTokenLimit(
+  request: ParsedGatewayRequest,
+  limit: number,
+  profile: string,
+): ParsedGatewayRequest {
+  if (request.endpoint === "responses")
+    return {
+      endpoint: "responses",
+      body: { ...request.body, max_output_tokens: limit },
+    };
+  const body = { ...request.body };
+  if (body.max_completion_tokens !== undefined)
+    body.max_completion_tokens = limit;
+  else if (body.max_tokens !== undefined || profile !== "openai")
+    body.max_tokens = limit;
+  else body.max_completion_tokens = limit;
+  return { endpoint: "chat", body };
 }
 
 export const tokenExchangeSchema = z
