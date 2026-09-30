@@ -1,6 +1,49 @@
 import { HttpError, jsonResponse } from "@tkslopper/shared";
 
-type AccessEnv = { DB: D1Database; DASHBOARD_ACCESS_AUD?: string };
+type AccessEnv = {
+  DB: D1Database;
+  DASHBOARD_ACCESS_AUD?: string;
+  GATEWAY_PUBLIC_URL?: string;
+};
+
+export type GatewayPublicUrlStatus =
+  "configured" | "unset" | "placeholder" | "invalid";
+
+/**
+ * The gateway origin printed on student cards. It is display-only, so a missing
+ * or malformed value never fails the control plane: the dashboard reports the
+ * status instead and cards show a placeholder. Only a bare https origin is
+ * accepted (no path, query, fragment or credentials), and the reserved
+ * `.invalid` top-level domain used by checked-in fixtures counts as unset.
+ */
+export function gatewayPublicUrl(value: unknown): {
+  public_url: string | null;
+  status: GatewayPublicUrlStatus;
+} {
+  if (value === undefined || value === null)
+    return { public_url: null, status: "unset" };
+  if (typeof value !== "string") return { public_url: null, status: "invalid" };
+  const trimmed = value.trim();
+  if (!trimmed) return { public_url: null, status: "unset" };
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return { public_url: null, status: "invalid" };
+  }
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  )
+    return { public_url: null, status: "invalid" };
+  if (url.hostname === "invalid" || url.hostname.endsWith(".invalid"))
+    return { public_url: null, status: "placeholder" };
+  return { public_url: url.origin, status: "configured" };
+}
 
 export async function requireAccessEmail(
   env: AccessEnv,
@@ -81,5 +124,6 @@ export async function adminSession(
     admins: members.results.slice(0, 100),
     admins_truncated: members.results.length > 100,
     recent_actions: actions.results,
+    gateway: gatewayPublicUrl(env.GATEWAY_PUBLIC_URL),
   });
 }
