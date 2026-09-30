@@ -9,6 +9,7 @@
  * helpers give wrong answers.
  */
 import { pathToFileURL } from "node:url";
+import { Script, createContext } from "node:vm";
 
 type ControlPlaneModule = {
   handleControlPlane: (request: Request, env: unknown) => Promise<Response>;
@@ -54,7 +55,8 @@ const scripts = [
 if (scripts.length === 0) fail("no inline script was found");
 for (const script of scripts) {
   try {
-    new Function(script);
+    // Compiles without running; the page script needs a browser DOM.
+    new Script(script);
   } catch (error) {
     fail(`an inline script does not compile: ${String(error)}`);
   }
@@ -64,15 +66,18 @@ for (const script of scripts) {
 const helpersStart = html.indexOf("const formatDollars = (");
 const helpersEnd = html.indexOf("const money = ", helpersStart);
 if (helpersStart < 0 || helpersEnd < 0) fail("embedded helpers were not found");
-const run = new Function(
+const result = new Script(
   `${html.slice(helpersStart, helpersEnd)}
-   return {
+   ({
      parsed: String(parseDollars("1,234.50").value),
      formatted: formatDollars(2000000000, true),
      cell: csvCell("=1"),
-   };`,
-) as () => { parsed: string; formatted: string; cell: string };
-const result = run();
+   });`,
+).runInContext(createContext({})) as {
+  parsed: string;
+  formatted: string;
+  cell: string;
+};
 if (result.parsed !== "123450000000")
   fail(`parseDollars returned ${result.parsed}`);
 if (!result.formatted.includes("20.00"))
