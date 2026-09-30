@@ -787,7 +787,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
                 </div>
                 <p id="class-action-status" class="status-line" role="status" aria-live="polite"></p>
 
-                <div id="class-kit" hidden>
+                <div id="class-kit" tabindex="-1" aria-labelledby="class-kit-heading" hidden>
                   <h3 id="class-kit-heading">Class kit</h3>
                   <p class="kit-warning">Copy, download or print these keys now: each is shown once and cannot be retrieved later. Keep them out of tickets, logs and browser storage. While this kit is shown, printing the page (including Ctrl+P or Cmd+P) prints every student's card and key. Clearing, refreshing or leaving this page removes them from the screen.</p>
                   <p id="class-kit-gateway" class="field-note warn" hidden></p>
@@ -2352,6 +2352,9 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         const panel = document.getElementById("class-kit");
         panel.hidden = false;
         panel.scrollIntoView({ block: "start" });
+        // The triggering button is disabled while keys are issued, so move
+        // keyboard and screen-reader focus to the keys that were just shown.
+        panel.focus({ preventScroll: true });
       }
       function clearKit() {
         kitState.classId = null;
