@@ -9,6 +9,7 @@
     "TOKEN_ISSUER": "https://control.local.tkslopper.invalid",
     "ENABLE_DEV_ISSUER": "false",
     "DASHBOARD_ACCESS_AUD": "local-dashboard",
+    "GATEWAY_PUBLIC_URL": "https://gateway.example.invalid",
   },
   "access": {
     "dev": {

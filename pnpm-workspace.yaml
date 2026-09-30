@@ -5,6 +5,11 @@ packages:
 overrides:
   # Remove once Miniflare pins sharp >=0.35.4 (GHSA-rgj7-g3m4-5g8c).
   miniflare>sharp: 0.35.4
+  # Remove once upstream ranges resolve patched releases (GHSA-6j4f-fj2g-mc7p,
+  # GHSA-qhr7-859c-m2p7 and the undici DoS/TLS advisories).
+  brace-expansion@<1.1.20: 1.1.21
+  brace-expansion@>=4.0.0 <5.0.11: 5.0.12
+  undici@>=7.0.0 <7.29.1: 7.30.0
 
 onlyBuiltDependencies:
   - esbuild

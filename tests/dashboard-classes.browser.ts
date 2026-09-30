@@ -8,7 +8,8 @@
  *
  * Run: pnpm exec tsx tests/dashboard-classes.browser.ts [port]
  * Then drive http://127.0.0.1:<port>/ with a browser. Switch fixtures at runtime with
- * `curl -X POST /__scenario -d '{"scenario":"empty"}'` and reload.
+ * `curl -X POST /__scenario -d '{"scenario":"empty"}'` and reload. `POST /__fail` with
+ * `{"operation":"classes/list","times":1}` fails the next N calls of one operation.
  */
 import {
   createServer,
@@ -30,7 +31,8 @@ type Scenario =
   | "viewer"
   | "nooptions"
   | "twoproducts"
-  | "expired";
+  | "expired"
+  | "nogateway";
 type Json = Record<string, unknown>;
 
 const ALIAS_PATTERN = /^[a-z][a-z0-9._:-]*\.v[1-9][0-9]*$/;
@@ -96,6 +98,7 @@ const scenarioNames: Scenario[] = [
   "nooptions",
   "twoproducts",
   "expired",
+  "nogateway",
 ];
 const now = () => Math.floor(Date.now() / 1000);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -115,6 +118,7 @@ type GroupRow = Json & {
 type KeyRow = Json & {
   id: string;
   group_id: string;
+  key_hint: string | null;
   revoked_at: number | null;
 };
 type CodeRow = Json & {
@@ -164,6 +168,8 @@ function groupRow(overrides: Partial<GroupRow>): GroupRow {
     class_id: "cls_default",
     name: "Default group",
     status: "active",
+    paused: false,
+    paused_at: null,
     capabilities: null,
     budget_microcents: 500_000_000,
     daily_budget_microcents: null,
@@ -235,6 +241,7 @@ function buildStore(scenario: Scenario): Store {
       {
         id: "key_revoked",
         group_id: "grp_a",
+        key_hint: null,
         created_at: now() - 86_400,
         expires_at: null,
         revoked_at: now() - 3_600,
@@ -242,6 +249,7 @@ function buildStore(scenario: Scenario): Store {
       {
         id: "key_live",
         group_id: "grp_b",
+        key_hint: "Zq4x",
         created_at: now() - 3_600,
         expires_at: null,
         revoked_at: null,
@@ -348,6 +356,7 @@ function buildStore(scenario: Scenario): Store {
     {
       id: "key_a1b2",
       group_id: "grp_1",
+      key_hint: "a1B2",
       created_at: now() - 86_400 * 3,
       expires_at: null,
       revoked_at: null,
@@ -355,6 +364,7 @@ function buildStore(scenario: Scenario): Store {
     {
       id: "key_c3d4",
       group_id: "grp_2",
+      key_hint: null,
       created_at: now() - 86_400 * 2,
       expires_at: now() + 86_400 * 20,
       revoked_at: null,
@@ -454,6 +464,29 @@ function buildStore(scenario: Scenario): Store {
   return store;
 }
 
+const ENVIRONMENT_LIMITS = {
+  policy_version: 3,
+  token_ttl_seconds: 900,
+  rpm_limit: 600,
+  tpm_limit: 2_000_000,
+  concurrency_limit: 20,
+  daily_budget_microcents: 2_000_000_000,
+  max_request_bytes: 1_048_576,
+};
+const LAB_LIMITS = {
+  ...ENVIRONMENT_LIMITS,
+  rpm_limit: 20,
+  tpm_limit: 50_000,
+  concurrency_limit: 2,
+};
+
+// text.structured.v1 is Responses-only so cards can show the Responses example.
+const PRODUCTION_ENDPOINTS = [
+  { alias: "text.chat.v1", endpoints: ["chat", "responses"] },
+  { alias: "text.structured.v1", endpoints: ["responses"] },
+  { alias: "text.vision.v1", endpoints: ["chat"] },
+];
+
 function optionsFixture(scenario: Scenario): Json {
   if (scenario === "twoproducts") {
     return {
@@ -464,6 +497,8 @@ function optionsFixture(scenario: Scenario): Json {
           product_name: "School products",
           environment_name: "production",
           aliases: ["text.chat.v1", "text.vision.v1", "text.structured.v1"],
+          alias_endpoints: PRODUCTION_ENDPOINTS,
+          limits: ENVIRONMENT_LIMITS,
         },
         {
           product_id: "prod_arts",
@@ -471,6 +506,8 @@ function optionsFixture(scenario: Scenario): Json {
           product_name: "Arts academy",
           environment_name: "studio",
           aliases: ["text.chat.v1"],
+          alias_endpoints: [{ alias: "text.chat.v1", endpoints: ["chat"] }],
+          limits: ENVIRONMENT_LIMITS,
         },
       ],
       truncated: false,
@@ -484,6 +521,8 @@ function optionsFixture(scenario: Scenario): Json {
         product_name: "School products",
         environment_name: "production",
         aliases: ["text.chat.v1", "text.vision.v1", "text.structured.v1"],
+        alias_endpoints: PRODUCTION_ENDPOINTS,
+        limits: ENVIRONMENT_LIMITS,
       },
       {
         product_id: "prod_school",
@@ -491,6 +530,8 @@ function optionsFixture(scenario: Scenario): Json {
         product_name: "School products",
         environment_name: "lab",
         aliases: ["text.chat.v1"],
+        alias_endpoints: [{ alias: "text.chat.v1", endpoints: ["chat"] }],
+        limits: LAB_LIMITS,
       },
     ],
     truncated: false,
@@ -530,10 +571,11 @@ function dashboardFixture(): Json {
         enabled: true,
         kill_switch: false,
         policy_version: 3,
-        rpm_limit: 30,
-        tpm_limit: 100000,
-        concurrency_limit: 2,
-        daily_budget_microcents: 1000000,
+        token_ttl_seconds: 900,
+        rpm_limit: 600,
+        tpm_limit: 2000000,
+        concurrency_limit: 20,
+        daily_budget_microcents: 2000000000,
         max_request_bytes: 1048576,
         aliases: 2,
         active_entitlements: 4,
@@ -614,6 +656,9 @@ async function main(): Promise<void> {
   const port = Number(process.argv[2] ?? 8790);
   let { scenario, store } = buildScenario();
   let updateDelayMs = 0;
+  // POST /__fail {"operation": "classes/list", "times": 1} makes the next N calls of
+  // that operation return 500, to exercise partial-failure handling.
+  const failures = new Map<string, number>();
   const html = (await dashboardPage().text()).replace(
     "<script nonce=",
     `${HANDLER_SETTLEMENT_PROBE}<script nonce=`,
@@ -658,6 +703,16 @@ async function main(): Promise<void> {
       sendJson(response, 200, { ok: true, ms: updateDelayMs });
       return;
     }
+    if (request.method === "POST" && path === "/__fail") {
+      const body = await readBody(request);
+      const times = Number(body.times ?? 1);
+      failures.set(
+        str(body.operation),
+        Number.isFinite(times) ? Math.max(0, times) : 1,
+      );
+      sendJson(response, 200, { ok: true });
+      return;
+    }
     if (request.method === "POST" && path === "/__scenario") {
       const body = await readBody(request);
       const next = str(body.scenario);
@@ -685,6 +740,13 @@ async function main(): Promise<void> {
         admins: [{ email: "operator@example.invalid", enabled: true }],
         admins_truncated: false,
         recent_actions: [],
+        gateway:
+          scenario === "nogateway"
+            ? { public_url: null, status: "unset" }
+            : {
+                public_url: "https://gateway.example.com",
+                status: "configured",
+              },
       });
       return;
     }
@@ -709,6 +771,14 @@ async function main(): Promise<void> {
     ) {
       sendJson(response, 500, {
         error: { message: "Fixture: class service is unavailable." },
+      });
+      return;
+    }
+    const remainingFailures = failures.get(operation) ?? 0;
+    if (remainingFailures > 0) {
+      failures.set(operation, remainingFailures - 1);
+      sendJson(response, 500, {
+        error: { message: `Fixture: ${operation} failed on purpose.` },
       });
       return;
     }
@@ -832,13 +902,30 @@ async function main(): Promise<void> {
       }
       case "groups": {
         const names = Array.isArray(body.names) ? (body.names as string[]) : [];
+        const taken = new Set(
+          store.groups
+            .filter((row) => row.class_id === classId)
+            .map((row) => row.name),
+        );
+        if (
+          names.some((name) => taken.has(name)) ||
+          new Set(names).size !== names.length
+        ) {
+          sendJson(response, 409, {
+            error: { message: "a group with that name already exists" },
+          });
+          return;
+        }
+        const target = store.classes.find((row) => row.id === classId);
         const created = names.map((name, index) => {
           store.counter += 1;
           const group = groupRow({
             id: `grp_new_${store.counter}_${index}`,
             class_id: classId,
             name,
-            budget_microcents: 500_000_000,
+            budget_microcents: Number(
+              target?.group_budget_microcents ?? 500_000_000,
+            ),
           });
           store.groups.push(group);
           return group;
@@ -853,12 +940,132 @@ async function main(): Promise<void> {
           sendJson(response, 404, { error: { message: "Group not found." } });
           return;
         }
-        store.groups[index] = {
-          ...store.groups[index],
-          ...body,
-          updated_at: now(),
-        } as GroupRow;
+        const current = store.groups[index] as GroupRow;
+        if (current.status === "revoked") {
+          sendJson(response, 409, {
+            error: { message: "revoked groups are terminal" },
+          });
+          return;
+        }
+        const next = { ...current, ...body, updated_at: now() } as GroupRow;
+        if (typeof body.paused === "boolean") {
+          next.paused = body.paused;
+          next.paused_at = body.paused ? now() : null;
+        }
+        store.groups[index] = next;
         sendJson(response, 200, { id });
+        return;
+      }
+      case "groups/access-bulk": {
+        const target = store.classes.find((row) => row.id === classId);
+        if (!target) {
+          sendJson(response, 404, { error: { message: "class not found" } });
+          return;
+        }
+        if (Number(target.expires_at) <= now()) {
+          sendJson(response, 409, {
+            error: { message: "class schedule has already ended" },
+          });
+          return;
+        }
+        const requested = Array.isArray(body.group_ids)
+          ? (body.group_ids as string[])
+          : null;
+        const candidates = requested
+          ? store.groups.filter(
+              (row) => row.class_id === classId && requested.includes(row.id),
+            )
+          : store.groups
+              .filter(
+                (row) =>
+                  row.class_id === classId &&
+                  row.status === "active" &&
+                  !row.paused,
+              )
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .slice(0, 100);
+        const keys: Json[] = [];
+        const skipped: Json[] = [];
+        for (const group of candidates) {
+          if (group.status === "revoked") {
+            skipped.push({
+              group_id: group.id,
+              group_name: group.name,
+              reason: "group is revoked",
+            });
+            continue;
+          }
+          store.counter += 1;
+          const apiKey = `tkgk_${store.counter}_fixture-bulk-${group.id.slice(-4)}`;
+          const id = `key_bulk_${store.counter}`;
+          store.keys.push({
+            id,
+            group_id: group.id,
+            key_hint: apiKey.slice(-4),
+            created_at: now(),
+            expires_at: null,
+            revoked_at: null,
+          });
+          keys.push({
+            group_id: group.id,
+            group_name: group.name,
+            key_id: id,
+            api_key: apiKey,
+            key_hint: apiKey.slice(-4),
+            expires_at: null,
+          });
+        }
+        sendJson(response, 201, {
+          class_id: classId,
+          keys,
+          skipped,
+          truncated: false,
+          warning: "shown once",
+        });
+        return;
+      }
+      case "groups/budget-bulk": {
+        const target = store.classes.find((row) => row.id === classId);
+        if (!target) {
+          sendJson(response, 404, { error: { message: "class not found" } });
+          return;
+        }
+        const amount = Number(body.budget_microcents ?? 0);
+        const updated: Json[] = [];
+        for (const group of store.groups.filter(
+          (row) => row.class_id === classId && row.status !== "revoked",
+        )) {
+          group.budget_microcents =
+            body.mode === "set"
+              ? amount
+              : Number(group.budget_microcents ?? 0) + amount;
+          updated.push({
+            group_id: group.id,
+            group_name: group.name,
+            budget_microcents: group.budget_microcents,
+          });
+        }
+        const result: Json = {
+          class_id: classId,
+          mode: body.mode,
+          groups: updated,
+          skipped: [],
+        };
+        if (typeof body.class_budget_microcents === "number") {
+          target.budget_microcents = body.class_budget_microcents;
+          result.class_budget_microcents = body.class_budget_microcents;
+        }
+        sendJson(response, 200, result);
+        return;
+      }
+      case "environments/update": {
+        sendJson(response, 200, {
+          id: str(body.environment_id),
+          product_id: str(body.product_id),
+          ...ENVIRONMENT_LIMITS,
+          ...body,
+          policy_version: ENVIRONMENT_LIMITS.policy_version + 1,
+        });
         return;
       }
       case "groups/access": {
@@ -891,9 +1098,11 @@ async function main(): Promise<void> {
           return;
         }
         const id = `key_${store.counter}`;
+        const apiKey = `tkgk_${store.counter}_fixture-api-key`;
         store.keys.push({
           id,
           group_id: groupId,
+          key_hint: apiKey.slice(-4),
           created_at: now(),
           expires_at: null,
           revoked_at: null,
@@ -902,7 +1111,8 @@ async function main(): Promise<void> {
           id,
           group_id: groupId,
           kind: "api_key",
-          api_key: `tkgk_${store.counter}_fixture-api-key`,
+          api_key: apiKey,
+          key_hint: apiKey.slice(-4),
           warning: "shown once",
         });
         return;
@@ -913,9 +1123,11 @@ async function main(): Promise<void> {
         if (existing) existing.revoked_at = now();
         store.counter += 1;
         const nextId = `key_rot_${store.counter}`;
+        const apiKey = `tkgk_rot_${store.counter}_fixture`;
         store.keys.push({
           id: nextId,
           group_id: existing?.group_id ?? "grp_1",
+          key_hint: apiKey.slice(-4),
           created_at: now(),
           expires_at: null,
           revoked_at: null,
@@ -924,7 +1136,8 @@ async function main(): Promise<void> {
           id: nextId,
           group_id: existing?.group_id ?? "grp_1",
           kind: "api_key",
-          api_key: `tkgk_rot_${store.counter}_fixture`,
+          api_key: apiKey,
+          key_hint: apiKey.slice(-4),
           warning: "shown once",
         });
         return;

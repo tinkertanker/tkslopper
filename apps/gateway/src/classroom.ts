@@ -143,13 +143,11 @@ async function resolveClassroomAuthorization(
       "product environment is disabled",
     );
   }
-  const dailyBudgetMicrocents =
-    classroom.dailyBudgetMicrocents === null
-      ? environment.daily_budget_microcents
-      : Math.min(
-          classroom.dailyBudgetMicrocents,
-          environment.daily_budget_microcents,
-        );
+  // The environment daily budget is a per-principal allowance for service and
+  // legacy device traffic. Classroom spending is bounded by the class and group
+  // lifetime caps, so only an explicit class/group daily budget applies here.
+  // Rate, token and concurrency limits remain environment guardrails.
+  const dailyBudgetMicrocents = classroom.dailyBudgetMicrocents;
   const limits: ClassroomLimits = {
     classBudgetMicrocents: classroom.classBudgetMicrocents,
     groupBudgetMicrocents: classroom.groupBudgetMicrocents,
@@ -169,7 +167,9 @@ async function resolveClassroomAuthorization(
     rpm_limit: limits.rpm,
     tpm_limit: limits.tpm,
     concurrency_limit: limits.concurrency,
-    daily_budget_microcents: dailyBudgetMicrocents,
+    // Unused for classroom admission, which applies `limits` instead.
+    daily_budget_microcents:
+      dailyBudgetMicrocents ?? environment.daily_budget_microcents,
     max_request_bytes: environment.max_request_bytes,
   };
   return {

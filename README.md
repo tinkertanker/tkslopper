@@ -32,8 +32,10 @@ See [the architecture overview](docs/architecture.md), [threat model](docs/threa
 
 - `POST /v1/chat/completions`
 - `POST /v1/responses`
+- `GET /v1/models` (and `/v1/models/{alias}`): the aliases the calling credential may use
 - JSON responses only; `stream: true` is rejected
 - selected text, image-input, strict JSON, token-limit, temperature, and explicitly enabled reasoning-effort fields
+- output limits default to 4,096 tokens and are clamped to the alias ceiling; rate-limit responses carry `Retry-After`
 - no tools, audio, files, fine-tuning, assistants, batches, arbitrary provider/model selection, retry, fallback, or cache API
 
 This is intentionally a narrow, versioned OpenAI-compatible shape. It is not advertised as full OpenAI API compatibility. A buffered Chat HTTP 200 can be complete, truncated, refused/filtered, or incomplete; full-result consumers must require `finish_reason: "stop"` and non-empty content. See [the OpenAPI specification](openapi/tkslopper.openapi.yaml) and [buffered Chat outcome decision](docs/adr/0011-buffered-chat-outcomes.md).
@@ -103,7 +105,7 @@ pnpm audit --audit-level=high
 
 ## Deployment
 
-Deployment is deliberately not automated from this repository. Follow [the production roadmap and decision register](docs/production-decisions.md), [canary plan](docs/canary-plan.md), and [deployment runbook](docs/runbooks/deployment.md), and obtain separate authorization before creating or changing infrastructure. Secrets must be supplied with `wrangler secret put`; never place them in Wrangler vars or committed files.
+Deployment is deliberately not automated from this repository. For a first operator-run deployment, follow [the first deployment runbook](docs/runbooks/first-deploy.md). Follow [the production roadmap and decision register](docs/production-decisions.md), [canary plan](docs/canary-plan.md), and [deployment runbook](docs/runbooks/deployment.md), and obtain separate authorization before creating or changing infrastructure. Secrets must be supplied with `wrangler secret put`; never place them in Wrangler vars or committed files.
 
 ## Security
 

@@ -19,6 +19,14 @@ Use `pnpm admin -- kill-switch set` with a JSON body naming the product or envir
 - Revoke an access code to disable future exchanges, revoke its activations, and revoke derived entitlements.
 - Revoke an entitlement to invalidate every linked live grant at the gateway's next D1 check.
 
+## Classroom access
+
+- Pause a group with `groups/update` and `"paused": true` to stop its keys, grants and activations without revoking anything; `"paused": false` resumes it. Use revocation only when the group must never be used again.
+- Issue keys for a whole class with `groups/access-bulk`; handle the response as a secret and check `skipped` for groups that need attention.
+- Top up allocations with `groups/budget-bulk` (`set` or `add`), optionally with `class_budget_microcents`. An ended class can be extended with `classes/update`.
+- Raise environment guardrails for a large class with `pnpm admin -- environment update <product_id> <environment_id> --rpm N --tpm N --concurrency N`; classroom group limits are always bounded by them.
+- Manage named dashboard admins with `pnpm admin -- admins grant <email>` or `admins remove <email>`.
+
 ## Signing-key rotation
 
 The v1 verifier supports one HS256 key. Rotation therefore requires a coordinated maintenance window: stop minting, kill affected environments, deploy both Workers with the new secret, revoke outstanding grants, then restore. A dual-key or asymmetric design is a launch decision if zero-downtime rotation is required.

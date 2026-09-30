@@ -64,7 +64,7 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
         "413": { $ref: "#/components/responses/Error" }
         "415": { $ref: "#/components/responses/Error" }
-        "429": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/Error" }
         "502": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
@@ -104,7 +104,10 @@ paths:
                   stream: false
       responses:
         "200":
-          description: Complete buffered response; model is the requested alias
+          description: >-
+            Buffered result; model is the requested alias. HTTP 200 may be
+            complete or incomplete: a full-result client must require
+            status=completed and non-empty output_text without refusal parts.
           headers:
             x-tkslopper-request-id:
               $ref: "#/components/headers/RequestId"
@@ -127,11 +130,67 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
         "413": { $ref: "#/components/responses/Error" }
         "415": { $ref: "#/components/responses/Error" }
-        "429": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/Error" }
         "502": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
         "504": { $ref: "#/components/responses/Error" }
+  /v1/models:
+    get:
+      tags: [Inference]
+      operationId: listModels
+      summary: List the capability aliases this credential may call
+      security:
+        - shortGrant: []
+        - groupKey: []
+      responses:
+        "200":
+          description: OpenAI-shaped model list; physical models are never disclosed
+          headers:
+            x-tkslopper-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [object, data]
+                properties:
+                  object: { const: list }
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/Model" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /v1/models/{model}:
+    get:
+      tags: [Inference]
+      operationId: retrieveModel
+      summary: Describe one capability alias this credential may call
+      security:
+        - shortGrant: []
+        - groupKey: []
+      parameters:
+        - name: model
+          in: path
+          required: true
+          schema: { $ref: "#/components/schemas/CapabilityAlias" }
+      responses:
+        "200":
+          description: One callable alias
+          headers:
+            x-tkslopper-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Model" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /v1/token:
     servers:
       - url: https://control.example.invalid
@@ -164,6 +223,13 @@ paths:
       tags: [Grants]
       operationId: activateAccessCode
       summary: Bootstrap a pseudonymous device activation and short-lived grant
+      description: >-
+        The access-code secret is always verified. A wrong secret returns 401
+        and increments a bounded failure record, but never locks out the
+        correct secret, so already-activated devices can keep renewing.
+        Classroom join codes also return 403 while their class is paused or
+        revoked, their group is paused or revoked, or the class/group schedule
+        is not active.
       security: []
       requestBody:
         required: true
@@ -193,7 +259,7 @@ components:
       description: >-
         High-entropy classroom group API key, used directly at the gateway.
         All keys and activated devices for a group share its allocation and
-        the class total budget. Class/group schedules, pause, model policy and
+        the class total budget. Class/group schedules, class/group pause, model policy and
         revocation are checked on every request. Rotation does not reset spend.
         Join codes are separate credentials used only with /v1/activations.
     serviceCredential:
@@ -223,6 +289,20 @@ components:
       headers:
         x-tkslopper-request-id:
           $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    RateLimited:
+      description: >-
+        A local rate, token or concurrency limit, or an upstream rate limit,
+        was reached. Retry after the indicated number of seconds.
+      headers:
+        x-tkslopper-request-id:
+          $ref: "#/components/headers/RequestId"
+        retry-after:
+          description: Seconds to wait before retrying
+          schema: { type: integer, minimum: 1, maximum: 3600 }
       content:
         application/json:
           schema:
@@ -364,8 +444,20 @@ components:
         stream: { const: false, default: false }
         temperature: { type: number, minimum: 0, maximum: 2 }
         top_p: { type: number, minimum: 0, maximum: 1 }
-        max_tokens: { type: integer, minimum: 1, maximum: 200000 }
-        max_completion_tokens: { type: integer, minimum: 1, maximum: 200000 }
+        max_tokens:
+          type: integer
+          minimum: 1
+          maximum: 200000
+          description: >-
+            Defaults to 4096 when omitted and is clamped to the alias ceiling;
+            the effective limit is always sent to the provider.
+        max_completion_tokens:
+          type: integer
+          minimum: 1
+          maximum: 200000
+          description: >-
+            Defaults to 4096 when omitted and is clamped to the alias ceiling;
+            the effective limit is always sent to the provider.
         response_format:
           oneOf:
             - type: object
@@ -449,7 +541,13 @@ components:
         stream: { const: false, default: false }
         temperature: { type: number, minimum: 0, maximum: 2 }
         top_p: { type: number, minimum: 0, maximum: 1 }
-        max_output_tokens: { type: integer, minimum: 1, maximum: 200000 }
+        max_output_tokens:
+          type: integer
+          minimum: 1
+          maximum: 200000
+          description: >-
+            Defaults to 4096 when omitted and is clamped to the alias ceiling;
+            the effective limit is always sent to the provider.
         reasoning:
           type: object
           additionalProperties: false
@@ -555,6 +653,39 @@ components:
         input_tokens: { type: integer, minimum: 0 }
         output_tokens: { type: integer, minimum: 0 }
         total_tokens: { type: integer, minimum: 0 }
+    Model:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          object,
+          created,
+          owned_by,
+          endpoints,
+          max_input_tokens,
+          max_output_tokens,
+          supports_images,
+          supports_reasoning_effort,
+          supports_structured_json,
+        ]
+      properties:
+        id: { $ref: "#/components/schemas/CapabilityAlias" }
+        object: { const: model }
+        created: { const: 0 }
+        owned_by: { const: tkslopper }
+        endpoints:
+          type: array
+          items: { enum: [/v1/chat/completions, /v1/responses] }
+        max_input_tokens:
+          type: integer
+          description: Alias input ceiling, compared with the serialised request byte count
+        max_output_tokens:
+          type: integer
+          description: Larger requested output limits are clamped to this value
+        supports_images: { type: boolean }
+        supports_reasoning_effort: { type: boolean }
+        supports_structured_json: { type: boolean }
     ErrorResponse:
       type: object
       additionalProperties: false

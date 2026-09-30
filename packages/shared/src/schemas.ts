@@ -241,9 +241,14 @@ export type ParsedGatewayRequest =
   | { endpoint: "chat"; body: ChatRequest }
   | { endpoint: "responses"; body: ResponsesRequest };
 
+/** Output limit applied when a client omits one, before the alias ceiling. */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
+
 export function inspectGatewayRequest(request: ParsedGatewayRequest): {
   alias: string;
   estimatedInputTokens: number;
+  /** The client's explicit output limit, if it supplied one. */
+  requestedOutputTokens: number | undefined;
   maxOutputTokens: number;
   hasImages: boolean;
   hasStructuredJson: boolean;
@@ -272,16 +277,16 @@ export function inspectGatewayRequest(request: ParsedGatewayRequest): {
     }
   };
   visit(body);
-  let requestedOutput: number;
+  let requestedOutput: number | undefined;
   let hasStructuredJson: boolean;
   let reasoningEffort: "low" | "medium" | "high" | undefined;
   if (request.endpoint === "chat") {
     requestedOutput =
-      request.body.max_completion_tokens ?? request.body.max_tokens ?? 1024;
+      request.body.max_completion_tokens ?? request.body.max_tokens;
     hasStructuredJson = request.body.response_format !== undefined;
     reasoningEffort = request.body.reasoning_effort;
   } else {
-    requestedOutput = request.body.max_output_tokens ?? 1024;
+    requestedOutput = request.body.max_output_tokens;
     hasStructuredJson =
       request.body.text?.format.type === "json_schema" ||
       request.body.text?.format.type === "json_object";
@@ -295,11 +300,37 @@ export function inspectGatewayRequest(request: ParsedGatewayRequest): {
       1,
       new TextEncoder().encode(JSON.stringify(body)).byteLength,
     ),
-    maxOutputTokens: requestedOutput,
+    requestedOutputTokens: requestedOutput,
+    maxOutputTokens: requestedOutput ?? DEFAULT_MAX_OUTPUT_TOKENS,
     hasImages: images > 0,
     hasStructuredJson,
     reasoningEffort,
   };
+}
+
+/**
+ * Returns the request with an explicit output limit, so the provider enforces
+ * the same envelope the gateway reserved. OpenAI routes always receive
+ * `max_completion_tokens`, which every OpenAI chat model accepts and its
+ * reasoning models require; other compatible routes always receive the widely
+ * supported `max_tokens`, whatever spelling the client chose.
+ */
+export function withOutputTokenLimit(
+  request: ParsedGatewayRequest,
+  limit: number,
+  profile: string,
+): ParsedGatewayRequest {
+  if (request.endpoint === "responses")
+    return {
+      endpoint: "responses",
+      body: { ...request.body, max_output_tokens: limit },
+    };
+  const body = { ...request.body };
+  delete body.max_tokens;
+  delete body.max_completion_tokens;
+  if (profile === "openai") body.max_completion_tokens = limit;
+  else body.max_tokens = limit;
+  return { endpoint: "chat", body };
 }
 
 export const tokenExchangeSchema = z
@@ -322,29 +353,53 @@ export const productCreateSchema = z
   .object({ slug: identifierSchema, display_name: z.string().min(1).max(200) })
   .strict();
 
+const tokenTtlSecondsSchema = z.number().int().min(60).max(3600);
+const environmentRpmLimitSchema = z.number().int().min(1).max(100_000);
+const environmentTpmLimitSchema = z.number().int().min(1).max(100_000_000);
+const environmentConcurrencyLimitSchema = z.number().int().min(1).max(1000);
+const environmentDailyBudgetSchema = z
+  .number()
+  .int()
+  .min(0)
+  .max(1_000_000_000_000_000);
+const maxRequestBytesSchema = z.number().int().min(1024).max(10_485_760);
+
+// Defaults are sized for one class of about 30 students sharing an
+// environment; per-group classroom limits narrow them further.
 export const environmentCreateSchema = z
   .object({
     product_id: identifierSchema,
     name: identifierSchema,
     audience: z.string().min(3).max(200),
-    token_ttl_seconds: z.number().int().min(60).max(3600).default(900),
-    rpm_limit: z.number().int().min(1).max(100_000).default(30),
-    tpm_limit: z.number().int().min(1).max(100_000_000).default(100_000),
-    concurrency_limit: z.number().int().min(1).max(1000).default(2),
-    daily_budget_microcents: z
-      .number()
-      .int()
-      .min(0)
-      .max(1_000_000_000_000_000)
-      .default(1_000_000),
-    max_request_bytes: z
-      .number()
-      .int()
-      .min(1024)
-      .max(10_485_760)
-      .default(1_048_576),
+    token_ttl_seconds: tokenTtlSecondsSchema.default(900),
+    rpm_limit: environmentRpmLimitSchema.default(600),
+    tpm_limit: environmentTpmLimitSchema.default(2_000_000),
+    concurrency_limit: environmentConcurrencyLimitSchema.default(20),
+    daily_budget_microcents:
+      environmentDailyBudgetSchema.default(2_000_000_000),
+    max_request_bytes: maxRequestBytesSchema.default(1_048_576),
   })
   .strict();
+
+export const environmentUpdateSchema = z
+  .object({
+    product_id: identifierSchema,
+    environment_id: identifierSchema,
+    token_ttl_seconds: tokenTtlSecondsSchema.optional(),
+    rpm_limit: environmentRpmLimitSchema.optional(),
+    tpm_limit: environmentTpmLimitSchema.optional(),
+    concurrency_limit: environmentConcurrencyLimitSchema.optional(),
+    daily_budget_microcents: environmentDailyBudgetSchema.optional(),
+    max_request_bytes: maxRequestBytesSchema.optional(),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      Object.keys(value).some(
+        (key) => key !== "product_id" && key !== "environment_id",
+      ),
+    { message: "at least one environment setting is required" },
+  );
 
 export const aliasUpsertSchema = z
   .object({

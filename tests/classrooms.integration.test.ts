@@ -563,6 +563,8 @@ describe("classroom group policy", () => {
         class_id: classId,
         name: "Alpha",
         status: "active",
+        paused: false,
+        paused_at: null,
         capabilities: null,
         budget_microcents: 100_000,
         daily_budget_microcents: null,
@@ -1544,12 +1546,25 @@ describe("classroom class options", () => {
       "env_second",
       "env_classroom",
     ]);
+    // Environment guardrails are non-secret and shown so class limits can be
+    // chosen within them; these rows use the column defaults.
+    const defaultLimits = {
+      policy_version: 1,
+      token_ttl_seconds: 900,
+      rpm_limit: 30,
+      tpm_limit: 100_000,
+      concurrency_limit: 2,
+      daily_budget_microcents: 1_000_000,
+      max_request_bytes: 1_048_576,
+    };
     expect(body.environments[0]).toEqual({
       product_id: "prod_classroom",
       environment_id: "env_second",
       product_name: "Classroom fixture",
       environment_name: "second",
       aliases: ["second.only.v1"],
+      alias_endpoints: [{ alias: "second.only.v1", endpoints: ["chat"] }],
+      limits: defaultLimits,
     });
     expect(body.environments[1]).toEqual({
       product_id: "prod_classroom",
@@ -1557,6 +1572,13 @@ describe("classroom class options", () => {
       product_name: "Classroom fixture",
       environment_name: "test",
       aliases: ["dual.endpoint.v1", "json.strict.v1", "text.chat.v1"],
+      // Endpoints let clients choose Chat Completions or Responses per alias.
+      alias_endpoints: [
+        { alias: "dual.endpoint.v1", endpoints: ["chat", "responses"] },
+        { alias: "json.strict.v1", endpoints: ["chat"] },
+        { alias: "text.chat.v1", endpoints: ["chat"] },
+      ],
+      limits: defaultLimits,
     });
     // Disabled aliases, disabled or killed environments, and other products are omitted.
     expect(text).not.toContain("vision.classify.v1");
@@ -1571,9 +1593,11 @@ describe("classroom class options", () => {
     expect(text).not.toContain("secret");
     for (const entry of body.environments)
       expect(Object.keys(entry).sort()).toEqual([
+        "alias_endpoints",
         "aliases",
         "environment_id",
         "environment_name",
+        "limits",
         "product_id",
         "product_name",
       ]);
@@ -1613,7 +1637,11 @@ describe("classroom class options", () => {
       await env.DB.batch(aliases.slice(offset, offset + 50));
 
     const body = await adminJson<{
-      environments: { environment_id: string; aliases: string[] }[];
+      environments: {
+        environment_id: string;
+        aliases: string[];
+        alias_endpoints: unknown[];
+      }[];
       truncated: boolean;
     }>("/admin/v1/classes/options", {});
     expect(body.truncated).toBe(true);
@@ -1624,6 +1652,7 @@ describe("classroom class options", () => {
     expect(bulk?.aliases).toHaveLength(50);
     expect(bulk?.aliases[0]).toBe("bulk.00.v1");
     expect(bulk?.aliases[49]).toBe("bulk.49.v1");
+    expect(bulk?.alias_endpoints).toHaveLength(50);
   });
 
   it("requires the same admin authentication as the rest of the classroom surface", async () => {
@@ -1647,6 +1676,797 @@ describe("classroom class options", () => {
         )
       ).status,
     ).toBe(400);
+  });
+});
+
+describe("classroom group pause", () => {
+  it("pauses and resumes a group reversibly with audited state", async () => {
+    const classId = await createClass();
+    const [group] = await createGroups(classId, ["Alpha"]);
+    const groupId = String(group?.id);
+    const listGroup = async (): Promise<Record<string, unknown>> => {
+      const list = await adminJson<{ groups: Record<string, unknown>[] }>(
+        "/admin/v1/groups/list",
+        { class_id: classId },
+      );
+      return list.groups[0] ?? {};
+    };
+
+    const paused = await admin("/admin/v1/groups/update", {
+      id: groupId,
+      paused: true,
+    });
+    expect(paused.status, await paused.clone().text()).toBe(200);
+    const first = await listGroup();
+    expect(first).toMatchObject({ status: "active", paused: true });
+    expect(first.paused_at).toEqual(anyNumber());
+    await env.DB.prepare(
+      "UPDATE classroom_groups SET paused_at = 1 WHERE id = ?",
+    )
+      .bind(groupId)
+      .run();
+    // Pausing again keeps the original pause time.
+    expect(
+      (await admin("/admin/v1/groups/update", { id: groupId, paused: true }))
+        .status,
+    ).toBe(200);
+    expect(await listGroup()).toMatchObject({ paused: true, paused_at: 1 });
+
+    const resumed = await admin("/admin/v1/groups/update", {
+      id: groupId,
+      paused: false,
+    });
+    expect(resumed.status).toBe(200);
+    expect(await listGroup()).toMatchObject({
+      status: "active",
+      paused: false,
+      paused_at: null,
+    });
+    expect(
+      (
+        await admin("/admin/v1/groups/update", {
+          id: groupId,
+          paused: true,
+          budget_microcents: 5,
+        })
+      ).status,
+    ).toBe(200);
+    const audits = await env.DB.prepare(
+      `SELECT action FROM admin_audit
+        WHERE resource_type = 'classroom_group' AND action <> 'create'
+        ORDER BY rowid`,
+    ).all<{ action: string }>();
+    expect(audits.results.map((row) => row.action)).toEqual([
+      "pause",
+      "pause",
+      "resume",
+      "update",
+    ]);
+
+    expect(
+      (await admin("/admin/v1/groups/update", { id: groupId, paused: "yes" }))
+        .status,
+    ).toBe(400);
+    expect(
+      (
+        await admin("/admin/v1/groups/update", {
+          id: groupId,
+          status: "revoked",
+        })
+      ).status,
+    ).toBe(200);
+    for (const pausedValue of [true, false])
+      expect(
+        (
+          await admin("/admin/v1/groups/update", {
+            id: groupId,
+            paused: pausedValue,
+          })
+        ).status,
+      ).toBe(409);
+  });
+
+  it("blocks new and renewing activations while paused and restores them on resume", async () => {
+    const classId = await createClass();
+    const [group] = await createGroups(classId, ["Alpha"]);
+    const groupId = String(group?.id);
+    const issued = await json<{ id: string; access_code: string }>(
+      await admin("/admin/v1/groups/access", {
+        group_id: groupId,
+        kind: "join_code",
+      }),
+    );
+    const activate = (device: string) =>
+      handleControlPlane(
+        request("/v1/activations", {
+          access_code: issued.access_code,
+          device_id: device,
+        }),
+        controlEnv,
+      );
+    expect((await activate("classroom-device-a")).status).toBe(200);
+    await admin("/admin/v1/groups/update", { id: groupId, paused: true });
+    const renewal = await activate("classroom-device-a");
+    expect(renewal.status).toBe(403);
+    expect(await renewal.json()).toMatchObject({
+      error: { message: "classroom group is paused" },
+    });
+    expect((await activate("classroom-device-b")).status).toBe(403);
+    await admin("/admin/v1/groups/update", { id: groupId, paused: false });
+    expect((await activate("classroom-device-a")).status).toBe(200);
+    expect((await activate("classroom-device-b")).status).toBe(200);
+  });
+});
+
+describe("classroom group names", () => {
+  it("returns 409 for a rename onto an existing group name", async () => {
+    const classId = await createClass();
+    const [alpha] = await createGroups(classId, ["Alpha", "Beta"]);
+    const response = await admin("/admin/v1/groups/update", {
+      id: String(alpha?.id),
+      name: "Beta",
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: {
+        code: "conflict",
+        message: "a group with that name already exists",
+      },
+    });
+    // Renaming to its own name is not a conflict.
+    expect(
+      (
+        await admin("/admin/v1/groups/update", {
+          id: String(alpha?.id),
+          name: "Alpha",
+        })
+      ).status,
+    ).toBe(200);
+  });
+
+  it("returns 409 when a concurrent writer claims a name after the probe", async () => {
+    const classId = await createClass();
+    const racing = racingEnv(
+      (sql) => sql.includes("SELECT name FROM classroom_groups"),
+      async () => {
+        await groupStatement("group_racer", classId, "Alpha", now()).run();
+      },
+    );
+    const response = await handleControlPlane(
+      controlRequest("/admin/v1/groups", {
+        class_id: classId,
+        names: ["Alpha", "Beta"],
+      }),
+      racing,
+    );
+    expect(response.status, await response.clone().text()).toBe(409);
+    const names = await env.DB.prepare(
+      "SELECT name FROM classroom_groups WHERE class_id = ?",
+    )
+      .bind(classId)
+      .all<{ name: string }>();
+    expect(names.results).toEqual([{ name: "Alpha" }]);
+  });
+});
+
+describe("classroom group key issuance", () => {
+  it("returns and stores a four-character key hint for issued and rotated keys", async () => {
+    const classId = await createClass();
+    const [group] = await createGroups(classId, ["Alpha"]);
+    const issued = await json<{
+      id: string;
+      api_key: string;
+      key_hint: string;
+    }>(
+      await admin("/admin/v1/groups/access", {
+        group_id: String(group?.id),
+        kind: "api_key",
+      }),
+    );
+    expect(issued.key_hint).toBe(issued.api_key.slice(-4));
+    const rotated = await json<{
+      id: string;
+      api_key: string;
+      key_hint: string;
+    }>(await admin("/admin/v1/groups/rotate", { id: issued.id }));
+    expect(rotated.key_hint).toBe(rotated.api_key.slice(-4));
+    const stored = await env.DB.prepare(
+      "SELECT id, key_hint FROM classroom_group_keys ORDER BY created_at, rowid",
+    ).all<{ id: string; key_hint: string }>();
+    expect(stored.results).toEqual([
+      { id: issued.id, key_hint: issued.key_hint },
+      { id: rotated.id, key_hint: rotated.key_hint },
+    ]);
+    const listText = await (
+      await admin("/admin/v1/groups/list", { class_id: classId })
+    ).text();
+    expect(listText).not.toContain(issued.api_key);
+    expect(listText).not.toContain(rotated.api_key);
+    const list = JSON.parse(listText) as {
+      keys: { id: string; key_hint: string | null }[];
+    };
+    expect(list.keys).toEqual([
+      expect.objectContaining({ id: rotated.id, key_hint: rotated.key_hint }),
+      expect.objectContaining({ id: issued.id, key_hint: issued.key_hint }),
+    ]);
+  });
+
+  it("lists live keys newest first so rotation history cannot hide them", async () => {
+    const classId = await createClass();
+    const [group] = await createGroups(classId, ["Alpha"]);
+    const groupId = String(group?.id);
+    const timestamp = now();
+    const statements = Array.from({ length: 501 }, (_, index) =>
+      env.DB.prepare(
+        `INSERT INTO classroom_group_keys
+           (id, group_id, secret_hash, expires_at, revoked_at, created_at)
+         VALUES (?, ?, ?, NULL, ?, ?)`,
+      ).bind(
+        `gkey_old_${index}`,
+        groupId,
+        `hash_old_${index}`,
+        timestamp - 10,
+        timestamp - 10_000 + index,
+      ),
+    );
+    for (let offset = 0; offset < statements.length; offset += 100)
+      await env.DB.batch(statements.slice(offset, offset + 100));
+    const live = await json<{ id: string }>(
+      await admin("/admin/v1/groups/access", {
+        group_id: groupId,
+        kind: "api_key",
+      }),
+    );
+    const list = await adminJson<{
+      keys: {
+        id: string;
+        key_hint: string | null;
+        revoked_at: number | null;
+      }[];
+      truncated: boolean;
+    }>("/admin/v1/groups/list", { class_id: classId });
+    expect(list.truncated).toBe(true);
+    expect(list.keys).toHaveLength(500);
+    expect(list.keys[0]).toMatchObject({ id: live.id, revoked_at: null });
+    // Older revoked rows follow newest first; pre-hint rows report null.
+    expect(list.keys[1]).toMatchObject({ id: "gkey_old_500", key_hint: null });
+  });
+
+  it("refuses API keys for ended schedules and disjoint model policies", async () => {
+    const timestamp = now();
+    const classId = await createClass();
+    const [alpha, beta] = await createGroups(classId, ["Alpha", "Beta"]);
+    const issuedResponse = await admin("/admin/v1/groups/access", {
+      group_id: String(alpha?.id),
+      kind: "api_key",
+    });
+    expect(issuedResponse.status).toBe(201);
+    const issued = await json<{ id: string }>(issuedResponse);
+    await env.DB.prepare(
+      "UPDATE classroom_groups SET expires_at = ? WHERE id = ?",
+    )
+      .bind(timestamp - 1, String(alpha?.id))
+      .run();
+    // Rotation applies the same issuance checks as a new key.
+    const rotated = await admin("/admin/v1/groups/rotate", { id: issued.id });
+    expect(rotated.status).toBe(409);
+    expect(await rotated.json()).toMatchObject({
+      error: { message: "class or group schedule has already ended" },
+    });
+    for (const kind of ["api_key", "join_code"]) {
+      const response = await admin("/admin/v1/groups/access", {
+        group_id: String(alpha?.id),
+        kind,
+      });
+      expect(response.status, kind).toBe(409);
+      expect(await response.json()).toMatchObject({
+        error: { message: "class or group schedule has already ended" },
+      });
+    }
+    await admin("/admin/v1/groups/update", {
+      id: String(beta?.id),
+      capabilities: ["json.strict.v1"],
+    });
+    await admin("/admin/v1/classes/update", {
+      id: classId,
+      capabilities: ["text.chat.v1"],
+    });
+    for (const kind of ["api_key", "join_code"]) {
+      const response = await admin("/admin/v1/groups/access", {
+        group_id: String(beta?.id),
+        kind,
+      });
+      expect(response.status, kind).toBe(409);
+      expect(await response.json()).toMatchObject({
+        error: {
+          message: "class and group capability policies do not intersect",
+        },
+      });
+    }
+    await env.DB.prepare(
+      "UPDATE classroom_classes SET starts_at = ?, expires_at = ? WHERE id = ?",
+    )
+      .bind(timestamp - 7200, timestamp - 60, classId)
+      .run();
+    await admin("/admin/v1/classes/update", {
+      id: classId,
+      capabilities: ["text.chat.v1", "json.strict.v1"],
+    });
+    expect(
+      (
+        await admin("/admin/v1/groups/access", {
+          group_id: String(beta?.id),
+          kind: "api_key",
+        })
+      ).status,
+    ).toBe(409);
+    // Only the key issued before the schedule ended exists.
+    expect(await countRows("classroom_group_keys")).toBe(1);
+  });
+});
+
+describe("classroom bulk key issuance", () => {
+  type BulkResponse = {
+    class_id: string;
+    keys: {
+      group_id: string;
+      group_name: string;
+      key_id: string;
+      api_key: string;
+      key_hint: string;
+      expires_at: number | null;
+    }[];
+    skipped: { group_id: string; group_name: string | null; reason: string }[];
+    truncated: boolean;
+    warning: string;
+  };
+
+  async function bulk(body: unknown): Promise<Response> {
+    return await admin("/admin/v1/groups/access-bulk", body);
+  }
+
+  it("issues one key per active unpaused group by default, storing only digests", async () => {
+    const classId = await createClass();
+    const [alpha, beta, gamma, delta] = await createGroups(classId, [
+      "Alpha",
+      "Beta",
+      "Gamma",
+      "Delta",
+    ]);
+    await admin("/admin/v1/groups/update", {
+      id: String(beta?.id),
+      paused: true,
+    });
+    await admin("/admin/v1/groups/update", {
+      id: String(gamma?.id),
+      status: "revoked",
+    });
+    const response = await bulk({ class_id: classId });
+    expect(response.status, await response.clone().text()).toBe(201);
+    const body = await json<BulkResponse>(response);
+    expect(body).toMatchObject({
+      class_id: classId,
+      skipped: [],
+      truncated: false,
+      warning: "shown once",
+    });
+    expect(body.keys.map((key) => key.group_name)).toEqual(["Alpha", "Delta"]);
+    expect(body.keys.map((key) => key.group_id)).toEqual([
+      alpha?.id,
+      delta?.id,
+    ]);
+    for (const key of body.keys) {
+      expect(key.api_key.startsWith("tkgk_")).toBe(true);
+      expect(key.key_hint).toBe(key.api_key.slice(-4));
+      expect(key.expires_at).toBeNull();
+      const stored = await env.DB.prepare(
+        "SELECT group_id, secret_hash, key_hint, expires_at, revoked_at FROM classroom_group_keys WHERE id = ?",
+      )
+        .bind(key.key_id)
+        .first();
+      expect(stored).toEqual({
+        group_id: key.group_id,
+        secret_hash: await sha256(key.api_key),
+        key_hint: key.key_hint,
+        expires_at: null,
+        revoked_at: null,
+      });
+    }
+    const audits = await env.DB.prepare(
+      `SELECT resource_id FROM admin_audit
+        WHERE action = 'create' AND resource_type = 'classroom_group_key'
+        ORDER BY resource_id`,
+    ).all<{ resource_id: string }>();
+    expect(audits.results.map((row) => row.resource_id)).toEqual(
+      body.keys.map((key) => key.key_id).sort(),
+    );
+    const listText = await (
+      await admin("/admin/v1/groups/list", { class_id: classId })
+    ).text();
+    for (const key of body.keys) expect(listText).not.toContain(key.api_key);
+  });
+
+  it("reports skipped groups instead of failing the batch", async () => {
+    const timestamp = now();
+    const classId = await createClass();
+    const otherClassId = await createClass({ name: "Other" });
+    const [alpha, paused, revoked, ended, disjoint] = await createGroups(
+      classId,
+      ["Alpha", "Paused", "Revoked", "Ended", "Disjoint"],
+    );
+    const [foreign] = await createGroups(otherClassId, ["Foreign"]);
+    await admin("/admin/v1/groups/update", {
+      id: String(paused?.id),
+      paused: true,
+    });
+    await admin("/admin/v1/groups/update", {
+      id: String(revoked?.id),
+      status: "revoked",
+    });
+    await env.DB.prepare(
+      "UPDATE classroom_groups SET expires_at = ? WHERE id = ?",
+    )
+      .bind(timestamp - 1, String(ended?.id))
+      .run();
+    await env.DB.prepare(
+      "UPDATE classroom_groups SET capabilities_json = '[\"vision.classify.v1\"]' WHERE id = ?",
+    )
+      .bind(String(disjoint?.id))
+      .run();
+    const expiresAt = timestamp + 600;
+    const response = await bulk({
+      class_id: classId,
+      group_ids: [
+        alpha?.id,
+        paused?.id,
+        revoked?.id,
+        ended?.id,
+        disjoint?.id,
+        foreign?.id,
+        "group_missing",
+        alpha?.id,
+      ],
+      expires_at: expiresAt,
+    });
+    expect(response.status, await response.clone().text()).toBe(201);
+    const body = await json<BulkResponse>(response);
+    // Explicitly named paused groups receive keys that work once resumed.
+    expect(body.keys.map((key) => [key.group_name, key.expires_at])).toEqual([
+      ["Alpha", expiresAt],
+      ["Paused", expiresAt],
+    ]);
+    expect(body.skipped).toEqual([
+      {
+        group_id: foreign?.id,
+        group_name: null,
+        reason: "group not found in this class",
+      },
+      {
+        group_id: "group_missing",
+        group_name: null,
+        reason: "group not found in this class",
+      },
+      {
+        group_id: revoked?.id,
+        group_name: "Revoked",
+        reason: "group is revoked",
+      },
+      {
+        group_id: ended?.id,
+        group_name: "Ended",
+        reason: "class or group schedule has already ended",
+      },
+      {
+        group_id: disjoint?.id,
+        group_name: "Disjoint",
+        reason: "class and group capability policies do not intersect",
+      },
+    ]);
+    expect(await countRows("classroom_group_keys")).toBe(2);
+  });
+
+  it("covers 100 groups in one request and discloses truncation", async () => {
+    const classId = await createClass();
+    const names = Array.from(
+      { length: 101 },
+      (_, index) => `g${String(index).padStart(3, "0")}`,
+    );
+    await createGroups(classId, names.slice(0, 100));
+    await createGroups(classId, names.slice(100));
+    const body = await json<BulkResponse>(await bulk({ class_id: classId }));
+    expect(body.keys).toHaveLength(100);
+    expect(body.keys[0]?.group_name).toBe("g000");
+    expect(body.keys[99]?.group_name).toBe("g099");
+    expect(body.truncated).toBe(true);
+    expect(new Set(body.keys.map((key) => key.api_key)).size).toBe(100);
+    expect(await countRows("classroom_group_keys")).toBe(100);
+    const audits = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM admin_audit WHERE resource_type = 'classroom_group_key'",
+    ).first<{ count: number }>();
+    expect(audits).toEqual({ count: 100 });
+    expect(
+      (
+        await bulk({
+          class_id: classId,
+          group_ids: Array.from({ length: 101 }, (_, index) => `g_${index}`),
+        })
+      ).status,
+    ).toBe(400);
+  });
+
+  it("rejects missing, revoked, and ended classes and past expiry", async () => {
+    const timestamp = now();
+    const classId = await createClass();
+    await createGroups(classId, ["Alpha"]);
+    expect((await bulk({ class_id: "class_missing" })).status).toBe(404);
+    expect(
+      (await bulk({ class_id: classId, expires_at: timestamp - 1 })).status,
+    ).toBe(400);
+    expect((await bulk({ class_id: classId, group_ids: [] })).status).toBe(400);
+    expect((await bulk({ class_id: classId, extra: true })).status).toBe(400);
+    await env.DB.prepare(
+      "UPDATE classroom_classes SET starts_at = ?, expires_at = ? WHERE id = ?",
+    )
+      .bind(timestamp - 7200, timestamp - 60, classId)
+      .run();
+    const ended = await bulk({ class_id: classId });
+    expect(ended.status).toBe(409);
+    expect(await ended.json()).toMatchObject({
+      error: { message: "class schedule has already ended" },
+    });
+    await admin("/admin/v1/classes/update", { id: classId, status: "revoked" });
+    expect((await bulk({ class_id: classId })).status).toBe(409);
+    expect(await countRows("classroom_group_keys")).toBe(0);
+  });
+
+  it("does not issue keys for a group revoked between read and write", async () => {
+    const classId = await createClass();
+    const [alpha, beta] = await createGroups(classId, ["Alpha", "Beta"]);
+    const racing = racingEnv(
+      (sql) => sql.includes("paused_at IS NULL"),
+      async () => {
+        await env.DB.prepare(
+          "UPDATE classroom_groups SET status = 'revoked' WHERE id = ?",
+        )
+          .bind(String(beta?.id))
+          .run();
+      },
+    );
+    const response = await handleControlPlane(
+      controlRequest("/admin/v1/groups/access-bulk", { class_id: classId }),
+      racing,
+    );
+    expect(response.status, await response.clone().text()).toBe(201);
+    const body = await json<BulkResponse>(response);
+    expect(body.keys.map((key) => key.group_id)).toEqual([alpha?.id]);
+    expect(body.skipped).toEqual([
+      {
+        group_id: beta?.id,
+        group_name: "Beta",
+        reason: "group or class was revoked during issuance",
+      },
+    ]);
+    expect(await countRows("classroom_group_keys")).toBe(1);
+    const audits = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM admin_audit WHERE resource_type = 'classroom_group_key'",
+    ).first<{ count: number }>();
+    expect(audits).toEqual({ count: 1 });
+  });
+});
+
+describe("classroom bulk budgets", () => {
+  type BudgetResponse = {
+    class_id: string;
+    mode: string;
+    groups: {
+      group_id: string;
+      group_name: string;
+      budget_microcents: number;
+    }[];
+    skipped: { group_id: string; group_name: string | null; reason: string }[];
+    class_budget_microcents?: number;
+  };
+
+  it("sets or adds group allocations and optionally the class total", async () => {
+    const classId = await createClass({ group_budget_microcents: 1000 });
+    const [alpha, beta, gamma] = await createGroups(classId, [
+      "Alpha",
+      "Beta",
+      "Gamma",
+    ]);
+    await admin("/admin/v1/groups/update", {
+      id: String(beta?.id),
+      paused: true,
+    });
+    await admin("/admin/v1/groups/update", {
+      id: String(gamma?.id),
+      status: "revoked",
+    });
+    const added = await admin("/admin/v1/groups/budget-bulk", {
+      class_id: classId,
+      mode: "add",
+      budget_microcents: 500,
+      class_budget_microcents: 9_000_000,
+    });
+    expect(added.status, await added.clone().text()).toBe(200);
+    expect(await json<BudgetResponse>(added)).toEqual({
+      class_id: classId,
+      mode: "add",
+      groups: [
+        { group_id: alpha?.id, group_name: "Alpha", budget_microcents: 1500 },
+        { group_id: beta?.id, group_name: "Beta", budget_microcents: 1500 },
+      ],
+      skipped: [],
+      truncated: false,
+      class_budget_microcents: 9_000_000,
+    });
+    const set = await json<BudgetResponse>(
+      await admin("/admin/v1/groups/budget-bulk", {
+        class_id: classId,
+        group_ids: [alpha?.id, gamma?.id, "group_missing"],
+        mode: "set",
+        budget_microcents: 42,
+      }),
+    );
+    expect(set.groups).toEqual([
+      { group_id: alpha?.id, group_name: "Alpha", budget_microcents: 42 },
+    ]);
+    expect(set.skipped).toEqual([
+      {
+        group_id: "group_missing",
+        group_name: null,
+        reason: "group not found in this class",
+      },
+      { group_id: gamma?.id, group_name: "Gamma", reason: "group is revoked" },
+    ]);
+    expect(set.class_budget_microcents).toBeUndefined();
+    const rows = await env.DB.prepare(
+      "SELECT name, budget_microcents FROM classroom_groups WHERE class_id = ? ORDER BY name",
+    )
+      .bind(classId)
+      .all();
+    expect(rows.results).toEqual([
+      { name: "Alpha", budget_microcents: 42 },
+      { name: "Beta", budget_microcents: 1500 },
+      { name: "Gamma", budget_microcents: 1000 },
+    ]);
+    const classBudget = await env.DB.prepare(
+      "SELECT budget_microcents FROM classroom_classes WHERE id = ?",
+    )
+      .bind(classId)
+      .first("budget_microcents");
+    expect(classBudget).toBe(9_000_000);
+    const audits = await env.DB.prepare(
+      `SELECT action, resource_type, resource_id FROM admin_audit
+        WHERE action LIKE 'budget_%' ORDER BY rowid`,
+    ).all<{ action: string; resource_type: string; resource_id: string }>();
+    expect(audits.results).toEqual([
+      {
+        action: "budget_set",
+        resource_type: "classroom_class",
+        resource_id: classId,
+      },
+      {
+        action: "budget_add",
+        resource_type: "classroom_group",
+        resource_id: expect.any(String) as string,
+      },
+      {
+        action: "budget_add",
+        resource_type: "classroom_group",
+        resource_id: expect.any(String) as string,
+      },
+      {
+        action: "budget_set",
+        resource_type: "classroom_group",
+        resource_id: alpha?.id,
+      },
+    ]);
+  });
+
+  it("saturates additions at the stored maximum and validates input", async () => {
+    const classId = await createClass();
+    const [alpha] = await createGroups(classId, ["Alpha"]);
+    await admin("/admin/v1/groups/update", {
+      id: String(alpha?.id),
+      budget_microcents: 999_999_999_999_990,
+    });
+    const body = await json<BudgetResponse>(
+      await admin("/admin/v1/groups/budget-bulk", {
+        class_id: classId,
+        mode: "add",
+        budget_microcents: 1_000,
+      }),
+    );
+    expect(body.groups[0]?.budget_microcents).toBe(1_000_000_000_000_000);
+    for (const invalid of [
+      { class_id: classId, mode: "multiply", budget_microcents: 1 },
+      { class_id: classId, mode: "set", budget_microcents: -1 },
+      {
+        class_id: classId,
+        mode: "set",
+        budget_microcents: 1_000_000_000_000_001,
+      },
+      { class_id: classId, mode: "set" },
+      { class_id: classId, mode: "set", budget_microcents: 1, extra: 1 },
+    ])
+      expect(
+        (await admin("/admin/v1/groups/budget-bulk", invalid)).status,
+        JSON.stringify(invalid),
+      ).toBe(400);
+    expect(
+      (
+        await admin("/admin/v1/groups/budget-bulk", {
+          class_id: "class_missing",
+          mode: "set",
+          budget_microcents: 1,
+        })
+      ).status,
+    ).toBe(404);
+    await admin("/admin/v1/classes/update", { id: classId, status: "revoked" });
+    expect(
+      (
+        await admin("/admin/v1/groups/budget-bulk", {
+          class_id: classId,
+          mode: "set",
+          budget_microcents: 1,
+        })
+      ).status,
+    ).toBe(409);
+  });
+});
+
+describe("ended class maintenance", () => {
+  it("tops up and extends a class whose schedule has ended", async () => {
+    const timestamp = now();
+    const classId = await createClass();
+    const ended = timestamp - 60;
+    await env.DB.prepare(
+      "UPDATE classroom_classes SET starts_at = ?, expires_at = ? WHERE id = ?",
+    )
+      .bind(timestamp - 7200, ended, classId)
+      .run();
+    const topUp = await admin("/admin/v1/classes/update", {
+      id: classId,
+      budget_microcents: 5_000_000,
+      rpm_limit: 90,
+    });
+    expect(topUp.status, await topUp.clone().text()).toBe(200);
+    // Resending the stored end alongside other edits is not an extension.
+    expect(
+      (
+        await admin("/admin/v1/classes/update", {
+          id: classId,
+          expires_at: ended,
+          group_budget_microcents: 7,
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await admin("/admin/v1/classes/update", {
+          id: classId,
+          expires_at: timestamp - 30,
+        })
+      ).status,
+    ).toBe(400);
+    const extended = await admin("/admin/v1/classes/update", {
+      id: classId,
+      expires_at: timestamp + 3600,
+    });
+    expect(extended.status).toBe(200);
+    const row = await env.DB.prepare(
+      `SELECT expires_at, budget_microcents, group_budget_microcents, rpm_limit
+         FROM classroom_classes WHERE id = ?`,
+    )
+      .bind(classId)
+      .first();
+    expect(row).toEqual({
+      expires_at: timestamp + 3600,
+      budget_microcents: 5_000_000,
+      group_budget_microcents: 7,
+      rpm_limit: 90,
+    });
   });
 });
 
@@ -1692,6 +2512,38 @@ describe("classroom administration surface", () => {
         )
       ).status,
     ).toBe(200);
+
+    const browser = (path: string, body: unknown) =>
+      handleControlPlane(
+        request(`/dashboard/api/${path}`, body, undefined, { origin }),
+        controlEnv,
+        browserIdentity,
+      );
+    const environment = await browser("environments/update", {
+      product_id: "prod_classroom",
+      environment_id: "env_classroom",
+      rpm_limit: 600,
+    });
+    expect(environment.status, await environment.clone().text()).toBe(200);
+    expect(await environment.json()).toMatchObject({ rpm_limit: 600 });
+    const classId = await createClass({ name: "Browser bulk" });
+    await createGroups(classId, ["Alpha"]);
+    const keys = await browser("groups/access-bulk", { class_id: classId });
+    expect(keys.status, await keys.clone().text()).toBe(201);
+    expect(
+      (
+        await browser("groups/budget-bulk", {
+          class_id: classId,
+          mode: "add",
+          budget_microcents: 1,
+        })
+      ).status,
+    ).toBe(200);
+    const actors = await env.DB.prepare(
+      `SELECT DISTINCT action, actor_hash FROM admin_audit
+        WHERE action IN ('update', 'budget_add') AND actor_hash = 'actor_classroom'`,
+    ).all();
+    expect(actors.results).toHaveLength(2);
   });
 
   it("requires the classroom schema in readiness", async () => {
@@ -1708,6 +2560,8 @@ describe("classroom administration surface", () => {
       classroom_group_keys_schema: 1,
       access_code_group_column: 1,
       attempt_group_column: 1,
+      group_paused_column: 1,
+      group_key_hint_column: 1,
     };
     const columns = [
       "classroom_classes_schema",
@@ -1715,6 +2569,8 @@ describe("classroom administration surface", () => {
       "classroom_group_keys_schema",
       "access_code_group_column",
       "attempt_group_column",
+      "group_paused_column",
+      "group_key_hint_column",
     ] as const;
     for (const column of columns) {
       const stub = {

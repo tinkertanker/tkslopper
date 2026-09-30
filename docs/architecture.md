@@ -34,7 +34,7 @@ The control plane owns durable authorization facts and the metadata-only operati
 
 ## Consistency model
 
-- D1 conditional writes bound activation attempts and activation counts.
+- D1 conditional writes bound activation counts and the failed-attempt record; a correct access-code secret is never locked out.
 - The Durable Object serializes exact hot-path reservations per product/environment/tenant/principal.
 - D1 remains the revocation and policy source of truth; grants are deliberately short-lived but not trusted without the D1 row.
 - Idempotency keys are hashed, retained for 24 hours, and prevent duplicate execution; response replay is off to avoid payload storage.

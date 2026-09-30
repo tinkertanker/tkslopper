@@ -139,6 +139,8 @@ export const classroomGroupUpdateSchema = z
     starts_at: classroomTimestampSchema.nullable().optional(),
     expires_at: classroomTimestampSchema.nullable().optional(),
     status: classroomGroupStatusSchema.optional(),
+    /** Reversible, unlike revocation: `true` pauses the group, `false` resumes it. */
+    paused: z.boolean().optional(),
   })
   .strict();
 
@@ -155,6 +157,33 @@ export const classroomGroupKeySchema = z
   .object({ id: identifierSchema })
   .strict();
 
+const bulkGroupIdsSchema = z
+  .array(identifierSchema)
+  .min(1)
+  .max(CLASSROOM_GROUP_BULK_LIMIT)
+  .transform((values) => [...new Set(values)]);
+
+export const classroomGroupAccessBulkSchema = z
+  .object({
+    class_id: identifierSchema,
+    /** Defaults to every active, unpaused group in the class (first 100 by name). */
+    group_ids: bulkGroupIdsSchema.optional(),
+    expires_at: classroomTimestampSchema.nullable().optional(),
+  })
+  .strict();
+
+export const classroomGroupBudgetBulkSchema = z
+  .object({
+    class_id: identifierSchema,
+    /** Defaults to every non-revoked group in the class. */
+    group_ids: bulkGroupIdsSchema.optional(),
+    mode: z.enum(["set", "add"]),
+    budget_microcents: microcentsSchema,
+    /** Optionally replaces the class total lifetime budget in the same write. */
+    class_budget_microcents: microcentsSchema.optional(),
+  })
+  .strict();
+
 export type ClassroomClassCreate = z.infer<typeof classroomClassCreateSchema>;
 export type ClassroomClassUpdate = z.infer<typeof classroomClassUpdateSchema>;
 export type ClassroomClassDuplicate = z.infer<
@@ -166,6 +195,12 @@ export type ClassroomClassUsageRequest = z.infer<
 export type ClassroomGroupCreate = z.infer<typeof classroomGroupCreateSchema>;
 export type ClassroomGroupUpdate = z.infer<typeof classroomGroupUpdateSchema>;
 export type ClassroomGroupAccess = z.infer<typeof classroomGroupAccessSchema>;
+export type ClassroomGroupAccessBulk = z.infer<
+  typeof classroomGroupAccessBulkSchema
+>;
+export type ClassroomGroupBudgetBulk = z.infer<
+  typeof classroomGroupBudgetBulkSchema
+>;
 export type ClassroomStatus = z.infer<typeof classroomStatusSchema>;
 export type ClassroomGroupStatus = z.infer<typeof classroomGroupStatusSchema>;
 export type ClassroomAccessKind = z.infer<typeof classroomAccessKindSchema>;
@@ -198,6 +233,9 @@ export type ClassroomGroupObject = {
   class_id: string;
   name: string;
   status: ClassroomGroupStatus;
+  /** A paused group rejects keys, grants and activations until resumed. */
+  paused: boolean;
+  paused_at: number | null;
   /** `null` inherits the class capability policy. */
   capabilities: string[] | null;
   budget_microcents: number;
@@ -214,6 +252,8 @@ export type ClassroomGroupObject = {
 export type ClassroomGroupKeyObject = {
   id: string;
   group_id: string;
+  /** Last four characters of the key; `null` for keys issued before hints. */
+  key_hint: string | null;
   expires_at: number | null;
   revoked_at: number | null;
   created_at: number;
@@ -246,9 +286,46 @@ export type ClassroomGroupAccessResponse = {
   kind: ClassroomAccessKind;
   /** Present only for `api_key`, and only in the issuing response. */
   api_key?: string;
+  /** Present only for `api_key`: the last four characters, also shown in lists. */
+  key_hint?: string;
   /** Present only for `join_code`, and only in the issuing response. */
   access_code?: string;
   warning: "shown once";
+};
+
+export type ClassroomGroupBulkSkip = {
+  group_id: string;
+  /** `null` when the group does not exist in the class. */
+  group_name: string | null;
+  reason: string;
+};
+
+export type ClassroomGroupAccessBulkResponse = {
+  class_id: string;
+  keys: {
+    group_id: string;
+    group_name: string;
+    key_id: string;
+    /** Shown only in this response; only a digest is stored. */
+    api_key: string;
+    key_hint: string;
+    expires_at: number | null;
+  }[];
+  skipped: ClassroomGroupBulkSkip[];
+  /** True when the default selection omitted active groups beyond the first 100. */
+  truncated: boolean;
+  warning: "shown once";
+};
+
+export type ClassroomGroupBudgetBulkResponse = {
+  class_id: string;
+  mode: "set" | "add";
+  groups: { group_id: string; group_name: string; budget_microcents: number }[];
+  skipped: ClassroomGroupBulkSkip[];
+  /** True when more than the bulk limit of groups matched the default selection. */
+  truncated: boolean;
+  /** The class total after the write; present only when it was supplied. */
+  class_budget_microcents?: number;
 };
 
 export type ClassroomUsageMetrics = {
@@ -301,6 +378,7 @@ export type ClassroomGroupRow = {
   class_id: string;
   name: string;
   status: ClassroomGroupStatus;
+  paused_at: number | null;
   capabilities_json: string | null;
   budget_microcents: number;
   daily_budget_microcents: number | null;
@@ -397,6 +475,8 @@ export function classroomGroupObject(
     class_id: row.class_id,
     name: row.name,
     status: row.status,
+    paused: row.paused_at !== null,
+    paused_at: row.paused_at,
     capabilities: decodeCapabilitiesJson(row.capabilities_json),
     budget_microcents: row.budget_microcents,
     daily_budget_microcents: row.daily_budget_microcents,

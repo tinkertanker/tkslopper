@@ -266,18 +266,22 @@ describe("course-centred dashboard UI", () => {
     expect(html).toContain('id="group-edit-schedule-note"');
     expect(html).toContain("Intl.DateTimeFormat().resolvedOptions().timeZone");
     expect(html).toContain("entered in your browser's local time");
-    expect(html).toContain("stored times are displayed in UTC");
-    expect(html).toContain("does not convert these times");
-    // The class timezone field is metadata, not a converter.
-    expect(html).toContain("display and scheduling metadata");
-    // Stored timestamps are labelled UTC, and daily caps are explicitly UTC.
-    expect(html).toContain('"Starts (UTC)"');
-    expect(html).toContain('"Ends (UTC)"');
-    expect(html).toContain('"Created (UTC)"');
-    expect(html).toContain('"Expires (UTC)"');
-    expect(html).toContain('"Default group daily (UTC)"');
-    expect(html).toContain('"Daily group budget (UTC)"');
-    expect(html).toContain("applies in UTC");
+    // Class-scoped tables show times in the class's own IANA timezone, with UTC
+    // alongside in the class summary.
+    expect(html).toContain("Class tables show them in the class timezone");
+    expect(html).toContain(
+      'new Intl.DateTimeFormat("en-GB", { timeZone: timeZone || "UTC"',
+    );
+    expect(html).toContain('"Starts (class time)"');
+    expect(html).toContain('"Ends (class time)"');
+    expect(html).toContain('"Created (class time)"');
+    expect(html).toContain('"Expires (class time)"');
+    expect(html).toContain('"UTC: " + time(row.starts_at)');
+    // Daily budgets are labelled as resetting at 00:00 UTC wherever they appear.
+    expect(html).toContain('"Daily per student (resets 00:00 UTC)"');
+    expect(html).toContain('"Daily group budget (resets 00:00 UTC)"');
+    expect(html).toContain('"Daily budget per principal (resets 00:00 UTC)"');
+    expect(html).toContain("Daily budgets reset at 00:00 UTC");
   });
 
   it("requires Access login and a named admin for the class write boundary", async () => {
@@ -329,5 +333,184 @@ describe("course-centred dashboard UI", () => {
         )
       ).status,
     ).toBe(403);
+  });
+});
+
+describe("teacher class kit", () => {
+  it("runs class creation once at a time and only issues keys into an open class", async () => {
+    const html = await pageHtml();
+
+    expect(html).toContain("if (creatingClass) return;");
+    expect(html).toContain("setCreateBusy(true);");
+    expect(html).toContain("setCreateBusy(false);");
+    expect(html).toContain("async function openCreatedClass(id)");
+    expect(html).toContain("so no keys were issued");
+    // An unused roster survives a failure; the kit survives reopening its class.
+    expect(html).toContain("Your student list is still in the Students box");
+    expect(html).toContain("if (kitState.classId !== id) clearKit();");
+    // A bulk budget change refreshes the edit form's class total.
+    expect(html).toContain(
+      'renderFieldSet(document.getElementById("class-edit-fields"), CLASS_FIELDS, classRow);',
+    );
+    expect(html).toContain('" (class timezone invalid)"');
+  });
+
+  it("enters and shows money in US dollars, converting exactly to integer microcents", async () => {
+    const html = await pageHtml();
+
+    // Every class, group and environment budget field is a dollar field.
+    for (const field of [
+      '["budget_microcents", "Class total budget (US$, shared by every student)", "dollars"]',
+      '["group_budget_microcents", "Budget per student (US$, lifetime; each new group)", "dollars"]',
+      '["daily_budget_microcents", "Daily budget per student (US$, optional; resets 00:00 UTC)", "dollars"]',
+      '["budget_microcents", "Group budget (US$, lifetime; shared by its keys and devices)", "dollars"]',
+      '["daily_budget_microcents", "Daily budget per principal (US$; resets 00:00 UTC; not applied to classes)", "dollars", "20.00"]',
+      '["input_cost_microcents_per_million", "Input price (US$ per million tokens)", "dollars", "0"]',
+      '["output_cost_microcents_per_million", "Output price (US$ per million tokens)", "dollars", "0"]',
+    ]) {
+      expect(html).toContain(field);
+    }
+    expect(html).not.toContain("(μ¢, shared by all groups)");
+    expect(html).not.toContain('"Daily budget (microcents)"');
+    // Conversion rules are unit-tested in dashboard-money.test.ts; the page embeds
+    // those exact functions and routes every dollar display through them.
+    expect(html).toContain("const parseDollars = (");
+    expect(html).toContain(
+      "const money = (value) => formatDollars(value, true);",
+    );
+    // Operator diagnostics keep microcents.
+    expect(html).toContain(
+      '{ label: "Cost ceiling", value: "cost_microcents", format: cost }',
+    );
+  });
+
+  it("creates a class with students and issues every key through groups/access-bulk", async () => {
+    const html = await pageHtml();
+
+    expect(html).toContain('id="class-create-students"');
+    expect(html).toContain("Students (optional; one name per line, up to 100)");
+    // Sensible defaults: now, three hours, $20 class, $1 per student.
+    expect(html).toContain("expires_at: start + 3 * 3600");
+    expect(html).toContain("budget_microcents: 2000000000");
+    expect(html).toContain("group_budget_microcents: 100000000");
+    // A valid tenant ID is suggested from the class name and date.
+    expect(html).toContain(
+      'return "class-" + (slug ? slug + "-" : "") + day.replace(/-/g, "");',
+    );
+    // Students become groups, then keys are issued in one bulk call.
+    expect(html).toContain(
+      'dashboardPost("groups", { class_id: createdId, names: students })',
+    );
+    expect(html).toContain('dashboardPost("groups/access-bulk"');
+    expect(html).toContain('id="class-issue-all"');
+    // Bulk issuance is confirmed in the page, not with a blocking dialog.
+    expect(html).toContain(
+      '<div class="confirm-bar" id="class-issue-confirm" role="group" aria-labelledby="class-issue-confirm-text" hidden>',
+    );
+    expect(html).toContain('askInline("class-issue-confirm"');
+    // Focus returns to the control that opened a confirmation.
+    expect(html).toContain("pending.trigger.focus()");
+    // Re-issuing warns before clearing keys that are still on screen.
+    expect(html).toContain(
+      "keys currently shown in the class kit will be cleared",
+    );
+    // Guardrails are shown next to class limits, with a warning when exceeded.
+    expect(html).toContain("is above the environment guardrail of");
+    expect(html).toContain(
+      "Students get the lower of the class value and the guardrail.",
+    );
+  });
+
+  it("builds student cards and CSV from text nodes and keeps kit secrets in memory only", async () => {
+    const html = await pageHtml();
+
+    for (const element of [
+      'id="class-kit" tabindex="-1" aria-labelledby="class-kit-heading" hidden',
+      'id="class-kit-keys"',
+      'id="class-kit-skipped"',
+      'id="class-kit-copy"',
+      'id="class-kit-download"',
+      'id="class-kit-print"',
+      'id="class-kit-clear"',
+      'id="print-cards"',
+      'id="class-secret-card" hidden',
+    ]) {
+      expect(html).toContain(element);
+    }
+    expect(html).toContain('[["name", "key", "base_url", "models"]]');
+    // Spreadsheet formula injection is neutralised in exported names.
+    expect(html).toContain("const csvCell = (");
+    expect(html).toContain("row.map(csvCell)");
+    // Keys never repeat in a tooltip.
+    expect(html).toContain(
+      '{ label: "API key", value: "apiKey", secret: true }',
+    );
+    expect(html).toContain("if (!column.secret) cell.title");
+    expect(html).toContain("printing the page (including Ctrl+P or Cmd+P)");
+    // Cards print on their own and carry the OpenAI-compatible snippets.
+    expect(html).toContain("@media print");
+    expect(html).toContain("body.print-kit .app { display: none; }");
+    expect(html).toContain('"from openai import OpenAI"');
+    expect(html).toContain("client.chat.completions.create(");
+    // Aliases without Chat Completions get a Responses example instead.
+    expect(html).toContain("client.responses.create(");
+    expect(html).toContain('(responses ? "/responses" : "/chat/completions")');
+    expect(html).toContain("option.alias_endpoints");
+    expect(html).toContain(
+      'const GATEWAY_MISSING = "<gateway URL not configured>";',
+    );
+    expect(html).toContain("Set GATEWAY_PUBLIC_URL on the control plane");
+    // Secrets are cleared with the page state and never parsed as HTML.
+    expect(html).toContain('window.addEventListener("pagehide", clearKit)');
+    expect(html).toContain(
+      'document.getElementById("print-cards").replaceChildren()',
+    );
+    for (const unsafe of [
+      "innerHTML",
+      "outerHTML",
+      "insertAdjacentHTML",
+      "document.write",
+      "localStorage",
+      "sessionStorage",
+    ]) {
+      expect(html).not.toContain(unsafe);
+    }
+    // CSP stays nonce-based with no inline handlers.
+    expect(html).not.toMatch(/\son[a-z]+=["']/);
+  });
+
+  it("adds per-student pause, key hints, bulk budgets and environment editing", async () => {
+    const html = await pageHtml();
+
+    expect(html).toContain(
+      'dashboardPost("groups/update", { id: row.id, paused })',
+    );
+    expect(html).toContain('label: row.paused ? "Resume" : "Pause"');
+    expect(html).toContain(
+      'row.status === "revoked" ? "Revoked" : row.paused ? "Paused" : "Active"',
+    );
+    expect(html).toContain(
+      '{ label: "Key ends in", value: (row) => row.key_hint ? "…" + row.key_hint : "not recorded" }',
+    );
+    expect(html).toContain('id="group-budget-form"');
+    expect(html).toContain('dashboardPost("groups/budget-bulk", request)');
+    expect(html).toContain('<option value="add">');
+    expect(html).toContain('<option value="set">');
+    expect(html).toContain('["environments/update", "Edit environment limits"');
+    expect(html).toContain('{ label: "Environment ID", value: "id" }');
+    // Only admins get the edit shortcut; everyone can copy an ID.
+    expect(html).toContain(
+      'if (isAdmin) buttons.push({ label: "Edit limits", onClick: () => editEnvironment(row) });',
+    );
+    for (const flag of [
+      "allow_images",
+      "allow_reasoning",
+      "allow_structured_json",
+    ]) {
+      expect(html).toContain(`["${flag}", `);
+    }
+    expect(html).toContain(
+      '["max_failed_attempts", "Failed-attempt counter cap (a correct code is always accepted)", "number", 8]',
+    );
   });
 });

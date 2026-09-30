@@ -9,8 +9,10 @@ import {
   devIssueSchema,
   entitlementCreateSchema,
   environmentCreateSchema,
+  environmentUpdateSchema,
   errorResponse,
   hashCredential,
+  isUniqueConstraintError,
   jsonResponse,
   killSwitchSchema,
   parseOpaqueCredential,
@@ -44,6 +46,8 @@ export type ControlPlaneEnv = {
   CREDENTIAL_PEPPER: string;
   ADMIN_TOKEN: string;
   DASHBOARD_ACCESS_AUD?: string;
+  /** Optional https origin of the gateway, printed on student cards. */
+  GATEWAY_PUBLIC_URL?: string;
   TOKEN_ISSUER: string;
   DEPLOYMENT_ENV: string;
   ENABLE_DEV_ISSUER: string;
@@ -91,8 +95,6 @@ type AccessCodeRow = EnvironmentRow & {
   expires_at: number;
   max_activations: number;
   activation_count: number;
-  max_failed_attempts: number;
-  failed_attempts: number;
   disabled: number;
 };
 
@@ -481,8 +483,7 @@ async function activateAccessCode(
   const row = await env.DB.prepare(
     `SELECT c.id, c.product_id, c.environment_id, c.tenant_id, c.secret_salt, c.secret_hash,
             c.capabilities_json, c.disabled, c.expires_at, c.max_activations, c.activation_count,
-            c.classroom_group_id,
-            c.max_failed_attempts, c.failed_attempts, e.audience, e.token_ttl_seconds,
+            c.classroom_group_id, e.audience, e.token_ttl_seconds,
             p.enabled AS product_enabled, p.kill_switch AS product_kill_switch,
             e.enabled AS environment_enabled, e.kill_switch AS environment_kill_switch
        FROM access_codes c
@@ -493,18 +494,17 @@ async function activateAccessCode(
     .bind(parsedCredential.id)
     .first<AccessCodeRow>();
   const now = nowSeconds();
-  if (
-    !row ||
-    row.disabled === 1 ||
-    row.expires_at <= now ||
-    row.failed_attempts >= row.max_failed_attempts
-  ) {
+  if (!row || row.disabled === 1 || row.expires_at <= now) {
     throw new HttpError(
       401,
       "authentication_failed",
       "access code authentication failed",
     );
   }
+  // The secret is always verified and a correct one is never locked out: codes
+  // carry 256 bits of entropy, so a shared failure counter would only let any
+  // holder of the public code ID deny a whole class, including renewals by
+  // already-activated devices. Wrong secrets still leave a bounded record.
   if (
     !(await verifyCredential(
       parsedCredential.secret,
@@ -677,12 +677,22 @@ async function adminCreateProduct(
   const body = await parseBody(request, productCreateSchema);
   const id = randomId("prod");
   const now = nowSeconds();
-  await env.DB.batch([
-    env.DB.prepare(
-      "INSERT INTO products (id, slug, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-    ).bind(id, body.slug, body.display_name, now, now),
-    auditStatement(env, actorHash, "create", "product", id),
-  ]);
+  try {
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO products (id, slug, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+      ).bind(id, body.slug, body.display_name, now, now),
+      auditStatement(env, actorHash, "create", "product", id),
+    ]);
+  } catch (error) {
+    if (isUniqueConstraintError(error))
+      throw new HttpError(
+        409,
+        "conflict",
+        "a product with that slug already exists",
+      );
+    throw error;
+  }
   return jsonResponse({ id, ...body }, 201);
 }
 
@@ -694,29 +704,113 @@ async function adminCreateEnvironment(
   const body = await parseBody(request, environmentCreateSchema);
   const id = randomId("env");
   const now = nowSeconds();
-  await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO environments
-      (id, product_id, name, audience, token_ttl_seconds, rpm_limit, tpm_limit, concurrency_limit,
-       daily_budget_microcents, max_request_bytes, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(
-      id,
-      body.product_id,
-      body.name,
-      body.audience,
-      body.token_ttl_seconds,
-      body.rpm_limit,
-      body.tpm_limit,
-      body.concurrency_limit,
-      body.daily_budget_microcents,
-      body.max_request_bytes,
-      now,
-      now,
-    ),
-    auditStatement(env, actorHash, "create", "environment", id),
-  ]);
+  try {
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO environments
+        (id, product_id, name, audience, token_ttl_seconds, rpm_limit, tpm_limit, concurrency_limit,
+         daily_budget_microcents, max_request_bytes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        id,
+        body.product_id,
+        body.name,
+        body.audience,
+        body.token_ttl_seconds,
+        body.rpm_limit,
+        body.tpm_limit,
+        body.concurrency_limit,
+        body.daily_budget_microcents,
+        body.max_request_bytes,
+        now,
+        now,
+      ),
+      auditStatement(env, actorHash, "create", "environment", id),
+    ]);
+  } catch (error) {
+    if (isUniqueConstraintError(error))
+      throw new HttpError(
+        409,
+        "conflict",
+        "an environment with that name or audience already exists",
+      );
+    throw error;
+  }
   return jsonResponse({ id, ...body }, 201);
+}
+
+type EnvironmentSettingsRow = {
+  id: string;
+  product_id: string;
+  name: string;
+  audience: string;
+  enabled: number;
+  kill_switch: number;
+  token_ttl_seconds: number;
+  policy_version: number;
+  rpm_limit: number;
+  tpm_limit: number;
+  concurrency_limit: number;
+  daily_budget_microcents: number;
+  max_request_bytes: number;
+  created_at: number;
+  updated_at: number;
+};
+
+async function adminUpdateEnvironment(
+  request: Request,
+  env: ControlPlaneEnv,
+  actorHash: string,
+): Promise<Response> {
+  const body = await parseBody(request, environmentUpdateSchema);
+  // Only supplied settings are written. Each change bumps the environment
+  // policy version so gateway-side policy provenance reflects the edit.
+  const assignments: string[] = [];
+  const values: unknown[] = [];
+  const set = (column: string, value: unknown): void => {
+    assignments.push(`${column} = ?`);
+    values.push(value);
+  };
+  if (body.token_ttl_seconds !== undefined)
+    set("token_ttl_seconds", body.token_ttl_seconds);
+  if (body.rpm_limit !== undefined) set("rpm_limit", body.rpm_limit);
+  if (body.tpm_limit !== undefined) set("tpm_limit", body.tpm_limit);
+  if (body.concurrency_limit !== undefined)
+    set("concurrency_limit", body.concurrency_limit);
+  if (body.daily_budget_microcents !== undefined)
+    set("daily_budget_microcents", body.daily_budget_microcents);
+  if (body.max_request_bytes !== undefined)
+    set("max_request_bytes", body.max_request_bytes);
+  set("updated_at", nowSeconds());
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE environments
+          SET ${assignments.join(", ")}, policy_version = policy_version + 1
+        WHERE product_id = ? AND id = ?`,
+    ).bind(...values, body.product_id, body.environment_id),
+    auditStatement(
+      env,
+      actorHash,
+      "update",
+      "environment",
+      body.environment_id,
+      { onlyIfChanged: true },
+    ),
+    env.DB.prepare(
+      `SELECT id, product_id, name, audience, enabled, kill_switch, token_ttl_seconds,
+              policy_version, rpm_limit, tpm_limit, concurrency_limit,
+              daily_budget_microcents, max_request_bytes, created_at, updated_at
+         FROM environments WHERE product_id = ? AND id = ?`,
+    ).bind(body.product_id, body.environment_id),
+  ]);
+  const updated = results[2]?.results[0] as EnvironmentSettingsRow | undefined;
+  if ((results[0]?.meta.changes ?? 0) === 0 || !updated)
+    throw new HttpError(404, "not_found", "product environment not found");
+  return jsonResponse({
+    ...updated,
+    enabled: updated.enabled === 1,
+    kill_switch: updated.kill_switch === 1,
+  });
 }
 
 async function adminUpsertAlias(
@@ -1154,7 +1248,9 @@ export async function handleControlPlane(
                 EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'classroom_groups') AS classroom_groups_schema,
                 EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'classroom_group_keys') AS classroom_group_keys_schema,
                 EXISTS(SELECT 1 FROM pragma_table_info('access_codes') WHERE name = 'classroom_group_id') AS access_code_group_column,
-                EXISTS(SELECT 1 FROM pragma_table_info('provider_attempts') WHERE name = 'classroom_group_id') AS attempt_group_column
+                EXISTS(SELECT 1 FROM pragma_table_info('provider_attempts') WHERE name = 'classroom_group_id') AS attempt_group_column,
+                EXISTS(SELECT 1 FROM pragma_table_info('classroom_groups') WHERE name = 'paused_at') AS group_paused_column,
+                EXISTS(SELECT 1 FROM pragma_table_info('classroom_group_keys') WHERE name = 'key_hint') AS group_key_hint_column
          FROM schema_metadata WHERE key = 'schema_version'`,
       ).first<{
         value: string;
@@ -1164,6 +1260,8 @@ export async function handleControlPlane(
         classroom_group_keys_schema: number;
         access_code_group_column: number;
         attempt_group_column: number;
+        group_paused_column: number;
+        group_key_hint_column: number;
       }>();
       if (
         schema?.value !== DATABASE_SCHEMA_VERSION ||
@@ -1172,7 +1270,9 @@ export async function handleControlPlane(
         schema.classroom_groups_schema !== 1 ||
         schema.classroom_group_keys_schema !== 1 ||
         schema.access_code_group_column !== 1 ||
-        schema.attempt_group_column !== 1
+        schema.attempt_group_column !== 1 ||
+        schema.group_paused_column !== 1 ||
+        schema.group_key_hint_column !== 1
       )
         throw new HttpError(
           500,
@@ -1224,6 +1324,8 @@ export async function handleControlPlane(
           return await adminCreateProduct(request, env, actorHash);
         case "/admin/v1/environments":
           return await adminCreateEnvironment(request, env, actorHash);
+        case "/admin/v1/environments/update":
+          return await adminUpdateEnvironment(request, env, actorHash);
         case "/admin/v1/aliases":
           return await adminUpsertAlias(request, env, actorHash);
         case "/admin/v1/entitlements":

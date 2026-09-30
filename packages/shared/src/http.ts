@@ -16,9 +16,25 @@ export class HttpError extends Error {
     readonly status: number,
     readonly code: ErrorCode,
     message: string,
+    readonly headers?: Record<string, string>,
   ) {
     super(message);
   }
+}
+
+/**
+ * True for a D1/SQLite UNIQUE constraint failure, so a caller can map a known
+ * duplicate-name write to 409 instead of an opaque 500.
+ */
+export function isUniqueConstraintError(error: unknown): boolean {
+  for (
+    let current: unknown = error, depth = 0;
+    current instanceof Error && depth < 3;
+    current = current.cause, depth += 1
+  ) {
+    if (current.message.includes("UNIQUE constraint failed")) return true;
+  }
+  return false;
 }
 
 export function jsonResponse(
@@ -37,10 +53,12 @@ export function errorResponse(
   code: ErrorCode,
   message: string,
   requestId?: string,
+  extraHeaders?: Record<string, string>,
 ): Response {
-  const headers = requestId
-    ? { "x-tkslopper-request-id": requestId }
-    : undefined;
+  const headers = {
+    ...extraHeaders,
+    ...(requestId ? { "x-tkslopper-request-id": requestId } : {}),
+  };
   return jsonResponse(
     { error: { message, type: code, code }, request_id: requestId },
     status,
