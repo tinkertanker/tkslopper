@@ -1563,6 +1563,7 @@ describe("classroom class options", () => {
       product_name: "Classroom fixture",
       environment_name: "second",
       aliases: ["second.only.v1"],
+      alias_endpoints: [{ alias: "second.only.v1", endpoints: ["chat"] }],
       limits: defaultLimits,
     });
     expect(body.environments[1]).toEqual({
@@ -1571,6 +1572,12 @@ describe("classroom class options", () => {
       product_name: "Classroom fixture",
       environment_name: "test",
       aliases: ["dual.endpoint.v1", "json.strict.v1", "text.chat.v1"],
+      // Endpoints let clients choose Chat Completions or Responses per alias.
+      alias_endpoints: [
+        { alias: "dual.endpoint.v1", endpoints: ["chat", "responses"] },
+        { alias: "json.strict.v1", endpoints: ["chat"] },
+        { alias: "text.chat.v1", endpoints: ["chat"] },
+      ],
       limits: defaultLimits,
     });
     // Disabled aliases, disabled or killed environments, and other products are omitted.
@@ -1586,6 +1593,7 @@ describe("classroom class options", () => {
     expect(text).not.toContain("secret");
     for (const entry of body.environments)
       expect(Object.keys(entry).sort()).toEqual([
+        "alias_endpoints",
         "aliases",
         "environment_id",
         "environment_name",
@@ -1629,7 +1637,11 @@ describe("classroom class options", () => {
       await env.DB.batch(aliases.slice(offset, offset + 50));
 
     const body = await adminJson<{
-      environments: { environment_id: string; aliases: string[] }[];
+      environments: {
+        environment_id: string;
+        aliases: string[];
+        alias_endpoints: unknown[];
+      }[];
       truncated: boolean;
     }>("/admin/v1/classes/options", {});
     expect(body.truncated).toBe(true);
@@ -1640,6 +1652,7 @@ describe("classroom class options", () => {
     expect(bulk?.aliases).toHaveLength(50);
     expect(bulk?.aliases[0]).toBe("bulk.00.v1");
     expect(bulk?.aliases[49]).toBe("bulk.49.v1");
+    expect(bulk?.alias_endpoints).toHaveLength(50);
   });
 
   it("requires the same admin authentication as the rest of the classroom surface", async () => {

@@ -73,12 +73,20 @@ export type ClassroomEnvironmentLimits = {
   max_request_bytes: number;
 };
 
+/** The gateway endpoints an alias is enabled on, so clients can pick a call shape. */
+export type ClassroomAliasEndpoints = {
+  alias: string;
+  endpoints: ("chat" | "responses")[];
+};
+
 export type ClassroomClassOption = {
   product_id: string;
   environment_id: string;
   product_name: string;
   environment_name: string;
   aliases: string[];
+  /** Same aliases and order as `aliases`, each with its enabled endpoints. */
+  alias_endpoints: ClassroomAliasEndpoints[];
   limits: ClassroomEnvironmentLimits;
 };
 
@@ -1392,10 +1400,11 @@ async function adminClassOptions(
         } & ClassroomEnvironmentLimits
       >(),
     // Only enabled aliases of enabled product/environment pairs are offered, and
-    // only the public alias name is projected; route, model, and credential
-    // details stay out of this response.
+    // only the public alias name and endpoint are projected; route, model, and
+    // credential details stay out of this response. An alias can have one row
+    // per endpoint, hence two rows per alias in the bound below.
     env.DB.prepare(
-      `SELECT DISTINCT e.product_id, e.id AS environment_id, a.alias
+      `SELECT DISTINCT e.product_id, e.id AS environment_id, a.alias, a.endpoint
          FROM aliases a
          JOIN environments e ON e.id = a.environment_id AND e.product_id = a.product_id
          JOIN products p ON p.id = e.product_id
@@ -1409,32 +1418,45 @@ async function adminClassOptions(
              ORDER BY p2.display_name, p2.id, e2.name, e2.id
              LIMIT ?
           )
-        ORDER BY e.product_id, e.id, a.alias
+        ORDER BY e.product_id, e.id, a.alias, a.endpoint
         LIMIT ?`,
     )
-      .bind(environmentLimit, environmentLimit * (aliasLimit + 1) + 1)
-      .all<{ product_id: string; environment_id: string; alias: string }>(),
+      .bind(environmentLimit, environmentLimit * (aliasLimit + 1) * 2 + 1)
+      .all<{
+        product_id: string;
+        environment_id: string;
+        alias: string;
+        endpoint: "chat" | "responses";
+      }>(),
   ]);
 
   const visible = environments.results.slice(0, environmentLimit);
   let truncated = environments.results.length > environmentLimit;
-  const byEnvironment = new Map<string, string[]>();
+  const byEnvironment = new Map<string, ClassroomAliasEndpoints[]>();
   for (const row of aliases.results) {
     const key = `${row.product_id}\u0000${row.environment_id}`;
-    const names = byEnvironment.get(key) ?? [];
-    if (names.length <= aliasLimit) names.push(row.alias);
-    byEnvironment.set(key, names);
+    const entries = byEnvironment.get(key) ?? [];
+    const last = entries.at(-1);
+    if (last?.alias === row.alias) {
+      if (!last.endpoints.includes(row.endpoint))
+        last.endpoints.push(row.endpoint);
+    } else if (entries.length <= aliasLimit) {
+      entries.push({ alias: row.alias, endpoints: [row.endpoint] });
+    }
+    byEnvironment.set(key, entries);
   }
   const options: ClassroomClassOption[] = visible.map((environment) => {
     const key = `${environment.product_id}\u0000${environment.environment_id}`;
-    const names = byEnvironment.get(key) ?? [];
-    if (names.length > aliasLimit) truncated = true;
+    const entries = byEnvironment.get(key) ?? [];
+    if (entries.length > aliasLimit) truncated = true;
+    const visibleAliases = entries.slice(0, aliasLimit);
     return {
       product_id: environment.product_id,
       environment_id: environment.environment_id,
       product_name: environment.product_name,
       environment_name: environment.environment_name,
-      aliases: names.slice(0, aliasLimit),
+      aliases: visibleAliases.map((entry) => entry.alias),
+      alias_endpoints: visibleAliases,
       limits: {
         policy_version: environment.policy_version,
         token_ttl_seconds: environment.token_ttl_seconds,
