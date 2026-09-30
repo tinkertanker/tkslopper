@@ -400,11 +400,17 @@ function requestSchemaMessage(
     typeof value === "object" && value !== null
       ? (value as Record<string, unknown>)
       : {};
-  if (error.issues.some((issue) => issue.path[0] === "model"))
-    return "model must be a capability alias such as text.chat.v1; GET /v1/models lists the aliases this credential can use";
-  if (body.stream === true)
-    return "streaming is not supported; set stream to false or omit it";
-  return zodMessage(error);
+  const hints = [
+    ...(error.issues.some((issue) => issue.path[0] === "model")
+      ? [
+          "model must be a capability alias such as text.chat.v1; GET /v1/models lists the aliases this credential can use",
+        ]
+      : []),
+    ...(body.stream === true
+      ? ["streaming is not supported; set stream to false or omit it"]
+      : []),
+  ];
+  return hints.length > 0 ? hints.join("; ") : zodMessage(error);
 }
 
 function parseGatewayRequest(
@@ -492,14 +498,16 @@ async function acquireIdempotency(
 
 /**
  * Records the outcome for an idempotency key. A request that failed before any
- * provider dispatch releases its key, so a client may retry a quota or
- * validation denial with the same key instead of receiving 409 for a day.
+ * provider dispatch, or that the provider definitively rejected without doing
+ * work, releases its key, so a client may retry the same request with the
+ * same key instead of receiving 409 for a day.
  */
 async function finishIdempotency(
   request: Request,
   env: GatewayEnv,
   context: RequestContext,
   status: "completed" | "failed",
+  providerRejected = false,
 ) {
   const key = request.headers.get("idempotency-key");
   const policy = context.policy;
@@ -516,7 +524,7 @@ async function finishIdempotency(
     ),
     pseudonymize(key, env.TOKEN_SIGNING_SECRET),
   ]);
-  if (status === "failed" && !context.providerAttempted) {
+  if (status === "failed" && (!context.providerAttempted || providerRejected)) {
     await env.DB.prepare(
       "DELETE FROM idempotency_keys WHERE scope_hash = ? AND key_hash = ? AND request_id = ?",
     )
@@ -785,12 +793,14 @@ async function recordAttempt(
     inputTokens: number;
     outputTokens: number;
     costMicrocents: number;
+    /** The provider-reported model, which may be a dated route snapshot. */
+    resolvedModel?: string;
   },
 ): Promise<void> {
   const result = await env.DB.prepare(
     `UPDATE provider_attempts
         SET status_code = ?, error_class = ?, latency_ms = ?, input_tokens = ?, output_tokens = ?,
-            cost_microcents = ?
+            cost_microcents = ?, resolved_model = COALESCE(?, resolved_model)
       WHERE request_id = ? AND attempt_number = 1`,
   )
     .bind(
@@ -800,6 +810,7 @@ async function recordAttempt(
       values.inputTokens,
       values.outputTokens,
       values.costMicrocents,
+      values.resolvedModel ?? null,
       context.requestId,
     )
     .run();
@@ -826,7 +837,7 @@ async function discardAttemptIntent(
 
 /** Upstream statuses that mean the provider refused before doing billable work. */
 const definitiveProviderRejections = new Set([
-  400, 401, 403, 404, 413, 415, 422, 429,
+  400, 401, 402, 403, 404, 413, 415, 422, 429,
 ]);
 
 const clientFixableProviderRejections = new Set([400, 413, 415, 422]);
@@ -834,8 +845,8 @@ const clientFixableProviderRejections = new Set([400, 413, 415, 422]);
 /**
  * Maps a provider failure to the public response. A request the provider found
  * invalid is the caller's to fix; an upstream rate limit is retryable; an
- * upstream credential, permission or unknown-model failure is ours and stays a
- * 502.
+ * upstream credential, credit, permission or unknown-model failure is ours and
+ * stays a 502.
  */
 function providerFailureResponse(
   error: ProviderError,
@@ -1067,6 +1078,13 @@ async function handleInference(
         maxOutputTokens,
         aliasPolicy.output_cost_microcents_per_million,
       );
+    const tokenLimit = context.classroomLimits?.tpm ?? policy.tpm_limit;
+    if (reservedTokens > tokenLimit)
+      throw new HttpError(
+        400,
+        "invalid_request",
+        "request exceeds the per-minute token limit on its own; lower max_tokens or shorten the input",
+      );
     quotaMayBeAcquired = true;
     const quotaResponse = await quotaCallWithRetry(
       env,
@@ -1208,6 +1226,8 @@ async function handleInference(
       quotaMayBeAcquired = false;
       quotaCompletionExhausted = true;
       if (settled) {
+        // A failed projection leaves the intent row visible through
+        // stale_provider_attempts; the reservation itself is settled.
         await recordAttempt(env, context, {
           statusCode: result.status,
           errorClass: null,
@@ -1215,9 +1235,10 @@ async function handleInference(
           inputTokens,
           outputTokens,
           costMicrocents: actualCost,
-        }).catch(() => {
-          quotaReservationUnresolved = true;
-        });
+          ...(typeof result.body.model === "string"
+            ? { resolvedModel: result.body.model }
+            : {}),
+        }).catch(() => undefined);
       } else quotaReservationUnresolved = true;
       await finishIdempotency(request, env, context, "completed").catch(
         () => undefined,
@@ -1279,7 +1300,7 @@ async function handleInference(
       } else {
         await discardAttemptIntent(env, context);
       }
-      await finishIdempotency(request, env, context, "failed");
+      await finishIdempotency(request, env, context, "failed", rejected);
       const failure = providerFailureResponse(error, rejected);
       logSafeEvent(
         safeEvent(context, {

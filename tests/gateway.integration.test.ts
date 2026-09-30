@@ -1809,11 +1809,12 @@ describe("student-facing gateway behaviour", () => {
     return { ...base, PROVIDER_ROUTES_JSON: JSON.stringify(routes) };
   }
 
-  async function sentBody(
+  function sentBody(
     fetcher: ReturnType<typeof vi.fn<typeof fetch>>,
-  ): Promise<Record<string, unknown>> {
-    const init = fetcher.mock.calls[0]?.[1];
-    return JSON.parse(String(init?.body)) as Record<string, unknown>;
+  ): Record<string, unknown> {
+    const body = fetcher.mock.calls[0]?.[1]?.body;
+    if (typeof body !== "string") throw new Error("no provider body was sent");
+    return JSON.parse(body) as Record<string, unknown>;
   }
 
   it.each([
@@ -1839,13 +1840,101 @@ describe("student-facing gateway behaviour", () => {
         );
         // More than the old implicit 1,024 tokens is now a normal answer.
         expect(response.status).toBe(200);
-        const wire = await sentBody(fetcher);
+        const wire = sentBody(fetcher);
         expect(wire[field]).toBe(4096);
       } finally {
         vi.unstubAllGlobals();
       }
     },
   );
+
+  it.each([
+    {
+      profile: "custom" as const,
+      client: { max_completion_tokens: 100 },
+      sent: "max_tokens",
+      absent: "max_completion_tokens",
+    },
+    {
+      profile: "openai" as const,
+      client: { max_tokens: 100 },
+      sent: "max_completion_tokens",
+      absent: "max_tokens",
+    },
+  ])(
+    "normalises the output limit spelling for the $profile profile",
+    async ({ profile, client, sent, absent }) => {
+      const token = await grant();
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(providerChatResponse({ prompt_tokens: 5 }));
+      vi.stubGlobal("fetch", fetcher);
+      try {
+        const response = await handleGateway(
+          chatRequest(token, undefined, {
+            model: "text.chat.v1",
+            messages: [{ role: "user", content: "hello" }],
+            ...client,
+          }),
+          upstreamProfileEnv(profile),
+        );
+        expect(response.status).toBe(200);
+        const wire = sentBody(fetcher);
+        expect(wire[sent]).toBe(100);
+        expect(wire).not.toHaveProperty(absent);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
+  it("sends the output limit on the Responses endpoint", async () => {
+    const timestamp = now();
+    await env.DB.prepare(
+      `INSERT INTO aliases
+       (id, product_id, environment_id, alias, endpoint, route_id, max_input_tokens, max_output_tokens,
+        input_cost_microcents_per_million, output_cost_microcents_per_million, created_at, updated_at)
+       VALUES ('alias_chat_responses', 'prod_vibbit', 'env_vibbit', 'text.chat.v1', 'responses',
+               'fixture-text-v1', 500000, 2048, 1000, 2000, ?, ?)`,
+    )
+      .bind(timestamp, timestamp)
+      .run();
+    const token = await grant();
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({
+        id: "resp_limit",
+        object: "response",
+        model: "physical-fixture-v1",
+        status: "completed",
+        output: [
+          {
+            id: "msg_limit",
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "ok", annotations: [] }],
+          },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      const response = await handleGateway(
+        new Request("https://gateway.example.invalid/v1/responses", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ model: "text.chat.v1", input: "hello" }),
+        }),
+        upstreamProfileEnv("openai", { endpoints: ["chat", "responses"] }),
+      );
+      expect(response.status).toBe(200);
+      expect(sentBody(fetcher).max_output_tokens).toBe(2048);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 
   it("clamps an oversized output request to the alias limit instead of rejecting it", async () => {
     const token = await grant();
@@ -1863,7 +1952,7 @@ describe("student-facing gateway behaviour", () => {
         upstreamEnv(5000),
       );
       expect(response.status).toBe(200);
-      expect((await sentBody(fetcher)).max_tokens).toBe(4096);
+      expect(sentBody(fetcher).max_tokens).toBe(4096);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -2017,6 +2106,59 @@ describe("student-facing gateway behaviour", () => {
     },
   );
 
+  it("releases the idempotency key after an uncharged upstream rate limit", async () => {
+    const token = await grant();
+    const headers = { "idempotency-key": "upstream-rate-limit-0001" };
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response("{}", {
+          status: 429,
+          headers: {
+            "content-type": "application/json",
+            "retry-after": "Wed, 21 Oct 2026 07:28:00 GMT",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(providerChatResponse({ prompt_tokens: 5 }));
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      const limited = await handleGateway(
+        chatRequest(token, headers),
+        upstreamEnv(5000),
+      );
+      expect(limited.status).toBe(429);
+      // An HTTP-date Retry-After is not relayed; the default applies.
+      expect(limited.headers.get("retry-after")).toBe("10");
+      const retried = await handleGateway(
+        chatRequest(token, headers),
+        upstreamEnv(5000),
+      );
+      expect(retried.status).toBe(200);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("rejects a request that can never fit the per-minute token limit", async () => {
+    await env.DB.prepare(
+      "UPDATE environments SET tpm_limit = 1000 WHERE id = 'env_vibbit'",
+    ).run();
+    const token = await grant();
+    const response = await SELF.fetch(
+      chatRequest(token, undefined, {
+        model: "text.chat.v1",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 2000,
+      }),
+    );
+    expect(response.status).toBe(400);
+    expect(response.headers.get("retry-after")).toBeNull();
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "invalid_request" },
+    });
+  });
+
   it("tells the client when to retry a local rate limit", async () => {
     await env.DB.prepare(
       "UPDATE environments SET rpm_limit = 1 WHERE id = 'env_vibbit'",
@@ -2068,6 +2210,17 @@ describe("student-facing gateway behaviour", () => {
     expect(
       (await streaming.json<{ error: { message: string } }>()).error.message,
     ).toContain("streaming is not supported");
+    const both = await SELF.fetch(
+      chatRequest(token, undefined, {
+        model: "gpt-4o",
+        messages: [{ role: "user", content: "hello" }],
+        stream: true,
+      }),
+    );
+    const message = (await both.json<{ error: { message: string } }>()).error
+      .message;
+    expect(message).toContain("capability alias");
+    expect(message).toContain("streaming is not supported");
   });
 
   it("lists only the aliases the credential may call", async () => {

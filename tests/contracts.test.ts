@@ -7,6 +7,8 @@ import {
   createOpaqueCredential,
   hashCredential,
   inspectGatewayRequest,
+  providerModelMatchesRoute,
+  withOutputTokenLimit,
   parseOpaqueCredential,
   responsesRequestSchema,
   signGrant,
@@ -315,5 +317,49 @@ describe("normalized product request schema smoke", () => {
     expect(
       chatRequestSchema.safeParse({ ...base, provider: "untrusted" }).success,
     ).toBe(false);
+  });
+});
+
+describe("provider model and output limit contracts", () => {
+  it.each([
+    ["gpt-4o-mini", true],
+    ["gpt-4o-mini-2024-07-18", true],
+    ["gpt-4o-mini-20240718", true],
+    ["gpt-4o-mini-0613", true],
+    ["gpt-4o-mini-2024-07-18-extra", false],
+    ["gpt-4o-mini-audio", false],
+    ["gpt-4o", false],
+    ["gpt-4o-mini-", false],
+    ["vendor/gpt-4o-mini", true],
+  ])("matches %s against the route model", (reported, expected) => {
+    expect(
+      providerModelMatchesRoute(reported, {
+        model: "gpt-4o-mini",
+        acceptedModels: ["vendor/gpt-4o-mini"],
+      }),
+    ).toBe(expected);
+  });
+
+  it("never sends both output limit spellings", () => {
+    const body = chatRequestSchema.parse({
+      model: "text.chat.v1",
+      messages: [{ role: "user", content: "hi" }],
+      max_completion_tokens: 50,
+    });
+    for (const profile of ["openai", "deepseek", "openrouter", "custom"]) {
+      const limited = withOutputTokenLimit(
+        { endpoint: "chat", body },
+        40,
+        profile,
+      );
+      if (limited.endpoint !== "chat") throw new Error("endpoint changed");
+      const spellings = [
+        limited.body.max_tokens,
+        limited.body.max_completion_tokens,
+      ].filter((value) => value !== undefined);
+      expect(spellings).toEqual([40]);
+    }
+    // The caller's parsed body is not mutated.
+    expect(body.max_completion_tokens).toBe(50);
   });
 });

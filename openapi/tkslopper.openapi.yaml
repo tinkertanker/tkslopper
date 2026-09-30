@@ -160,6 +160,7 @@ paths:
                   data:
                     type: array
                     items: { $ref: "#/components/schemas/Model" }
+        "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
@@ -185,6 +186,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Model" }
+        "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }

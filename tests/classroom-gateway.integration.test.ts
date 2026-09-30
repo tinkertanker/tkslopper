@@ -760,6 +760,25 @@ describe("classroom authorization", () => {
     await expect(rawClassroomState(CLASS)).resolves.toBeUndefined();
   });
 
+  it("lists classroom aliases for a group key and stops listing when paused", async () => {
+    const models = () =>
+      SELF.fetch(
+        new Request("https://gateway.example.invalid/v1/models", {
+          headers: { authorization: `Bearer ${groupKeyAlpha}` },
+        }),
+      );
+    const listed = await models();
+    expect(listed.status).toBe(200);
+    const body = await listed.json<{ data: Array<{ id: string }> }>();
+    expect(body.data.map((model) => model.id)).toEqual([ALIAS]);
+    await env.DB.prepare(
+      "UPDATE classroom_classes SET status = 'paused' WHERE id = ?",
+    )
+      .bind(CLASS)
+      .run();
+    expect((await models()).status).toBe(403);
+  });
+
   it("does not apply the per-principal environment daily budget to classrooms", async () => {
     await env.DB.prepare(
       "UPDATE environments SET daily_budget_microcents = 0 WHERE id = ?",

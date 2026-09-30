@@ -310,9 +310,10 @@ export function inspectGatewayRequest(request: ParsedGatewayRequest): {
 
 /**
  * Returns the request with an explicit output limit, so the provider enforces
- * the same envelope the gateway reserved. A client-chosen Chat spelling is
- * kept; otherwise OpenAI routes get `max_completion_tokens` (required by its
- * reasoning models) and other compatible routes get `max_tokens`.
+ * the same envelope the gateway reserved. OpenAI routes always receive
+ * `max_completion_tokens`, which every OpenAI chat model accepts and its
+ * reasoning models require; other compatible routes always receive the widely
+ * supported `max_tokens`, whatever spelling the client chose.
  */
 export function withOutputTokenLimit(
   request: ParsedGatewayRequest,
@@ -325,11 +326,10 @@ export function withOutputTokenLimit(
       body: { ...request.body, max_output_tokens: limit },
     };
   const body = { ...request.body };
-  if (body.max_completion_tokens !== undefined)
-    body.max_completion_tokens = limit;
-  else if (body.max_tokens !== undefined || profile !== "openai")
-    body.max_tokens = limit;
-  else body.max_completion_tokens = limit;
+  delete body.max_tokens;
+  delete body.max_completion_tokens;
+  if (profile === "openai") body.max_completion_tokens = limit;
+  else body.max_tokens = limit;
   return { endpoint: "chat", body };
 }
 
