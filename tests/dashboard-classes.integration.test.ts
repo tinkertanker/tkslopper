@@ -425,7 +425,7 @@ describe("teacher class kit", () => {
     const html = await pageHtml();
 
     for (const element of [
-      'id="class-kit" hidden',
+      'id="class-kit" tabindex="-1" aria-labelledby="class-kit-heading" hidden',
       'id="class-kit-keys"',
       'id="class-kit-skipped"',
       'id="class-kit-copy"',
