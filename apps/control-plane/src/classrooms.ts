@@ -1,8 +1,10 @@
 import {
   CLASSROOM_CLASS_LIST_LIMIT,
   CLASSROOM_DEFAULT_MAX_ACTIVATIONS,
+  CLASSROOM_GROUP_BULK_LIMIT,
   CLASSROOM_GROUP_KEY_PREFIX,
   CLASSROOM_GROUP_LIST_LIMIT,
+  CLASSROOM_MICROCENTS_MAX,
   CLASSROOM_USAGE_GROUP_LIMIT,
   HttpError,
   classroomClassCreateSchema,
@@ -11,7 +13,9 @@ import {
   classroomClassObject,
   classroomClassUpdateSchema,
   classroomClassUsageSchema,
+  classroomGroupAccessBulkSchema,
   classroomGroupAccessSchema,
+  classroomGroupBudgetBulkSchema,
   classroomGroupCreateSchema,
   classroomGroupKeySchema,
   classroomGroupListSchema,
@@ -20,6 +24,7 @@ import {
   createOpaqueCredential,
   decodeCapabilitiesJson,
   hashCredential,
+  isUniqueConstraintError,
   jsonResponse,
   randomId,
   randomSecret,
@@ -32,7 +37,10 @@ import {
   type ClassroomClassListResponse,
   type ClassroomClassRow,
   type ClassroomClassUsageResponse,
+  type ClassroomGroupAccessBulkResponse,
   type ClassroomGroupAccessResponse,
+  type ClassroomGroupBudgetBulkResponse,
+  type ClassroomGroupBulkSkip,
   type ClassroomGroupCodeObject,
   type ClassroomGroupKeyObject,
   type ClassroomGroupListResponse,
@@ -54,12 +62,24 @@ export type ClassroomEnv = {
   CREDENTIAL_PEPPER: string;
 };
 
+/** Environment guardrails; classroom group limits are bounded by these. */
+export type ClassroomEnvironmentLimits = {
+  policy_version: number;
+  token_ttl_seconds: number;
+  rpm_limit: number;
+  tpm_limit: number;
+  concurrency_limit: number;
+  daily_budget_microcents: number;
+  max_request_bytes: number;
+};
+
 export type ClassroomClassOption = {
   product_id: string;
   environment_id: string;
   product_name: string;
   environment_name: string;
   aliases: string[];
+  limits: ClassroomEnvironmentLimits;
 };
 
 export type ClassroomClassOptionsResponse = {
@@ -70,6 +90,7 @@ export type ClassroomClassOptionsResponse = {
 type ClassroomGroupKeyRow = {
   id: string;
   group_id: string;
+  key_hint: string | null;
   expires_at: number | null;
   revoked_at: number | null;
   created_at: number;
@@ -177,7 +198,7 @@ async function requireGroupContext(
   groupId: string,
 ): Promise<ClassroomGroupContext> {
   const group = await env.DB.prepare(
-    `SELECT id, class_id, name, status, capabilities_json, budget_microcents,
+    `SELECT id, class_id, name, status, paused_at, capabilities_json, budget_microcents,
             daily_budget_microcents, rpm_limit, tpm_limit, concurrency_limit, starts_at,
             expires_at, created_at, updated_at
        FROM classroom_groups WHERE id = ?`,
@@ -295,8 +316,12 @@ async function adminUpdateClass(
     body.starts_at !== undefined ? body.starts_at : row.starts_at;
   const expiresAt =
     body.expires_at !== undefined ? body.expires_at : row.expires_at;
+  // An ended class can still be topped up, re-limited, or extended: only a
+  // changed end must lie in the future, and resending the stored end is not
+  // a change.
   validateClassroomWindow({ starts_at: startsAt, expires_at: expiresAt }, now, {
-    requireFutureEnd: body.expires_at !== undefined,
+    requireFutureEnd:
+      body.expires_at !== undefined && body.expires_at !== row.expires_at,
   });
 
   // Only supplied fields are written, so a stale read cannot restore policy
@@ -452,9 +477,20 @@ async function adminCreateGroups(
     };
   });
 
-  await env.DB.batch([
-    ...groups.flatMap((group) => [group.statement, group.audit]),
-  ]);
+  try {
+    await env.DB.batch([
+      ...groups.flatMap((group) => [group.statement, group.audit]),
+    ]);
+  } catch (error) {
+    // A concurrent writer can still claim a name after the probe above.
+    if (isUniqueConstraintError(error))
+      throw new HttpError(
+        409,
+        "conflict",
+        "a group with that name already exists",
+      );
+    throw error;
+  }
 
   return jsonResponse(
     {
@@ -463,6 +499,8 @@ async function adminCreateGroups(
         class_id: class_.id,
         name: group.name,
         status: "active",
+        paused: false,
+        paused_at: null,
         capabilities: null,
         budget_microcents: class_.group_budget_microcents,
         daily_budget_microcents: null,
@@ -488,7 +526,7 @@ async function adminListGroups(
   const limit = CLASSROOM_GROUP_LIST_LIMIT + 1;
   const [groups, keys, codes] = await Promise.all([
     env.DB.prepare(
-      `SELECT id, class_id, name, status, capabilities_json, budget_microcents,
+      `SELECT id, class_id, name, status, paused_at, capabilities_json, budget_microcents,
               daily_budget_microcents, rpm_limit, tpm_limit, concurrency_limit, starts_at,
               expires_at, created_at, updated_at
          FROM classroom_groups
@@ -498,11 +536,13 @@ async function adminListGroups(
     )
       .bind(body.class_id, limit)
       .all<ClassroomGroupRow>(),
+    // Live credentials first, newest first, so repeated rotation truncates
+    // old revoked rows rather than hiding the keys an operator needs.
     env.DB.prepare(
-      `SELECT id, group_id, expires_at, revoked_at, created_at
+      `SELECT id, group_id, key_hint, expires_at, revoked_at, created_at
          FROM classroom_group_keys
         WHERE group_id IN (SELECT id FROM classroom_groups WHERE class_id = ?)
-        ORDER BY created_at, id
+        ORDER BY revoked_at IS NULL DESC, created_at DESC, id DESC
         LIMIT ?`,
     )
       .bind(body.class_id, limit)
@@ -511,7 +551,7 @@ async function adminListGroups(
       `SELECT id, classroom_group_id, expires_at, disabled, activation_count, max_activations
          FROM access_codes
         WHERE classroom_group_id IN (SELECT id FROM classroom_groups WHERE class_id = ?)
-        ORDER BY created_at, id
+        ORDER BY disabled, created_at DESC, id DESC
         LIMIT ?`,
     )
       .bind(body.class_id, limit)
@@ -530,6 +570,7 @@ async function adminListGroups(
     .map((row) => ({
       id: row.id,
       group_id: row.group_id,
+      key_hint: row.key_hint,
       expires_at: row.expires_at,
       revoked_at: row.revoked_at,
       created_at: row.created_at,
@@ -613,17 +654,39 @@ async function adminUpdateGroup(
     set("concurrency_limit", body.concurrency_limit);
   if (body.starts_at !== undefined) set("starts_at", body.starts_at);
   if (body.expires_at !== undefined) set("expires_at", body.expires_at);
+  // Pausing keeps the original pause time; resuming clears it.
+  if (body.paused === true) {
+    assignments.push("paused_at = COALESCE(paused_at, ?)");
+    values.push(now);
+  } else if (body.paused === false) set("paused_at", null);
   set("updated_at", now);
 
-  const results = await env.DB.batch([
-    env.DB.prepare(
-      `UPDATE classroom_groups SET ${assignments.join(", ")}
-        WHERE id = ? AND status <> 'revoked'`,
-    ).bind(...values, group.id),
-    auditStatement(env, actorHash, "update", "classroom_group", group.id, {
-      onlyIfChanged: true,
-    }),
-  ]);
+  // A request that only pauses or resumes is audited as such; any other edit
+  // (with or without a pause change) is audited as an update.
+  const onlyPause =
+    body.paused !== undefined &&
+    Object.keys(body).every((key) => key === "id" || key === "paused");
+  const action = onlyPause ? (body.paused ? "pause" : "resume") : "update";
+  let results: D1Result[];
+  try {
+    results = await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE classroom_groups SET ${assignments.join(", ")}
+          WHERE id = ? AND status <> 'revoked'`,
+      ).bind(...values, group.id),
+      auditStatement(env, actorHash, action, "classroom_group", group.id, {
+        onlyIfChanged: true,
+      }),
+    ]);
+  } catch (error) {
+    if (isUniqueConstraintError(error))
+      throw new HttpError(
+        409,
+        "conflict",
+        "a group with that name already exists",
+      );
+    throw error;
+  }
   if ((results[0]?.meta.changes ?? 0) === 0)
     await groupWriteConflict(env, group.id);
   return jsonResponse({ id: group.id });
@@ -654,27 +717,61 @@ function effectiveGroupCapabilities(
   );
 }
 
+/** Last four characters: enough to tell keys apart, never enough to use one. */
+function groupKeyHint(value: string): string {
+  return value.slice(-4);
+}
+
+function newGroupKey(): { id: string; value: string; hint: string } {
+  const value = `${CLASSROOM_GROUP_KEY_PREFIX}${randomSecret(32)}`;
+  return { id: randomId("gkey"), value, hint: groupKeyHint(value) };
+}
+
+/**
+ * Why a group cannot use newly issued access, or `undefined`. API keys and
+ * join codes share these checks so neither is minted for a group whose
+ * schedule has ended or whose class/group model policies do not intersect.
+ */
+function groupIssuanceBlocker(
+  class_: ClassroomClassRow,
+  group: ClassroomGroupRow,
+  now: number,
+): string | undefined {
+  if (group.status === "revoked") return "group is revoked";
+  if (Math.min(class_.expires_at, group.expires_at ?? class_.expires_at) <= now)
+    return "class or group schedule has already ended";
+  if (
+    effectiveGroupCapabilities(
+      decodeCapabilitiesJson(class_.capabilities_json) ?? [],
+      decodeCapabilitiesJson(group.capabilities_json),
+    ).length === 0
+  )
+    return "class and group capability policies do not intersect";
+  return undefined;
+}
+
 async function issueApiKey(
   env: ClassroomEnv,
   actorHash: string,
   group: ClassroomGroupRow,
   expiresAt: number | null,
 ): Promise<Response> {
-  const id = randomId("gkey");
-  const value = `${CLASSROOM_GROUP_KEY_PREFIX}${randomSecret(32)}`;
+  const key = newGroupKey();
   const now = nowSeconds();
   await env.DB.batch([
     env.DB.prepare(
-      `INSERT INTO classroom_group_keys (id, group_id, secret_hash, expires_at, created_at)
-       VALUES (?, ?, ?, ?, ?)`,
-    ).bind(id, group.id, await sha256(value), expiresAt, now),
-    auditStatement(env, actorHash, "create", "classroom_group_key", id),
+      `INSERT INTO classroom_group_keys
+         (id, group_id, secret_hash, key_hint, expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind(key.id, group.id, await sha256(key.value), key.hint, expiresAt, now),
+    auditStatement(env, actorHash, "create", "classroom_group_key", key.id),
   ]);
   const response: ClassroomGroupAccessResponse = {
-    id,
+    id: key.id,
     group_id: group.id,
     kind: "api_key",
-    api_key: value,
+    api_key: key.value,
+    key_hint: key.hint,
     warning: "shown once",
   };
   return jsonResponse(response, 201);
@@ -758,6 +855,8 @@ async function adminGroupAccess(
       "invalid_request",
       "expires_at must be in the future",
     );
+  const blocker = groupIssuanceBlocker(class_, group, now);
+  if (blocker) throw new HttpError(409, "conflict", blocker);
 
   if (body.kind === "api_key")
     return await issueApiKey(env, actorHash, group, body.expires_at ?? null);
@@ -766,12 +865,6 @@ async function adminGroupAccess(
     decodeCapabilitiesJson(class_.capabilities_json) ?? [],
     decodeCapabilitiesJson(group.capabilities_json),
   );
-  if (capabilities.length === 0)
-    throw new HttpError(
-      409,
-      "conflict",
-      "class and group capability policies do not intersect",
-    );
   return await issueJoinCode(
     env,
     actorHash,
@@ -790,7 +883,7 @@ async function adminRotateGroupKey(
 ): Promise<Response> {
   const body = await parseBody(request, classroomGroupKeySchema);
   const key = await env.DB.prepare(
-    `SELECT id, group_id, expires_at, revoked_at, created_at
+    `SELECT id, group_id, key_hint, expires_at, revoked_at, created_at
        FROM classroom_group_keys WHERE id = ?`,
   )
     .bind(body.id)
@@ -804,8 +897,7 @@ async function adminRotateGroupKey(
   if (group.status === "revoked")
     throw new HttpError(409, "conflict", "group is revoked");
 
-  const id = randomId("gkey");
-  const value = `${CLASSROOM_GROUP_KEY_PREFIX}${randomSecret(32)}`;
+  const replacement = newGroupKey();
   const now = nowSeconds();
   // The replacement key and its audit row are gated on the conditional revoke
   // of the old key, so a concurrent rotate or revoke cannot mint a second live
@@ -815,20 +907,36 @@ async function adminRotateGroupKey(
       "UPDATE classroom_group_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
     ).bind(now, key.id),
     env.DB.prepare(
-      `INSERT INTO classroom_group_keys (id, group_id, secret_hash, expires_at, created_at)
-       SELECT ?, ?, ?, ?, ? WHERE changes() = 1`,
-    ).bind(id, group.id, await sha256(value), key.expires_at, now),
-    auditStatement(env, actorHash, "create", "classroom_group_key", id, {
-      onlyIfChanged: true,
-    }),
+      `INSERT INTO classroom_group_keys
+         (id, group_id, secret_hash, key_hint, expires_at, created_at)
+       SELECT ?, ?, ?, ?, ?, ? WHERE changes() = 1`,
+    ).bind(
+      replacement.id,
+      group.id,
+      await sha256(replacement.value),
+      replacement.hint,
+      key.expires_at,
+      now,
+    ),
+    auditStatement(
+      env,
+      actorHash,
+      "create",
+      "classroom_group_key",
+      replacement.id,
+      {
+        onlyIfChanged: true,
+      },
+    ),
   ]);
   if ((results[0]?.meta.changes ?? 0) === 0)
     throw new HttpError(409, "conflict", "group key is already revoked");
   const response: ClassroomGroupAccessResponse = {
-    id,
+    id: replacement.id,
     group_id: group.id,
     kind: "api_key",
-    api_key: value,
+    api_key: replacement.value,
+    key_hint: replacement.hint,
     warning: "shown once",
   };
   return jsonResponse(response, 201);
@@ -851,6 +959,316 @@ async function adminRevokeGroupKey(
   if ((results[0]?.meta.changes ?? 0) === 0)
     throw new HttpError(404, "not_found", "active group key not found");
   return jsonResponse({ id: body.id });
+}
+
+const GROUP_ROW_COLUMNS = `id, class_id, name, status, paused_at, capabilities_json,
+  budget_microcents, daily_budget_microcents, rpm_limit, tpm_limit, concurrency_limit,
+  starts_at, expires_at, created_at, updated_at`;
+
+/**
+ * Loads explicitly requested groups of one class in request order. Unknown IDs
+ * are reported rather than failing the batch. One JSON parameter keeps the
+ * lookup inside D1's 100 bound-parameter limit.
+ */
+async function requestedClassGroups(
+  env: ClassroomEnv,
+  classId: string,
+  groupIds: string[],
+): Promise<{ groups: ClassroomGroupRow[]; skipped: ClassroomGroupBulkSkip[] }> {
+  const rows = await env.DB.prepare(
+    `SELECT ${GROUP_ROW_COLUMNS}
+       FROM classroom_groups
+      WHERE class_id = ? AND id IN (SELECT value FROM json_each(?))`,
+  )
+    .bind(classId, JSON.stringify(groupIds))
+    .all<ClassroomGroupRow>();
+  const byId = new Map(rows.results.map((row) => [row.id, row]));
+  const groups: ClassroomGroupRow[] = [];
+  const skipped: ClassroomGroupBulkSkip[] = [];
+  for (const id of groupIds) {
+    const group = byId.get(id);
+    if (group) groups.push(group);
+    else
+      skipped.push({
+        group_id: id,
+        group_name: null,
+        reason: "group not found in this class",
+      });
+  }
+  return { groups, skipped };
+}
+
+async function adminGroupAccessBulk(
+  request: Request,
+  env: ClassroomEnv,
+  actorHash: string,
+): Promise<Response> {
+  const body = await parseBody(request, classroomGroupAccessBulkSchema);
+  const class_ = await requireClassRow(env, body.class_id);
+  if (class_.status === "revoked")
+    throw new HttpError(409, "conflict", "class is revoked");
+  const now = nowSeconds();
+  if (class_.expires_at <= now)
+    throw new HttpError(409, "conflict", "class schedule has already ended");
+  const expiresAt = body.expires_at ?? null;
+  if (expiresAt !== null && expiresAt <= now)
+    throw new HttpError(
+      400,
+      "invalid_request",
+      "expires_at must be in the future",
+    );
+
+  let candidates: ClassroomGroupRow[];
+  const skipped: ClassroomGroupBulkSkip[] = [];
+  let truncated = false;
+  if (body.group_ids === undefined) {
+    const rows = await env.DB.prepare(
+      `SELECT ${GROUP_ROW_COLUMNS}
+         FROM classroom_groups
+        WHERE class_id = ? AND status = 'active' AND paused_at IS NULL
+        ORDER BY name, id
+        LIMIT ?`,
+    )
+      .bind(class_.id, CLASSROOM_GROUP_BULK_LIMIT + 1)
+      .all<ClassroomGroupRow>();
+    candidates = rows.results.slice(0, CLASSROOM_GROUP_BULK_LIMIT);
+    truncated = rows.results.length > CLASSROOM_GROUP_BULK_LIMIT;
+  } else {
+    // Explicitly named paused groups still receive keys; the keys work once
+    // the group is resumed.
+    const requested = await requestedClassGroups(
+      env,
+      class_.id,
+      body.group_ids,
+    );
+    candidates = requested.groups;
+    skipped.push(...requested.skipped);
+  }
+
+  const issued: {
+    group: ClassroomGroupRow;
+    key: ReturnType<typeof newGroupKey>;
+    secretHash: string;
+    auditId: string;
+  }[] = [];
+  for (const group of candidates) {
+    const reason = groupIssuanceBlocker(class_, group, now);
+    if (reason) {
+      skipped.push({ group_id: group.id, group_name: group.name, reason });
+      continue;
+    }
+    const key = newGroupKey();
+    issued.push({
+      group,
+      key,
+      secretHash: await sha256(key.value),
+      auditId: randomId("audit"),
+    });
+  }
+
+  let inserted = new Set<string>();
+  if (issued.length > 0) {
+    const payload = JSON.stringify(
+      issued.map((entry) => ({
+        id: entry.key.id,
+        group_id: entry.group.id,
+        secret_hash: entry.secretHash,
+        key_hint: entry.key.hint,
+        audit_id: entry.auditId,
+      })),
+    );
+    // Two set-based statements (keys, then their audit rows) cover up to 100
+    // groups in one transaction without approaching D1's per-batch statement
+    // or bound-parameter limits. Keys are inserted only for groups that are
+    // still active in a non-revoked class at write time, and each audit row
+    // exists only for a key that was actually inserted.
+    const results = await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO classroom_group_keys
+           (id, group_id, secret_hash, key_hint, expires_at, created_at)
+         SELECT json_extract(k.value, '$.id'), g.id, json_extract(k.value, '$.secret_hash'),
+                json_extract(k.value, '$.key_hint'), ?, ?
+           FROM json_each(?) AS k
+           JOIN classroom_groups AS g ON g.id = json_extract(k.value, '$.group_id')
+           JOIN classroom_classes AS c ON c.id = g.class_id
+          WHERE g.class_id = ? AND g.status = 'active' AND c.status <> 'revoked'`,
+      ).bind(expiresAt, now, payload, class_.id),
+      env.DB.prepare(
+        `INSERT INTO admin_audit (id, action, resource_type, resource_id, actor_hash, created_at)
+         SELECT json_extract(k.value, '$.audit_id'), 'create', 'classroom_group_key', key.id, ?, ?
+           FROM json_each(?) AS k
+           JOIN classroom_group_keys AS key ON key.id = json_extract(k.value, '$.id')`,
+      ).bind(actorHash, now, payload),
+      env.DB.prepare(
+        `SELECT id FROM classroom_group_keys
+          WHERE id IN (SELECT json_extract(value, '$.id') FROM json_each(?))`,
+      ).bind(payload),
+    ]);
+    inserted = new Set(
+      ((results[2]?.results ?? []) as { id: string }[]).map((row) => row.id),
+    );
+  }
+
+  const response: ClassroomGroupAccessBulkResponse = {
+    class_id: class_.id,
+    keys: [],
+    skipped,
+    truncated,
+    warning: "shown once",
+  };
+  for (const entry of issued) {
+    if (inserted.has(entry.key.id))
+      response.keys.push({
+        group_id: entry.group.id,
+        group_name: entry.group.name,
+        key_id: entry.key.id,
+        api_key: entry.key.value,
+        key_hint: entry.key.hint,
+        expires_at: expiresAt,
+      });
+    else
+      response.skipped.push({
+        group_id: entry.group.id,
+        group_name: entry.group.name,
+        reason: "group or class was revoked during issuance",
+      });
+  }
+  return jsonResponse(response, 201);
+}
+
+async function adminGroupBudgetBulk(
+  request: Request,
+  env: ClassroomEnv,
+  actorHash: string,
+): Promise<Response> {
+  const body = await parseBody(request, classroomGroupBudgetBulkSchema);
+  const class_ = await requireClassRow(env, body.class_id);
+  if (class_.status === "revoked")
+    throw new HttpError(409, "conflict", "class is revoked");
+
+  const skipped: ClassroomGroupBulkSkip[] = [];
+  let targets: ClassroomGroupRow[];
+  if (body.group_ids === undefined) {
+    const rows = await env.DB.prepare(
+      `SELECT ${GROUP_ROW_COLUMNS}
+         FROM classroom_groups
+        WHERE class_id = ? AND status <> 'revoked'
+        ORDER BY name, id`,
+    )
+      .bind(class_.id)
+      .all<ClassroomGroupRow>();
+    targets = rows.results;
+  } else {
+    const requested = await requestedClassGroups(
+      env,
+      class_.id,
+      body.group_ids,
+    );
+    skipped.push(...requested.skipped);
+    targets = [];
+    for (const group of requested.groups) {
+      if (group.status === "revoked")
+        skipped.push({
+          group_id: group.id,
+          group_name: group.name,
+          reason: "group is revoked",
+        });
+      else targets.push(group);
+    }
+  }
+
+  const now = nowSeconds();
+  const payload = JSON.stringify(
+    targets.map((group) => ({ id: group.id, audit_id: randomId("audit") })),
+  );
+  const statements: D1PreparedStatement[] = [];
+  if (body.class_budget_microcents !== undefined)
+    statements.push(
+      env.DB.prepare(
+        `UPDATE classroom_classes SET budget_microcents = ?, updated_at = ?
+          WHERE id = ? AND status <> 'revoked'`,
+      ).bind(body.class_budget_microcents, now, class_.id),
+      auditStatement(
+        env,
+        actorHash,
+        "budget_set",
+        "classroom_class",
+        class_.id,
+        { onlyIfChanged: true },
+      ),
+    );
+  // "add" saturates at the stored maximum rather than failing the batch. The
+  // update and its audit rows share one predicate inside one transaction, so
+  // exactly the updated groups are audited.
+  const targetPredicate = `g.class_id = ? AND g.status <> 'revoked'
+    AND EXISTS (SELECT 1 FROM classroom_classes AS c WHERE c.id = g.class_id AND c.status <> 'revoked')`;
+  statements.push(
+    env.DB.prepare(
+      `UPDATE classroom_groups AS g
+          SET budget_microcents = ${
+            body.mode === "set" ? "?" : "MIN(budget_microcents + ?, ?)"
+          },
+              updated_at = ?
+        WHERE ${targetPredicate}
+          AND g.id IN (SELECT json_extract(value, '$.id') FROM json_each(?))`,
+    ).bind(
+      ...(body.mode === "set"
+        ? [body.budget_microcents]
+        : [body.budget_microcents, CLASSROOM_MICROCENTS_MAX]),
+      now,
+      class_.id,
+      payload,
+    ),
+    env.DB.prepare(
+      `INSERT INTO admin_audit (id, action, resource_type, resource_id, actor_hash, created_at)
+       SELECT json_extract(k.value, '$.audit_id'), ?, 'classroom_group', g.id, ?, ?
+         FROM json_each(?) AS k
+         JOIN classroom_groups AS g ON g.id = json_extract(k.value, '$.id')
+        WHERE ${targetPredicate}`,
+    ).bind(`budget_${body.mode}`, actorHash, now, payload, class_.id),
+    env.DB.prepare(
+      `SELECT g.id, g.name, g.budget_microcents
+         FROM classroom_groups AS g
+        WHERE ${targetPredicate}
+          AND g.id IN (SELECT json_extract(value, '$.id') FROM json_each(?))
+        ORDER BY g.name, g.id`,
+    ).bind(class_.id, payload),
+    env.DB.prepare(
+      "SELECT status, budget_microcents FROM classroom_classes WHERE id = ?",
+    ).bind(class_.id),
+  );
+  const results = await env.DB.batch(statements);
+  const classState = results.at(-1)?.results[0] as
+    { status: string; budget_microcents: number } | undefined;
+  if (!classState) throw new HttpError(404, "not_found", "class not found");
+  if (classState.status === "revoked")
+    throw new HttpError(409, "conflict", "class is revoked");
+  const updated = (results.at(-2)?.results ?? []) as {
+    id: string;
+    name: string;
+    budget_microcents: number;
+  }[];
+  const updatedIds = new Set(updated.map((row) => row.id));
+  for (const group of targets)
+    if (!updatedIds.has(group.id))
+      skipped.push({
+        group_id: group.id,
+        group_name: group.name,
+        reason: "group was revoked during the update",
+      });
+  const response: ClassroomGroupBudgetBulkResponse = {
+    class_id: class_.id,
+    mode: body.mode,
+    groups: updated.map((row) => ({
+      group_id: row.id,
+      group_name: row.name,
+      budget_microcents: row.budget_microcents,
+    })),
+    skipped,
+  };
+  if (body.class_budget_microcents !== undefined)
+    response.class_budget_microcents = classState.budget_microcents;
+  return jsonResponse(response);
 }
 
 type ClassroomUsageRow = {
@@ -951,19 +1369,22 @@ async function adminClassOptions(
   const [environments, aliases] = await Promise.all([
     env.DB.prepare(
       `SELECT p.id AS product_id, p.display_name AS product_name, e.id AS environment_id,
-              e.name AS environment_name
+              e.name AS environment_name, e.policy_version, e.token_ttl_seconds, e.rpm_limit,
+              e.tpm_limit, e.concurrency_limit, e.daily_budget_microcents, e.max_request_bytes
          FROM products p JOIN environments e ON e.product_id = p.id
         WHERE p.enabled = 1 AND p.kill_switch = 0 AND e.enabled = 1 AND e.kill_switch = 0
         ORDER BY p.display_name, p.id, e.name, e.id
         LIMIT ?`,
     )
       .bind(environmentLimit + 1)
-      .all<{
-        product_id: string;
-        product_name: string;
-        environment_id: string;
-        environment_name: string;
-      }>(),
+      .all<
+        {
+          product_id: string;
+          product_name: string;
+          environment_id: string;
+          environment_name: string;
+        } & ClassroomEnvironmentLimits
+      >(),
     // Only enabled aliases of enabled product/environment pairs are offered, and
     // only the public alias name is projected; route, model, and credential
     // details stay out of this response.
@@ -1008,6 +1429,15 @@ async function adminClassOptions(
       product_name: environment.product_name,
       environment_name: environment.environment_name,
       aliases: names.slice(0, aliasLimit),
+      limits: {
+        policy_version: environment.policy_version,
+        token_ttl_seconds: environment.token_ttl_seconds,
+        rpm_limit: environment.rpm_limit,
+        tpm_limit: environment.tpm_limit,
+        concurrency_limit: environment.concurrency_limit,
+        daily_budget_microcents: environment.daily_budget_microcents,
+        max_request_bytes: environment.max_request_bytes,
+      },
     };
   });
   const response: ClassroomClassOptionsResponse = {
@@ -1048,6 +1478,10 @@ export async function dispatchClassroomAdmin(
       return await adminUpdateGroup(request, env, actorHash);
     case "/admin/v1/groups/access":
       return await adminGroupAccess(request, env, actorHash);
+    case "/admin/v1/groups/access-bulk":
+      return await adminGroupAccessBulk(request, env, actorHash);
+    case "/admin/v1/groups/budget-bulk":
+      return await adminGroupBudgetBulk(request, env, actorHash);
     case "/admin/v1/groups/rotate":
       return await adminRotateGroupKey(request, env, actorHash);
     case "/admin/v1/groups/revoke-key":
