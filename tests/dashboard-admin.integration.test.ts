@@ -307,10 +307,16 @@ describe("gateway public URL for student cards", () => {
         member,
       ),
     ).toEqual({ role: "viewer" });
-    for (const value of [undefined, "", "not a url"]) {
+    const withoutGateway = { ...config };
+    delete withoutGateway.GATEWAY_PUBLIC_URL;
+    for (const settings of [
+      withoutGateway,
+      { ...config, GATEWAY_PUBLIC_URL: "" },
+      { ...config, GATEWAY_PUBLIC_URL: "not a url" },
+    ]) {
       const health = await handleControlPlane(
         new Request(origin + "/healthz"),
-        { ...config, GATEWAY_PUBLIC_URL: value },
+        settings,
       );
       expect(health.status).toBe(200);
     }

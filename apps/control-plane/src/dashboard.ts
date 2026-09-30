@@ -538,7 +538,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       select { max-width: 460px; }
       input:focus-visible, select:focus-visible { outline: 2px solid var(--band); outline-offset: 2px; }
       .admin-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin: 18px 0; }
-      .admin-fields label { display: grid; gap: 6px; min-width: 0; color: var(--soft); font-size: 12px; font-weight: 650; }
+      .admin-fields label { display: grid; grid-template-rows: 1fr auto; gap: 6px; align-items: end; min-width: 0; color: var(--soft); font-size: 12px; font-weight: 650; }
 
       .admin-body h3 { margin: 28px 0 0; font-size: 13px; font-weight: 650; }
       #admin-result-status { margin: 12px 0 0; color: var(--soft); font-size: 13px; }
@@ -673,6 +673,9 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       .student-card dd.missing { color: var(--alarm); font-weight: 650; }
       .student-card pre { margin: 0 0 6px; padding: 8px 10px; border: 1px solid var(--hair); border-radius: 4px; background: #f7f9f3; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
       .student-card .card-foot { margin: 6px 0 0; color: var(--soft); font-size: 11px; }
+      #class-secret .student-card p { max-width: none; margin: 2px 0 8px; color: var(--soft); font-size: 12px; font-weight: 400; }
+      #class-secret .student-card p.card-foot { margin: 6px 0 0; font-size: 11px; }
+      #class-secret .student-card pre { margin: 0 0 6px; padding: 8px 10px; background: #f7f9f3; font-size: 11px; }
       #print-cards { display: none; }
 
       /* With a class kit on screen, printing produces only the student cards. */
@@ -681,8 +684,13 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         body { min-width: 0; background: #fff; }
         body.print-kit .app { display: none; }
         body.print-kit #print-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5mm; }
-        #print-cards .student-card { margin: 0; padding: 4mm; border: 1px dashed #777; break-inside: avoid; font-size: 9pt; }
-        #print-cards .student-card pre { font-size: 7.5pt; }
+        #print-cards .student-card { margin: 0; padding: 3mm 4mm; border: 1px dashed #777; break-inside: avoid; font-size: 8.5pt; }
+        #print-cards .student-card h3 { font-size: 11pt; }
+        #print-cards .student-card .card-class { margin-bottom: 2mm; }
+        #print-cards .student-card dl { font-size: 8.5pt; }
+        #print-cards .student-card h4 { margin: 2mm 0 1mm; font-size: 8pt; }
+        #print-cards .student-card pre { margin-bottom: 1mm; padding: 1.5mm 2mm; font-size: 6.8pt; line-height: 1.3; }
+        #print-cards .student-card .card-foot { font-size: 7pt; }
       }
     </style>
   </head>
@@ -783,11 +791,6 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
                   <p class="kit-warning">Copy, download or print these keys now: each is shown once and cannot be retrieved later. Keep them out of tickets, logs and browser storage. Clearing, refreshing or leaving this page removes them from the screen.</p>
                   <p id="class-kit-gateway" class="field-note warn" hidden></p>
                   <p id="class-kit-summary" class="status-line ok"></p>
-                  <div class="table-wrap" role="region" tabindex="0" aria-label="Issued student keys"><table id="class-kit-keys"></table></div>
-                  <div id="class-kit-skipped-block" hidden>
-                    <h4>Skipped</h4>
-                    <div class="table-wrap" role="region" tabindex="0" aria-label="Skipped groups"><table id="class-kit-skipped"></table></div>
-                  </div>
                   <div class="action-row">
                     <button id="class-kit-copy" type="button">Copy all (CSV)</button>
                     <button id="class-kit-download" type="button">Download CSV</button>
@@ -795,6 +798,11 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
                     <button id="class-kit-clear" type="button" class="quiet">Clear</button>
                   </div>
                   <p id="class-kit-status" class="status-line" role="status" aria-live="polite"></p>
+                  <div class="table-wrap" role="region" tabindex="0" aria-label="Issued student keys"><table id="class-kit-keys"></table></div>
+                  <div id="class-kit-skipped-block" hidden>
+                    <h4>Skipped</h4>
+                    <div class="table-wrap" role="region" tabindex="0" aria-label="Skipped groups"><table id="class-kit-skipped"></table></div>
+                  </div>
                   <h4>Card preview</h4>
                   <div id="class-kit-preview"></div>
                 </div>
@@ -1204,6 +1212,11 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           { label: "Product", value: (row) => productNames[row.product_id] || row.product_id },
           { label: "Environment", value: "name" },
           { label: "Environment ID", value: "id" },
+          { label: "Actions", buttons: (row) => {
+            const buttons = [{ label: "Copy ID", onClick: () => copyEnvironmentId(row) }];
+            if (isAdmin) buttons.push({ label: "Edit limits", onClick: () => editEnvironment(row) });
+            return buttons;
+          } },
           { label: "Product state", value: (row) => policyState(row.product_enabled, row.product_kill_switch), pill: true },
           { label: "Environment state", value: (row) => policyState(row.enabled, row.kill_switch), pill: true },
           { label: "Policy", value: "policy_version", format: number },
@@ -1221,11 +1234,6 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           { label: "Aliases", value: (row) => boundedCount(row.aliases, row.aliases_truncated), num: true },
           { label: "Active entitlements", value: (row) => boundedCount(row.active_entitlements, row.active_entitlements_truncated), num: true },
           { label: "Effective grants", value: (row) => boundedCount(row.effective_grants, row.effective_grants_truncated), num: true },
-          { label: "Actions", buttons: (row) => {
-            const buttons = [{ label: "Copy ID", onClick: () => copyEnvironmentId(row) }];
-            if (isAdmin) buttons.push({ label: "Edit limits", onClick: () => editEnvironment(row) });
-            return buttons;
-          } },
         ], data.environments);
       }
 
@@ -1441,7 +1449,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
             input = document.createElement("input");
             input.type = "text";
             input.inputMode = "decimal";
-            input.placeholder = "0.00";
+            input.placeholder = /optional|blank/i.test(label) ? "Leave blank for none" : "0.00";
             input.dataset.kind = "dollars";
             input.dataset.label = label;
             input.value = values[name] === null || values[name] === undefined ? "" : dollarText(values[name]);
