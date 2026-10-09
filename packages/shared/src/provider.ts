@@ -1,6 +1,10 @@
 import { z } from "zod";
 
 import { callAiSdkTransport } from "./ai-sdk-transport";
+import {
+  translateAnthropicResponse,
+  validateAnthropicRequest,
+} from "./anthropic";
 import { readBoundedBytes } from "./http";
 import type { ChatCompletionChoice, ParsedGatewayRequest } from "./schemas";
 
@@ -162,8 +166,20 @@ const compatibleRouteSchema = z
   })
   .strict();
 
+const anthropicRouteSchema = compatibleRouteSchema
+  .omit({ attribution: true })
+  .extend({
+    adapter: z.literal("anthropic"),
+    provider: z.literal("anthropic"),
+    profile: z.literal("anthropic"),
+  });
+
 const routeSchema = z
-  .discriminatedUnion("adapter", [fixtureRouteSchema, compatibleRouteSchema])
+  .discriminatedUnion("adapter", [
+    fixtureRouteSchema,
+    compatibleRouteSchema,
+    anthropicRouteSchema,
+  ])
   .superRefine((route, context) => {
     if (route.adapter === "fixture") return;
     if (!route.baseUrl.startsWith("https://")) {
@@ -195,7 +211,9 @@ const routeSchema = z
       route.gateway &&
       (reservedCredentialBindings.has(route.gateway.credentialBinding) ||
         route.gateway.credentialBinding === route.credentialBinding ||
-        !["openai", "openrouter", "deepseek"].includes(route.profile))
+        !["openai", "openrouter", "deepseek", "anthropic"].includes(
+          route.profile,
+        ))
     ) {
       context.addIssue({
         code: "custom",
@@ -210,6 +228,7 @@ const routeSchema = z
       "opencode-zen": "opencode",
       deepseek: "deepseek",
       custom: "custom",
+      anthropic: "anthropic",
     }[route.profile];
     if (route.provider !== providerForProfile) {
       context.addIssue({
@@ -217,14 +236,18 @@ const routeSchema = z
         message: "provider must match the selected route profile",
       });
     }
-    if (route.attribution && route.profile !== "openrouter") {
+    if (
+      route.adapter === "openai-compatible" &&
+      route.attribution &&
+      route.profile !== "openrouter"
+    ) {
       context.addIssue({
         code: "custom",
         message:
           "attribution headers are supported only by OpenRouter profiles",
       });
     }
-    if (route.attribution) {
+    if (route.adapter === "openai-compatible" && route.attribution) {
       const referer = new URL(route.attribution.referer);
       if (
         referer.protocol !== "https:" ||
@@ -242,6 +265,13 @@ const routeSchema = z
   });
 
 export type ProviderRoute = z.infer<typeof routeSchema>;
+
+export function validateProviderRequest(
+  request: ParsedGatewayRequest,
+  route: ProviderRoute,
+): void {
+  if (route.adapter === "anthropic") validateAnthropicRequest(request);
+}
 
 export function parseProviderRoutes(
   value: string,
@@ -568,6 +598,7 @@ export async function callProvider(options: {
   const startedAt = Date.now();
   const { request } = options;
   const { route, credential } = options.prepared;
+  validateProviderRequest(request, route);
   if (!route.endpoints.includes(request.endpoint)) {
     throw new ProviderError("provider_protocol", 500, Date.now() - startedAt);
   }
@@ -585,14 +616,21 @@ export async function callProvider(options: {
       Date.now() - startedAt,
     );
   const baseURL = route.gateway
-    ? `https://gateway.ai.cloudflare.com/v1/${route.gateway.accountId}/${route.gateway.gatewayId}/${route.provider}`
+    ? `https://gateway.ai.cloudflare.com/v1/${route.gateway.accountId}/${route.gateway.gatewayId}/${route.provider}${route.adapter === "anthropic" ? "/v1" : ""}`
     : `${route.baseUrl.replace(/\/$/u, "")}/v1`;
-  const path = request.endpoint === "chat" ? "/chat/completions" : "/responses";
+  const path =
+    route.adapter === "anthropic"
+      ? "/messages"
+      : request.endpoint === "chat"
+        ? "/chat/completions"
+        : "/responses";
   const headers: Record<string, string> = {
-    authorization: `Bearer ${credential}`,
+    ...(route.adapter === "anthropic"
+      ? { "x-api-key": credential, "anthropic-version": "2023-06-01" }
+      : { authorization: `Bearer ${credential}` }),
     "content-type": "application/json",
   };
-  if (route.attribution) {
+  if (route.adapter === "openai-compatible" && route.attribution) {
     headers["http-referer"] = route.attribution.referer;
     headers[route.attribution.titleHeader] = route.attribution.title;
   }
@@ -706,6 +744,8 @@ export async function callProvider(options: {
     } catch {
       throw new ProviderError("provider_protocol", 502, Date.now() - startedAt);
     }
+    if (route.adapter === "anthropic")
+      parsed = translateAnthropicResponse(parsed, request.endpoint);
     const projected = projectProviderBody(parsed, request.endpoint);
     if (
       !projected ||

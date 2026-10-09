@@ -82,6 +82,7 @@ const imageUrls = [
 describe("real AI SDK transport wire compatibility", () => {
   it.each([
     { strict: undefined, model: "gpt-5", profile: "custom", completion: false },
+    { strict: true, model: "gpt-6-luna", profile: "openai", completion: true },
     {
       strict: false,
       model: "custom-physical-model",
@@ -143,6 +144,8 @@ describe("real AI SDK transport wire compatibility", () => {
     { strict: undefined, model: "gpt-5" },
     { strict: false, model: "custom-physical-model" },
     { strict: true, model: "gpt-5" },
+    { strict: true, model: "gpt-6.1-sol" },
+    { strict: true, model: "gpt-6-astra" },
   ])(
     "preserves Responses fields with $model, strict=$strict",
     async ({ strict, model }) => {

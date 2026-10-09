@@ -827,10 +827,13 @@ async function adminUpsertAlias(
       `INSERT INTO aliases
       (id, product_id, environment_id, alias, endpoint, route_id, allow_reasoning, allow_images,
        allow_structured_json, max_input_tokens, max_output_tokens, input_cost_microcents_per_million,
-       output_cost_microcents_per_million, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       output_cost_microcents_per_million, created_at, updated_at, display_name, provider, tier)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(environment_id, alias, endpoint) DO UPDATE SET
        route_id = excluded.route_id,
+       display_name = excluded.display_name,
+       provider = excluded.provider,
+       tier = excluded.tier,
        allow_reasoning = excluded.allow_reasoning,
        allow_images = excluded.allow_images,
        allow_structured_json = excluded.allow_structured_json,
@@ -857,6 +860,9 @@ async function adminUpsertAlias(
       body.output_cost_microcents_per_million,
       now,
       now,
+      body.display_name,
+      body.provider,
+      body.tier,
     ),
     auditStatement(
       env,
@@ -1250,7 +1256,8 @@ export async function handleControlPlane(
                 EXISTS(SELECT 1 FROM pragma_table_info('access_codes') WHERE name = 'classroom_group_id') AS access_code_group_column,
                 EXISTS(SELECT 1 FROM pragma_table_info('provider_attempts') WHERE name = 'classroom_group_id') AS attempt_group_column,
                 EXISTS(SELECT 1 FROM pragma_table_info('classroom_groups') WHERE name = 'paused_at') AS group_paused_column,
-                EXISTS(SELECT 1 FROM pragma_table_info('classroom_group_keys') WHERE name = 'key_hint') AS group_key_hint_column
+                EXISTS(SELECT 1 FROM pragma_table_info('classroom_group_keys') WHERE name = 'key_hint') AS group_key_hint_column,
+                (SELECT COUNT(*) FROM pragma_table_info('aliases') WHERE name IN ('display_name', 'provider', 'tier')) AS alias_presentation_columns
          FROM schema_metadata WHERE key = 'schema_version'`,
       ).first<{
         value: string;
@@ -1262,6 +1269,7 @@ export async function handleControlPlane(
         attempt_group_column: number;
         group_paused_column: number;
         group_key_hint_column: number;
+        alias_presentation_columns: number;
       }>();
       if (
         schema?.value !== DATABASE_SCHEMA_VERSION ||
@@ -1272,7 +1280,8 @@ export async function handleControlPlane(
         schema.access_code_group_column !== 1 ||
         schema.attempt_group_column !== 1 ||
         schema.group_paused_column !== 1 ||
-        schema.group_key_hint_column !== 1
+        schema.group_key_hint_column !== 1 ||
+        schema.alias_presentation_columns !== 3
       )
         throw new HttpError(
           500,

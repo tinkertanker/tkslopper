@@ -1573,6 +1573,116 @@ describe("product environment integrity", () => {
   });
 });
 
+describe("public alias presentation", () => {
+  it("round-trips approved metadata without exposing routes and omits inconsistent endpoint labels", async () => {
+    const alias = {
+      product_id: "prod_control",
+      environment_id: "env_control",
+      alias: "text.chat.v1",
+      endpoint: "chat",
+      route_id: "private-anthropic-route",
+      max_input_tokens: 1000,
+      max_output_tokens: 100,
+    };
+    const presentation = {
+      display_name: "Claude Haiku 5.5",
+      provider: "anthropic",
+      tier: "economy",
+    };
+    expect(
+      (await admin("/admin/v1/aliases", { ...alias, ...presentation })).status,
+    ).toBe(200);
+    const grantResponse = await admin("/admin/v1/dev/issue", {
+      product_id: alias.product_id,
+      environment_id: alias.environment_id,
+      tenant_id: "tenant_fixture",
+      principal_id: "principal_fixture",
+      capabilities: [alias.alias],
+      ttl_seconds: 120,
+    });
+    expect(grantResponse.status).toBe(200);
+    const { access_token } = await grantResponse.json<{
+      access_token: string;
+    }>();
+    async function model() {
+      const response = await handleGateway(
+        get(`/v1/models/${alias.alias}`, access_token),
+        env,
+      );
+      expect(response.status).toBe(200);
+      return response.json<Record<string, unknown>>();
+    }
+    expect(await model()).toMatchObject({ id: alias.alias, ...presentation });
+    expect(JSON.stringify(await model())).not.toContain(alias.route_id);
+    expect(
+      (
+        await admin("/admin/v1/aliases", {
+          ...alias,
+          endpoint: "responses",
+          ...presentation,
+        })
+      ).status,
+    ).toBe(200);
+    expect(await model()).toMatchObject({
+      ...presentation,
+      endpoints: ["/v1/chat/completions", "/v1/responses"],
+    });
+    // The same alias can legitimately route to different models per endpoint.
+    expect(
+      (
+        await admin("/admin/v1/aliases", {
+          ...alias,
+          endpoint: "responses",
+          ...presentation,
+          display_name: "Claude Sonnet 5.5",
+          tier: "balanced",
+        })
+      ).status,
+    ).toBe(200);
+    const mixed = await model();
+    expect(mixed.provider).toBe("anthropic");
+    expect(mixed).not.toHaveProperty("display_name");
+    expect(mixed).not.toHaveProperty("tier");
+    // Full upserts clear omitted labels so a remap cannot retain stale metadata.
+    expect(
+      (
+        await admin("/admin/v1/aliases", {
+          ...alias,
+          route_id: "another-private-route",
+        })
+      ).status,
+    ).toBe(200);
+    const cleared = await model();
+    expect(cleared).not.toHaveProperty("display_name");
+    expect(cleared).not.toHaveProperty("provider");
+    expect(cleared).not.toHaveProperty("tier");
+    for (const invalid of [
+      { display_name: " " },
+      { display_name: "x".repeat(121) },
+      { provider: "https://private-route.invalid" },
+      { tier: "unreviewed" },
+    ]) {
+      expect(
+        (await admin("/admin/v1/aliases", { ...alias, ...invalid })).status,
+      ).toBe(400);
+    }
+    // Metadata for other aliases must not broaden a credential's catalogue.
+    expect(
+      (
+        await admin("/admin/v1/aliases", {
+          ...alias,
+          ...presentation,
+          alias: "hidden.chat.v1",
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (await handleGateway(get("/v1/models/hidden.chat.v1", access_token), env))
+        .status,
+    ).toBe(404);
+  });
+});
+
 describe("environment settings", () => {
   type EnvironmentSettings = {
     id: string;

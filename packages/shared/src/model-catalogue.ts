@@ -1,0 +1,155 @@
+/** Public suggestions only: never derive this catalogue from private routes. */
+export const MODEL_PROVIDERS = [
+  "openai",
+  "anthropic",
+  "gemini",
+  "deepseek",
+  "openrouter",
+  "opencode-go",
+  "opencode-zen",
+] as const;
+export const MODEL_TIERS = ["economy", "balanced", "premium"] as const;
+
+// GPT/Claude refreshed from official docs on 2026-10-09; other IDs consolidate
+// existing app suggestions. See docs/configuration.md for sources and governance.
+// Tiers are qualitative picker hints, not prices, entitlements or guarantees.
+const entries: Array<
+  [
+    provider: (typeof MODEL_PROVIDERS)[number],
+    id: string,
+    display_name: string,
+    tier: (typeof MODEL_TIERS)[number],
+    is_default: boolean,
+  ]
+> = [
+  ["openai", "gpt-6-luna", "GPT-6 Luna", "economy", true],
+  ["openai", "gpt-6.1-sol", "GPT-6.1 Sol", "balanced", false],
+  ["openai", "gpt-6-astra", "GPT-6 Astra", "premium", false],
+  ["anthropic", "claude-haiku-5-5", "Claude Haiku 5.5", "economy", true],
+  ["anthropic", "claude-sonnet-5-5", "Claude Sonnet 5.5", "balanced", false],
+  ["anthropic", "claude-opus-5-5", "Claude Opus 5.5", "premium", false],
+  [
+    "gemini",
+    "gemini-3-flash-preview",
+    "Gemini 3 Flash (Preview)",
+    "economy",
+    true,
+  ],
+  [
+    "gemini",
+    "gemini-3-pro-preview",
+    "Gemini 3 Pro (Preview)",
+    "premium",
+    false,
+  ],
+  [
+    "gemini",
+    "gemini-3.1-pro-preview",
+    "Gemini 3.1 Pro (Preview)",
+    "premium",
+    false,
+  ],
+  ["gemini", "gemini-2.5-flash", "Gemini 2.5 Flash", "economy", false],
+  ["deepseek", "deepseek-v4-flash", "DeepSeek V4 Flash", "economy", true],
+  ["deepseek", "deepseek-v4-pro", "DeepSeek V4 Pro", "balanced", false],
+  [
+    "openrouter",
+    "deepseek/deepseek-v4-flash",
+    "DeepSeek V4 Flash",
+    "economy",
+    true,
+  ],
+  [
+    "openrouter",
+    "deepseek/deepseek-v4-flash-0731",
+    "DeepSeek V4 Flash 0731",
+    "economy",
+    false,
+  ],
+  [
+    "openrouter",
+    "deepseek/deepseek-v4-pro",
+    "DeepSeek V4 Pro",
+    "balanced",
+    false,
+  ],
+  [
+    "openrouter",
+    "openai/gpt-5.6-luna",
+    "OpenAI GPT-5.6 Luna",
+    "economy",
+    false,
+  ],
+  [
+    "openrouter",
+    "openai/gpt-5.6-terra",
+    "OpenAI GPT-5.6 Terra",
+    "balanced",
+    false,
+  ],
+  [
+    "openrouter",
+    "anthropic/claude-sonnet-5",
+    "Anthropic Claude Sonnet 5",
+    "balanced",
+    false,
+  ],
+  [
+    "openrouter",
+    "anthropic/claude-haiku-4.5",
+    "Anthropic Claude Haiku 4.5",
+    "economy",
+    false,
+  ],
+  ["openrouter", "xiaomi/mimo-v2.5", "MiMo V2.5", "economy", false],
+  ["openrouter", "qwen/qwen3.7-plus", "Qwen3.7 Plus", "balanced", false],
+  ["openrouter", "qwen/qwen3.8-27b", "Qwen3.8 27B", "economy", false],
+  ["openrouter", "tencent/hy3", "Hy3", "balanced", false],
+  ["opencode-go", "deepseek-v4-flash", "DeepSeek V4 Flash", "economy", true],
+  ["opencode-go", "deepseek-v4-pro", "DeepSeek V4 Pro", "balanced", false],
+  ["opencode-go", "gpt-5.6-luna", "GPT-5.6 Luna", "economy", false],
+  ["opencode-go", "mimo-v2.5", "MiMo V2.5", "economy", false],
+  ["opencode-go", "kimi-k3", "Kimi K3", "balanced", false],
+  ["opencode-go", "glm-5.3", "GLM 5.3", "balanced", false],
+  ["opencode-go", "hy3", "Hy3", "balanced", false],
+  [
+    "opencode-go",
+    "muse-spark-1.2-contributor",
+    "Muse Spark 1.2 Contributor (trains on data)",
+    "premium",
+    false,
+  ],
+  ["opencode-zen", "deepseek-v4-flash", "DeepSeek V4 Flash", "economy", true],
+  ["opencode-zen", "deepseek-v4-pro", "DeepSeek V4 Pro", "balanced", false],
+  ["opencode-zen", "kimi-k3", "Kimi K3", "balanced", false],
+  ["opencode-zen", "glm-5.2", "GLM 5.2", "balanced", false],
+  ["opencode-zen", "minimax-m3", "MiniMax M3", "balanced", false],
+  ["opencode-zen", "hy3-free", "Hy3 Free", "economy", false],
+  ["opencode-zen", "big-pickle", "Big Pickle", "economy", false],
+  [
+    "opencode-zen",
+    "nemotron-3-ultra-free",
+    "Nemotron 3 Ultra Free",
+    "economy",
+    false,
+  ],
+  [
+    "opencode-zen",
+    "nemotron-3.5-lightning-free",
+    "Nemotron 3.5 Lightning Free",
+    "economy",
+    false,
+  ],
+];
+
+export const MODEL_CATALOGUE = {
+  object: "list",
+  version: 1,
+  data: entries.map(([provider, id, display_name, tier, is_default]) => ({
+    id,
+    provider,
+    display_name,
+    tier,
+    is_default,
+  })),
+};

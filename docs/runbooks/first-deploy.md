@@ -7,7 +7,7 @@ The general [deployment runbook](deployment.md) still applies for later producti
 ## 0. Before you start
 
 - Node.js 22+, pnpm 10+, `pnpm install` in a clone of this repository, and `pnpm wrangler whoami` showing the right account.
-- One upstream provider API key (for example OpenAI or OpenRouter) created for tkslopper only.
+- One upstream provider API key (for example Anthropic, OpenAI or OpenRouter) created for tkslopper only.
 - Decide the two hostnames. The simplest option is the account's `workers.dev` subdomain:
   - control plane: `https://tkslopper-control-plane.<subdomain>.workers.dev`
   - gateway: `https://tkslopper-gateway.<subdomain>.workers.dev`
@@ -51,17 +51,17 @@ In `deploy/gateway.jsonc` replace `PROVIDER_ROUTES_JSON` with one real route. It
 
 ```json
 {
-  "openai-mini": {
-    "id": "openai-mini",
+  "openai-luna": {
+    "id": "openai-luna",
     "adapter": "openai-compatible",
     "provider": "openai",
     "profile": "openai",
-    "model": "gpt-4o-mini",
+    "model": "gpt-6-luna",
     "baseUrl": "https://api.openai.com",
     "credentialBinding": "UPSTREAM_API_KEY",
     "endpoints": ["chat", "responses"],
     "supportsImages": true,
-    "supportsReasoning": false,
+    "supportsReasoning": true,
     "supportsStructuredJson": true,
     "timeoutMs": 60000
   }
@@ -69,6 +69,29 @@ In `deploy/gateway.jsonc` replace `PROVIDER_ROUTES_JSON` with one real route. It
 ```
 
 For OpenRouter use `"provider": "openrouter"`, `"profile": "openrouter"`, `"baseUrl": "https://openrouter.ai/api"` and an OpenRouter model name. The gateway appends `/v1` to `baseUrl`. A provider may report a dated snapshot such as `gpt-4o-mini-2024-07-18`; that is accepted automatically. List any other exact name it reports in `"acceptedModels"`.
+
+For low-cost Claude, use this alternative route (not both under the same ID):
+
+```json
+{
+  "anthropic-haiku": {
+    "id": "anthropic-haiku",
+    "adapter": "anthropic",
+    "provider": "anthropic",
+    "profile": "anthropic",
+    "model": "claude-haiku-5-5",
+    "baseUrl": "https://api.anthropic.com",
+    "credentialBinding": "ANTHROPIC_API_KEY",
+    "endpoints": ["chat", "responses"],
+    "supportsImages": true,
+    "supportsReasoning": true,
+    "supportsStructuredJson": true,
+    "timeoutMs": 60000
+  }
+}
+```
+
+The model IDs were checked against official docs on 2026-10-09. See [current options and the native Anthropic request subset](../configuration.md#native-anthropic). Choose a deadline below the product's outer timeout. Do not silently remap an existing alias that accepts sampling controls or `json_object` to Claude; provision an approved compatible alias/version. New routes still need provider-account access and a synthetic canary.
 
 ## 3. Apply migrations
 
@@ -87,6 +110,8 @@ pnpm wrangler secret put ADMIN_TOKEN --config deploy/control-plane.jsonc
 pnpm wrangler secret put TOKEN_SIGNING_SECRET --config deploy/gateway.jsonc
 pnpm wrangler secret put UPSTREAM_API_KEY --config deploy/gateway.jsonc
 ```
+
+For the Claude route, put `ANTHROPIC_API_KEY` instead of `UPSTREAM_API_KEY`. If configuring both providers, use separate bindings and keys. Never put either key in client apps or checked-in configuration.
 
 Keep `ADMIN_TOKEN` in a password manager: it is the break-glass credential for the admin API.
 
@@ -127,7 +152,7 @@ In the dashboard:
 
 1. **Settings, Create product**, for example slug `classroom`.
 2. **Settings, Create environment** for that product. The defaults (600 RPM, 2,000,000 TPM, concurrency 20) are sized for a class; change them later with **Edit environment**.
-3. **Settings, Set model alias**: alias `text.chat.v1`, endpoint `chat`, route `openai-mini`, `max_input_tokens` 400000 (a byte budget), `max_output_tokens` 4096, and your provider's prices in microcents per million tokens (US$0.15 per million is 15000000). Add a second alias row with endpoint `responses` if students will use the Responses API.
+3. **Settings, Set model alias**: for a new environment, alias `text.chat.v1`, endpoint `chat`, route `openai-luna` or `anthropic-haiku`, `max_input_tokens` 400000 (a byte budget), `max_output_tokens` 4096, and approved provider prices in microcents per million tokens (US$0.10 per million is 10000000). Optionally approve public display name (for example `Claude Haiku 5.5`), provider (`anthropic`) and tier (`economy`). Blank fields clear old presentation. These are client-visible labels, never private route details. Add a second alias row with endpoint `responses` if students will use the Responses API; use identical presentation on both rows to publish it on `/v1/models`. Enable image/reasoning/structured-JSON permissions only where the product's contract needs them and has passed its canary. Existing installations must apply `0006_alias_presentation.sql` before deploying these Workers; see [catalogue rollout](../configuration.md#client-model-catalogues).
 4. **Classes, Create class** with the alias, budgets and today's time window, add one group per student, then issue all keys and download the student cards.
 
 Check one key before class:

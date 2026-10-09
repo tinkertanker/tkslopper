@@ -9,6 +9,11 @@ info:
     Narrow, non-streaming OpenAI-compatible inference surface plus entitlement
     exchange endpoints. The model field is a versioned capability alias, not a
     provider model. This specification does not claim full OpenAI compatibility.
+    Native Anthropic routes use this same surface, not a public Messages endpoint.
+    Capability-specific restrictions can reject otherwise valid requests with 400:
+    Claude-backed capabilities require leading system/developer text, a conversation
+    starting and ending with user turns, user-only images with omitted/auto detail,
+    no temperature/top_p/seed, and json_schema (strict true or omitted) for JSON output.
 servers:
   - url: https://gateway.example.invalid
     description: Placeholder gateway; no production domain is committed
@@ -17,6 +22,8 @@ tags:
     description: Non-streaming, capability-scoped managed inference
   - name: Grants
     description: Service credential exchange and direct-client activation
+  - name: Catalogue
+    description: Public suggestions for direct-provider clients; not inference authorization
 paths:
   /v1/chat/completions:
     post:
@@ -135,6 +142,44 @@ paths:
         "502": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
         "504": { $ref: "#/components/responses/Error" }
+  /v1/model-catalogue:
+    get:
+      tags: [Catalogue]
+      operationId: listDirectProviderModels
+      summary: List centrally maintained direct-provider model suggestions
+      description: >-
+        Public, credential-free suggestions for BYOK and teacher-key clients.
+        Send no Authorization header, provider key or cookies. IDs are native
+        provider IDs, not managed aliases; this list grants no inference access.
+        It contains no routes, URLs or credential bindings. Clients retain a small
+        bundled fallback and saved/custom choices, and own their provider transports.
+        One is_default entry per provider suggests a default for new selections only.
+        CORS wildcard access applies only to this public endpoint, not /v1/models
+        or inference. OPTIONS returns 204 and allows GET, OPTIONS, without credential
+        or Authorization-header permission. The catalogue remains available without
+        working inference configuration or D1; it is not a readiness probe.
+      security: []
+      responses:
+        "200":
+          description: Public suggestions; cacheable for one hour
+          headers:
+            Access-Control-Allow-Origin:
+              schema: { const: "*" }
+            Cache-Control:
+              schema: { const: "public, max-age=3600" }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [object, version, data]
+                properties:
+                  object: { const: list }
+                  version: { const: 1 }
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/DirectProviderModel" }
+        "405": { $ref: "#/components/responses/Error" }
   /v1/models:
     get:
       tags: [Inference]
@@ -145,7 +190,7 @@ paths:
         - groupKey: []
       responses:
         "200":
-          description: OpenAI-shaped model list; physical models are never disclosed
+          description: OpenAI-shaped alias list with optional admin-approved presentation; no private routing data
           headers:
             x-tkslopper-request-id:
               $ref: "#/components/headers/RequestId"
@@ -653,9 +698,42 @@ components:
         input_tokens: { type: integer, minimum: 0 }
         output_tokens: { type: integer, minimum: 0 }
         total_tokens: { type: integer, minimum: 0 }
+    ModelProvider:
+      type: string
+      enum:
+        [
+          openai,
+          anthropic,
+          gemini,
+          deepseek,
+          openrouter,
+          opencode-go,
+          opencode-zen,
+        ]
+    ModelTier:
+      type: string
+      description: Qualitative picker hint, not a price or entitlement
+      enum: [economy, balanced, premium]
+    DirectProviderModel:
+      type: object
+      additionalProperties: false
+      required: [id, provider, display_name, tier, is_default]
+      properties:
+        id:
+          type: string
+          description: Native model ID for this provider; OpenRouter IDs include the vendor prefix
+        provider: { $ref: "#/components/schemas/ModelProvider" }
+        display_name: { type: string, minLength: 1, maxLength: 120 }
+        tier: { $ref: "#/components/schemas/ModelTier" }
+        is_default: { type: boolean }
     Model:
       type: object
       additionalProperties: false
+      description: >-
+        An authorized alias, never a physical-model routing instruction. Optional
+        display_name, provider and tier are explicitly admin-approved. Each is omitted
+        unless all enabled endpoint rows for this alias agree on a non-null value.
+        Clients submit id unchanged and fall back to id when display_name is absent.
       required:
         [
           id,
@@ -674,6 +752,9 @@ components:
         object: { const: model }
         created: { const: 0 }
         owned_by: { const: tkslopper }
+        display_name: { type: string, minLength: 1, maxLength: 120 }
+        provider: { $ref: "#/components/schemas/ModelProvider" }
+        tier: { $ref: "#/components/schemas/ModelTier" }
         endpoints:
           type: array
           items: { enum: [/v1/chat/completions, /v1/responses] }

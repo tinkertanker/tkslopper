@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MODEL_PROVIDERS, MODEL_TIERS } from "./model-catalogue";
 
 export const DATABASE_SCHEMA_VERSION = "2026-09-03.pre-release.3";
 
@@ -408,6 +409,9 @@ export const aliasUpsertSchema = z
     alias: capabilitySchema,
     endpoint: z.enum(["chat", "responses"]),
     route_id: identifierSchema,
+    display_name: z.string().trim().min(1).max(120).nullable().default(null),
+    provider: z.enum(MODEL_PROVIDERS).nullable().default(null),
+    tier: z.enum(MODEL_TIERS).nullable().default(null),
     allow_reasoning: z.boolean().default(false),
     allow_images: z.boolean().default(false),
     allow_structured_json: z.boolean().default(false),

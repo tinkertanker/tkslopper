@@ -1,4 +1,9 @@
-import { jsonResponse, randomSecret } from "@tkslopper/shared";
+import {
+  MODEL_PROVIDERS,
+  MODEL_TIERS,
+  jsonResponse,
+  randomSecret,
+} from "@tkslopper/shared";
 import { requireAccessEmail } from "./admin-access";
 import { csvCell, formatDollars, parseDollars } from "./dashboard-money";
 
@@ -1254,7 +1259,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         ["products", "Create product", [["slug", "Slug"], ["display_name", "Display name"]]],
         ["environments", "Create environment", [scopeFields[0], ["name", "Environment name"], ["audience", "Token audience"], ["rpm_limit", "Requests per minute, per principal", "number", 600], ["tpm_limit", "Tokens per minute, per principal", "number", 2000000], ["concurrency_limit", "Concurrent requests, per principal", "number", 20], ["daily_budget_microcents", "Daily budget per principal (US$; resets 00:00 UTC; not applied to classes)", "dollars", "20.00"]]],
         ["environments/update", "Edit environment limits", [...scopeFields, ["token_ttl_seconds", "Token lifetime (seconds, 60–3600)", "number", "", true], ["rpm_limit", "Requests per minute, per principal", "number", "", true], ["tpm_limit", "Tokens per minute, per principal", "number", "", true], ["concurrency_limit", "Concurrent requests, per principal", "number", "", true], ["daily_budget_microcents", "Daily budget per principal (US$; resets 00:00 UTC; not applied to classes)", "dollars", "", true], ["max_request_bytes", "Maximum request size (bytes, 1024–10485760)", "number", "", true]]],
-        ["aliases", "Set model alias", [...scopeFields, ["alias", "Public alias"], ["endpoint", "Endpoint", ["chat", "responses"]], ["route_id", "Configured provider route ID"], ["max_input_tokens", "Maximum input tokens", "number"], ["max_output_tokens", "Maximum output tokens", "number"], ["input_cost_microcents_per_million", "Input price (US$ per million tokens)", "dollars", "0"], ["output_cost_microcents_per_million", "Output price (US$ per million tokens)", "dollars", "0"], ["allow_images", "Allow image input", "checkbox"], ["allow_reasoning", "Allow reasoning controls", "checkbox"], ["allow_structured_json", "Allow structured JSON output", "checkbox"]]],
+        ["aliases", "Set model alias", [...scopeFields, ["alias", "Public alias"], ["endpoint", "Endpoint", ["chat", "responses"]], ["route_id", "Configured provider route ID"], ["display_name", "Client-facing display name — blank clears", "text", "", true], ["provider", "Client-facing provider — blank clears", ${JSON.stringify(["", ...MODEL_PROVIDERS])}, "", true], ["tier", "Client-facing tier — blank clears", ${JSON.stringify(["", ...MODEL_TIERS])}, "", true], ["max_input_tokens", "Maximum input tokens", "number"], ["max_output_tokens", "Maximum output tokens", "number"], ["input_cost_microcents_per_million", "Input price (US$ per million tokens)", "dollars", "0"], ["output_cost_microcents_per_million", "Output price (US$ per million tokens)", "dollars", "0"], ["allow_images", "Allow image input", "checkbox"], ["allow_reasoning", "Allow reasoning controls", "checkbox"], ["allow_structured_json", "Allow structured JSON output", "checkbox"]]],
         ["entitlements", "Create entitlement", [...scopeFields, ...identityFields, ["source", "Source", ["contract", "stripe", "storekit", "dev"]], capabilities, [...expiry, "", true]]],
       ];
       for (const [value, label] of operations) { const option = document.createElement("option"); option.value = value; option.textContent = label; operation.append(option); }

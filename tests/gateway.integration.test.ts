@@ -1828,6 +1828,163 @@ describe("student-facing gateway behaviour", () => {
     return JSON.parse(body) as Record<string, unknown>;
   }
 
+  it("serves Claude behind the granted alias, rejects unsupported controls before admission, and accounts native usage", async () => {
+    const token = await grant();
+    const anthropicEnv = upstreamProfileEnv("custom", {
+      adapter: "anthropic",
+      provider: "anthropic",
+      profile: "anthropic",
+      model: "claude-haiku-5-5",
+    });
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({
+        id: "msg_fixture",
+        type: "message",
+        role: "assistant",
+        model: "claude-haiku-5-5",
+        content: [{ type: "text", text: "Hello from Claude" }],
+        stop_reason: "end_turn",
+        usage: {
+          input_tokens: 11,
+          cache_read_input_tokens: 7,
+          output_tokens: 5,
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetcher);
+    const body = {
+      model: "text.chat.v1",
+      messages: [{ role: "user", content: "hello" }],
+      max_tokens: 9000,
+    };
+    try {
+      const rejected = await handleGateway(
+        chatRequest(
+          token,
+          { "idempotency-key": "claude-validation" },
+          { ...body, temperature: 0.7 },
+        ),
+        anthropicEnv,
+      );
+      expect(rejected.status).toBe(400);
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(
+        await env.DB.prepare(
+          "SELECT COUNT(*) AS count FROM provider_attempts",
+        ).first("count"),
+      ).toBe(0);
+      expect(
+        await env.DB.prepare(
+          "SELECT COUNT(*) AS count FROM idempotency_keys",
+        ).first("count"),
+      ).toBe(0);
+      const response = await handleGateway(
+        chatRequest(token, { "idempotency-key": "claude-validation" }, body),
+        anthropicEnv,
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        model: "text.chat.v1",
+        choices: [
+          { finish_reason: "stop", message: { content: "Hello from Claude" } },
+        ],
+        usage: { prompt_tokens: 18, completion_tokens: 5, total_tokens: 23 },
+      });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(sentBody(fetcher).max_tokens).toBe(4096);
+      expect(
+        await env.DB.prepare(
+          "SELECT provider, resolved_model, input_tokens, output_tokens FROM provider_attempts",
+        ).first(),
+      ).toEqual({
+        provider: "anthropic",
+        resolved_model: "claude-haiku-5-5",
+        input_tokens: 18,
+        output_tokens: 5,
+      });
+      const quota = await quotaState();
+      expect(quota.reservedTodayMicrocents).toBe(0);
+      expect(quota.spentTodayMicrocents).toBe(
+        costMicrocents(18, 1000) + costMicrocents(5, 2000),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("releases quota and idempotency after a definitive Anthropic schema rejection", async () => {
+    await env.DB.prepare(
+      "UPDATE aliases SET allow_structured_json = 1 WHERE id = 'alias_chat'",
+    ).run();
+    const token = await grant();
+    const anthropicEnv = upstreamProfileEnv("custom", {
+      adapter: "anthropic",
+      provider: "anthropic",
+      profile: "anthropic",
+      model: "claude-haiku-5-5",
+      supportsStructuredJson: true,
+    });
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json(
+        {
+          type: "error",
+          error: {
+            type: "invalid_request_error",
+            message: "Unsupported schema",
+          },
+        },
+        { status: 400 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      const headers = { "idempotency-key": "claude-schema-rejection" };
+      const request = () =>
+        chatRequest(token, headers, {
+          model: "text.chat.v1",
+          messages: [{ role: "user", content: "Return JSON" }],
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              name: "answer",
+              strict: true,
+              schema: {
+                type: "object",
+                additionalProperties: { type: "number" },
+              },
+            },
+          },
+        });
+      const response = await handleGateway(request(), anthropicEnv);
+      expect(response.status).toBe(400);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(await response.json()).toMatchObject({
+        error: { code: "invalid_request" },
+      });
+      expect(await quotaState()).toMatchObject({
+        reservations: {},
+        reservedTodayMicrocents: 0,
+        spentTodayMicrocents: 0,
+      });
+      expect(
+        await env.DB.prepare(
+          "SELECT COUNT(*) AS count FROM idempotency_keys",
+        ).first("count"),
+      ).toBe(0);
+      expect(
+        await env.DB.prepare(
+          "SELECT status_code, cost_microcents FROM provider_attempts",
+        ).first(),
+      ).toEqual({ status_code: 400, cost_microcents: 0 });
+      // The same key is available for an explicit caller retry, not held as a
+      // completed/in-flight request, and the adapter itself never retries.
+      expect((await handleGateway(request(), anthropicEnv)).status).toBe(400);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it.each([
     { profile: "custom" as const, field: "max_tokens" },
     { profile: "openai" as const, field: "max_completion_tokens" },
@@ -2232,6 +2389,86 @@ describe("student-facing gateway behaviour", () => {
       .message;
     expect(message).toContain("capability alias");
     expect(message).toContain("streaming is not supported");
+  });
+
+  it("serves a credential-free, route-independent direct model catalogue", async () => {
+    const response = await handleGateway(
+      new Request("https://gateway.example.invalid/v1/model-catalogue", {
+        headers: { origin: "https://app.example.invalid" },
+      }),
+      {} as GatewayEnv,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    expect(response.headers.has("access-control-allow-credentials")).toBe(
+      false,
+    );
+    expect(response.headers.get("cache-control")).toBe("public, max-age=3600");
+    const body = await response.json<{
+      object: string;
+      version: number;
+      data: Array<Record<string, unknown>>;
+    }>();
+    expect(body.object).toBe("list");
+    expect(body.version).toBe(1);
+    expect(body.data).toContainEqual({
+      id: "claude-haiku-5-5",
+      provider: "anthropic",
+      display_name: "Claude Haiku 5.5",
+      tier: "economy",
+      is_default: true,
+    });
+    expect(body.data).toContainEqual({
+      id: "gpt-6-luna",
+      provider: "openai",
+      display_name: "GPT-6 Luna",
+      tier: "economy",
+      is_default: true,
+    });
+    const ids = new Set<string>();
+    for (const entry of body.data) {
+      expect(Object.keys(entry).sort()).toEqual([
+        "display_name",
+        "id",
+        "is_default",
+        "provider",
+        "tier",
+      ]);
+      expect(["economy", "balanced", "premium"]).toContain(entry.tier);
+      expect(entry.id).toEqual(expect.any(String));
+      expect(entry.display_name).toEqual(expect.any(String));
+      expect(entry.is_default).toEqual(expect.any(Boolean));
+      const key = `${String(entry.provider)}:${String(entry.id)}`;
+      expect(ids.has(key)).toBe(false);
+      ids.add(key);
+    }
+    for (const provider of new Set(body.data.map((entry) => entry.provider))) {
+      expect(
+        body.data.filter(
+          (entry) => entry.provider === provider && entry.is_default,
+        ),
+      ).toHaveLength(1);
+    }
+    // This public catalogue grants no managed access or CORS privileges.
+    const managed = await SELF.fetch(
+      new Request("https://gateway.example.invalid/v1/models"),
+    );
+    expect(managed.status).toBe(401);
+    expect(managed.headers.has("access-control-allow-origin")).toBe(false);
+    const preflight = await SELF.fetch(
+      new Request("https://gateway.example.invalid/v1/model-catalogue", {
+        method: "OPTIONS",
+        headers: {
+          origin: "https://app.example.invalid",
+          "access-control-request-method": "GET",
+        },
+      }),
+    );
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("access-control-allow-methods")).toBe(
+      "GET, OPTIONS",
+    );
+    expect(preflight.headers.has("access-control-allow-headers")).toBe(false);
   });
 
   it("lists only the aliases the credential may call", async () => {

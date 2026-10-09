@@ -19,6 +19,10 @@ Fixtures contain synthetic content only. They are partial normalized schema-smok
 
 The repository's [service-to-service](../examples/service-to-service.ts) and [direct activation](../examples/direct-client.ts) examples are dependency-free reference clients. They intentionally avoid a provider SDK so the strict supported JSON and credential boundary remain visible.
 
+All three apps use the gateway's credential-free `GET /v1/model-catalogue` for direct-provider model options, including BYOK and teacher-key flows. Keep only a small bundled fallback, preserve saved/custom IDs, and never send provider credentials with catalogue fetches. Managed options still come from authenticated `/v1/models`; display its optional `display_name`, `provider` and `tier` without replacing the alias `id`. Missing metadata falls back to the alias. See the [full catalogue contract](configuration.md#client-model-catalogues), including provider-key mappings, offline behavior, and migration order. A client catalogue integration does not authorize deployment or change inference routing.
+
+Native Claude-backed routes use these same endpoints and authorized aliases; see the [Anthropic subset](configuration.md#native-anthropic). Managed callers omit sampling/seed, use leading system/developer instructions and user-bounded conversations, omit image detail (or use `auto`), and use `json_schema` rather than `json_object`. Existing provider-specific paths must not silently change semantics; provision a compatible alias/version where needed. Physical defaults/options for new routes are [listed with current official sources](configuration.md#model-refresh-checked-2026-10-09). None of these model IDs is a managed client alias.
+
 ## Vibbit
 
 **Boundary:** Vibbit's BFF keeps classroom/session authentication, MakeCode system/user prompts, ordered semantic repair transcripts, compiler/decompiler validation, product quotas, and final `{feedback, code}` parsing. Its backend uses a service credential; extension/bookmarklet BYOK remains direct initially.
