@@ -24,7 +24,7 @@ Group API client ─────────────────────
                                   (RPM/TPM/concurrency/budget)
 ```
 
-Both Workers share one D1 database. The control plane is the only public writer of identity and entitlement policy. The gateway derives product, environment, tenant, and principal from a signed, database-backed grant or a database-backed group key; client attribution overrides are rejected. Provider routes are deployment configuration, and only versioned capability aliases are public.
+Both Workers share one D1 database. The control plane is the only public writer of identity and entitlement policy. The gateway derives product, environment, tenant, and principal from a signed, database-backed grant or a database-backed group key; client attribution overrides are rejected. Provider routes are private deployment configuration; managed inference accepts only versioned capability aliases.
 
 See [the architecture overview](docs/architecture.md), [threat model](docs/threat-model.md), [configuration governance](docs/configuration.md), and [decision records](docs/adr/README.md).
 
@@ -32,13 +32,16 @@ See [the architecture overview](docs/architecture.md), [threat model](docs/threa
 
 - `POST /v1/chat/completions`
 - `POST /v1/responses`
-- `GET /v1/models` (and `/v1/models/{alias}`): the aliases the calling credential may use
+- `GET /v1/models` (and `/v1/models/{alias}`): the aliases the calling credential may use, with optional admin-approved display name, provider and tier
+- `GET /v1/model-catalogue`: public direct-provider suggestions for app BYOK/teacher-key pickers, without credentials, private routes or managed authorization; see [catalogue contract and migration](docs/configuration.md#client-model-catalogues)
 - JSON responses only; `stream: true` is rejected
 - selected text, image-input, strict JSON, token-limit, temperature, and explicitly enabled reasoning-effort fields
 - output limits default to 4,096 tokens and are clamped to the alias ceiling; rate-limit responses carry `Retry-After`
 - no tools, audio, files, fine-tuning, assistants, batches, arbitrary provider/model selection, retry, fallback, or cache API
 
 This is intentionally a narrow, versioned OpenAI-compatible shape. It is not advertised as full OpenAI API compatibility. A buffered Chat HTTP 200 can be complete, truncated, refused/filtered, or incomplete; full-result consumers must require `finish_reason: "stop"` and non-empty content. See [the OpenAPI specification](openapi/tkslopper.openapi.yaml) and [buffered Chat outcome decision](docs/adr/0011-buffered-chat-outcomes.md).
+
+Private routes support OpenAI-compatible providers and native Anthropic Messages, including Claude Haiku 5.5. Claude uses the same public endpoints and aliases with an [explicit request subset](docs/configuration.md#native-anthropic); clients never receive provider keys. See [current model recommendations](docs/configuration.md#model-refresh-checked-2026-10-09) and the [first-deploy examples](docs/runbooks/first-deploy.md). Repository support does not enable a live route.
 
 Example capability aliases (policy data, not hard-coded product behavior):
 

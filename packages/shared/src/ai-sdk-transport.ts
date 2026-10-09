@@ -1,4 +1,6 @@
+import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
+import { DEFAULT_MAX_OUTPUT_TOKENS } from "./schemas";
 import type {
   LanguageModelV4CallOptions,
   LanguageModelV4FilePart,
@@ -16,7 +18,10 @@ type Message =
   | ChatRequest["messages"][number]
   | Exclude<ResponsesRequest["input"], string>[number];
 
-function promptMessage(message: Message): LanguageModelV4Prompt[number] {
+function promptMessage(
+  message: Message,
+  anthropic = false,
+): LanguageModelV4Prompt[number] {
   const parts: Array<LanguageModelV4TextPart | LanguageModelV4FilePart> =
     typeof message.content === "string"
       ? [{ type: "text", text: message.content }]
@@ -27,6 +32,19 @@ function promptMessage(message: Message): LanguageModelV4Prompt[number] {
             part.type === "image_url"
               ? part.image_url
               : { url: part.image_url, detail: part.detail };
+          if (anthropic && url.startsWith("data:")) {
+            const comma = url.indexOf(",");
+            return {
+              type: "file",
+              mediaType: url.slice(5, url.indexOf(";")),
+              data: {
+                type: "data",
+                data: Uint8Array.from(atob(url.slice(comma + 1)), (char) =>
+                  char.charCodeAt(0),
+                ),
+              },
+            };
+          }
           let data: LanguageModelV4FilePart["data"];
           try {
             data = { type: "url", url: new URL(url) };
@@ -102,7 +120,9 @@ export async function callAiSdkTransport(options: {
       ? (request.body.max_tokens ?? request.body.max_completion_tokens)
       : request.body.max_output_tokens;
   const call: LanguageModelV4CallOptions = {
-    prompt: messages.map(promptMessage),
+    prompt: messages.map((message) =>
+      promptMessage(message, options.profile === "anthropic"),
+    ),
     abortSignal: options.signal,
     ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
     ...(request.body.temperature === undefined
@@ -149,6 +169,54 @@ export async function callAiSdkTransport(options: {
         typeof request.body.stop === "string"
           ? [request.body.stop]
           : request.body.stop;
+  }
+
+  if (options.profile === "anthropic") {
+    if (request.endpoint === "responses" && request.body.instructions)
+      call.prompt.unshift({
+        role: "system",
+        content: request.body.instructions,
+      });
+    call.maxOutputTokens = maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+    call.providerOptions = {
+      anthropic: {
+        structuredOutputMode: "outputFormat",
+        ...(effort === undefined
+          ? {}
+          : { thinking: { type: "adaptive" }, effort }),
+      },
+    };
+    const provider = createAnthropic({
+      baseURL: options.baseURL,
+      apiKey: options.apiKey,
+      headers: options.headers,
+      fetch: (url, init) => {
+        const wire = JSON.parse(init?.body as string) as Record<
+          string,
+          unknown
+        >;
+        // The reservation bounds text and thinking together, regardless of SDK
+        // model heuristics. No streaming, tool fallback or extra physical call.
+        wire.max_tokens = call.maxOutputTokens;
+        wire.stream = false;
+        // The SDK sanitizes schemas for its own post-generation validation.
+        // We project native output instead: retain the caller's constraints so
+        // unsupported schemas are rejected upstream, never silently weakened.
+        if (schema) {
+          const outputConfig = wire.output_config as {
+            format: { schema: unknown };
+          };
+          outputConfig.format.schema = schema.schema;
+        }
+        return options.fetcher(url, {
+          ...init,
+          body: JSON.stringify(wire),
+          signal: options.signal,
+        });
+      },
+    });
+    await provider(options.model).doGenerate(call);
+    return;
   }
 
   const provider = createOpenAI({

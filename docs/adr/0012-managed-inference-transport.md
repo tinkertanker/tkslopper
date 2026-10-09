@@ -27,9 +27,17 @@ Cloudflare; classroom administration remains in the control plane.
 
 ## Implementation and upgrade boundary
 
-`ai-sdk-transport.ts` uses public `createOpenAI` chat/Responses `doGenerate` APIs,
+`ai-sdk-transport.ts` uses public `createOpenAI` chat/Responses and
+`createAnthropic` Messages `doGenerate` APIs,
 without the higher-level generation retry/tool loop. Exact package versions and
 the lockfile pin the tested behavior. There is no vendored code or SDK fork.
+
+The native Anthropic adapter retains the public alias-based Chat/Responses API.
+Its [explicit request subset](../configuration.md#native-anthropic) rejects
+untranslatable controls before quota admission. Native stop reasons and text
+blocks are projected to existing buffered outcomes; thinking/signatures remain
+private, and native input usage includes cache tokens. Anthropic has no public
+endpoint or automatic route remap. Its live canary remains separately gated.
 
 The SDK's unified prompt representation cannot represent every accepted v1 wire
 shape. The compatibility module restores roles/content boundaries, explicit

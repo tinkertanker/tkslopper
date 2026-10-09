@@ -1,6 +1,7 @@
 import {
   DATABASE_SCHEMA_VERSION,
   HttpError,
+  MODEL_CATALOGUE,
   ProviderError,
   bearerToken,
   callProvider,
@@ -16,6 +17,7 @@ import {
   readJsonBody,
   responsesRequestSchema,
   sha256,
+  validateProviderRequest,
   verifyGrant,
   withOutputTokenLimit,
   zodMessage,
@@ -1044,6 +1046,7 @@ async function handleInference(
         "capability route does not support reasoning effort",
       );
     }
+    validateProviderRequest(parsedRequest, route);
     context.route = route;
     let preparedProvider: PreparedProvider;
     try {
@@ -1400,6 +1403,9 @@ async function handleInference(
 type ModelListRow = {
   alias: string;
   endpoint: Endpoint;
+  display_name: string | null;
+  provider: string | null;
+  tier: string | null;
   allow_images: number;
   allow_reasoning: number;
   allow_structured_json: number;
@@ -1409,8 +1415,7 @@ type ModelListRow = {
 
 /**
  * OpenAI-shaped model listing, limited to aliases this credential may call.
- * SDKs and tools use it to discover and validate model names; physical models
- * and routes are never disclosed.
+ * Only explicitly approved presentation is public; private routes are never read.
  */
 async function handleModels(
   request: Request,
@@ -1430,7 +1435,7 @@ async function handleModels(
         : (
             await env.DB.prepare(
               `SELECT alias, endpoint, allow_images, allow_reasoning, allow_structured_json,
-                      max_input_tokens, max_output_tokens
+                      max_input_tokens, max_output_tokens, display_name, provider, tier
                  FROM aliases
                 WHERE product_id = ? AND environment_id = ? AND enabled = 1
                   AND alias IN (SELECT value FROM json_each(?))
@@ -1451,6 +1456,16 @@ async function handleModels(
       object: "model" as const,
       created: 0,
       owned_by: "tkslopper",
+      // Endpoint rows can target different models. Publish only agreed labels.
+      ...Object.fromEntries(
+        (["display_name", "provider", "tier"] as const)
+          .filter(
+            (field) =>
+              entries[0]![field] !== null &&
+              entries.every((entry) => entry[field] === entries[0]![field]),
+          )
+          .map((field) => [field, entries[0]![field]]),
+      ),
       endpoints: entries.map((entry) =>
         entry.endpoint === "chat" ? "/v1/chat/completions" : "/v1/responses",
       ),
@@ -1503,9 +1518,31 @@ export async function handleGateway(
   request: Request,
   env: GatewayEnv,
 ): Promise<Response> {
+  const url = new URL(request.url);
+  // Static public suggestions do not depend on D1, route config or credentials.
+  // CORS is intentionally confined to this endpoint, never managed inference.
+  if (url.pathname === "/v1/model-catalogue") {
+    const headers = {
+      "access-control-allow-origin": "*",
+      "cache-control": "public, max-age=3600",
+    };
+    if (request.method === "GET")
+      return jsonResponse(MODEL_CATALOGUE, 200, headers);
+    if (request.method === "OPTIONS")
+      return new Response(null, {
+        status: 204,
+        headers: { ...headers, "access-control-allow-methods": "GET, OPTIONS" },
+      });
+    return errorResponse(
+      405,
+      "invalid_request",
+      "method not allowed",
+      undefined,
+      { ...headers, allow: "GET, OPTIONS" },
+    );
+  }
   if (!isConfigured(env))
     return errorResponse(500, "internal_error", "gateway is not configured");
-  const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === "/healthz") {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort("deadline"), 2000);
@@ -1522,7 +1559,9 @@ export async function handleGateway(
                   (SELECT COUNT(*) FROM pragma_table_info('provider_attempts')
                     WHERE name = 'classroom_group_id') AS attempt_classroom_group,
                   (SELECT COUNT(*) FROM pragma_table_info('classroom_groups')
-                    WHERE name = 'paused_at') AS group_paused_column
+                    WHERE name = 'paused_at') AS group_paused_column,
+                  (SELECT COUNT(*) FROM pragma_table_info('aliases')
+                    WHERE name IN ('display_name', 'provider', 'tier')) AS alias_presentation_columns
              FROM schema_metadata WHERE key = 'schema_version'`,
         ).first<{
           value: string;
@@ -1530,6 +1569,7 @@ export async function handleGateway(
           access_code_classroom_group: number;
           attempt_classroom_group: number;
           group_paused_column: number;
+          alias_presentation_columns: number;
         }>(),
         quota.fetch("https://quota.internal/healthz", {
           signal: controller.signal,
@@ -1547,6 +1587,7 @@ export async function handleGateway(
         schema.access_code_classroom_group !== 1 ||
         schema.attempt_classroom_group !== 1 ||
         schema.group_paused_column !== 1 ||
+        schema.alias_presentation_columns !== 3 ||
         quotaBody?.status !== "ok" ||
         quotaBody.protocolVersion !== QUOTA_PROTOCOL_VERSION
       ) {

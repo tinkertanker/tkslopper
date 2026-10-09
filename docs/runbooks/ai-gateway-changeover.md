@@ -9,7 +9,7 @@ key or Cloudflare account token to them.
 
 ## Private configuration
 
-On an `openai-compatible` route, add `gateway` with:
+On an `openai-compatible` or `anthropic` route, add `gateway` with:
 
 | Field               | Value                                                     |
 | ------------------- | --------------------------------------------------------- |
@@ -23,13 +23,15 @@ admin secret. Readiness rejects absent or invalid gateway credentials.
 
 Provider-native paths are constructed on `gateway.ai.cloudflare.com`; account
 and gateway values are validated path segments, not arbitrary URLs. Supported
-gateway profiles are `openai`, `openrouter` and `deepseek`; other compatible
+gateway profiles are `openai`, `openrouter`, `deepseek` and `anthropic`; other compatible
 profiles remain available only as direct SDK routes until qualified. `baseUrl`
 remains the explicitly configured direct rollback target and is not consulted
 when `gateway` is set. It retains the existing convention of excluding `/v1`.
 
-The Worker always supplies the provider key in `Authorization` and the gateway
-token in `cf-aig-authorization`. Missing keys fail locally, with no intentional
+The Worker supplies compatible-provider keys in `Authorization`, or Anthropic's
+key in `x-api-key` with `anthropic-version: 2023-06-01`. Anthropic's native path
+ends in `/anthropic/v1/messages`. The gateway token goes in
+`cf-aig-authorization`. Missing keys fail locally, with no intentional
 fall-through to stored keys or Unified Billing. Keep Unified Billing disabled and
 do not fund credits for this BYOK canary. Missing/failed provider credentials must
 also be tested on the hosted endpoint before enabling traffic.

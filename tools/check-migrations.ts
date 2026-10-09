@@ -201,6 +201,10 @@ async function stageForwardMigration(
     resolve("db/migrations/0005_classroom_group_pause.sql"),
     join(migrationsDirectory, "0005_classroom_group_pause.sql"),
   );
+  await copyFile(
+    resolve("db/migrations/0006_alias_presentation.sql"),
+    join(migrationsDirectory, "0006_alias_presentation.sql"),
+  );
 }
 
 async function checkCurrentSchema(rootDirectory: string): Promise<void> {

@@ -5,7 +5,7 @@ This register separates repository decisions from choices that require an accoun
 ## Decisions settled for v1
 
 - The public inference API remains strict, buffered, and non-streaming: only Chat Completions and Responses. There is no public Anthropic Messages endpoint.
-- The initial provider seam is the OpenAI-compatible adapter family, with trusted routes for official OpenAI, OpenRouter, OpenCode Go/Zen, direct DeepSeek, and deployment-approved compatible URLs. Native Anthropic and Gemini adapters are post-launch roadmap work.
+- Provider adapters include the OpenAI-compatible family (official OpenAI, OpenRouter, OpenCode Go/Zen, direct DeepSeek, and approved compatible URLs) and native Anthropic Messages behind the same public Chat/Responses surface. Native Gemini remains roadmap work.
 - Every capability alias ends in a positive integer version such as `.v1`. Clients never send provider names, physical models, upstream URLs, provider-specific reasoning controls, or attribution overrides.
 - Public reasoning effort remains portable `low|medium|high`. Provider-specific values such as `none`, `minimal`, `max`, and `xhigh`, plus `thinking` objects and provider headers, belong to trusted route policy or a product-owned adapter. They are rejected at the public boundary until that route policy exists.
 - One gateway request makes at most one physical provider call. Redirect following, retry, fallback, response replay, cache, and session storage are off.
@@ -53,9 +53,9 @@ No account, provider key, or deployment is needed.
 
 Implement adapters behind product-owned flags. Keep direct-provider rollback backend-only and never dual-send or replay ambiguous failures. Activate one product only after its own prerequisites and explicit canary authorization; success for one product does not approve another.
 
-### P5 — post-launch native provider adapters
+### P5 — native provider adapters
 
-Native [Anthropic Messages (#16)](https://github.com/tinkertanker/tkslopper/issues/16) and [Gemini `generateContent` (#17)](https://github.com/tinkertanker/tkslopper/issues/17) adapters are optional roadmap features. They do not block the initial compatible-family launch. Each requires an independently reviewed translation contract, approved provider/model/data terms, and a separately authorized synthetic canary.
+Native [Anthropic Messages (#16)](https://github.com/tinkertanker/tkslopper/issues/16) now has repository implementation and synthetic tests; its [translation subset and current model recommendations](configuration.md#native-anthropic) still require product acceptance and a separately authorized live canary. No live alias is enabled by the code change. [Gemini `generateContent` (#17)](https://github.com/tinkertanker/tkslopper/issues/17) remains roadmap work. Each provider requires approved model/data/cost terms before activation.
 
 ## Grouped decisions required from the user and accountable owners
 

@@ -2,6 +2,12 @@
 
 **Status:** Accepted
 
+**2026-10-09 update:** The initial deferral below is superseded for Anthropic by
+the [native adapter contract](../configuration.md#native-anthropic) and
+[SDK transport decision](0012-managed-inference-transport.md). The public API,
+single-attempt policy and separate live-canary gate are unchanged. Gemini remains
+deferred.
+
 ## Decision
 
 Start with a development/test fixture adapter and one launch wire-adapter family: `openai-compatible`, supporting non-streaming Chat Completions and Responses. Distinguish the wire adapter from the physical provider/gateway in route configuration and persisted provenance. Trusted deployment configuration maps route IDs to reviewed profiles, HTTPS base URLs, physical models, supported endpoints/features, deadlines, and dedicated secret binding names. D1 aliases map public capability to a route ID. Callers select only capability aliases, never providers, models, base URLs, credentials, attribution headers, or provider-specific fields.
