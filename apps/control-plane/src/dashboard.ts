@@ -856,7 +856,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
                       <label>Amount per student (US$)<input name="budget" type="text" inputmode="decimal" placeholder="1.00" required></label>
                       <label>New class total (US$, optional)<input name="class_budget" type="text" inputmode="decimal" placeholder="Leave blank to keep"></label>
                     </div>
-                    <p class="field-note">Applies to every group that is not revoked, including paused ones. Allocations are lifetime caps; the class total still caps everyone together, so raise it too if students would otherwise share too little.</p>
+                    <p class="field-note">Applies to every group that is not revoked, including paused ones, up to the first 100 by name per change. Allocations are lifetime caps; the class total still caps everyone together, so raise it too if students would otherwise share too little.</p>
                     <button id="group-budget-submit" type="submit">Review budget change</button>
                   </form>
                   <div class="confirm-bar" id="group-budget-confirm" role="group" aria-labelledby="group-budget-confirm-text" hidden>
@@ -2806,8 +2806,10 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         const request = { class_id: classId, mode, budget_microcents: amount.value };
         if (!total.empty) request.class_budget_microcents = total.value;
         const change = mode === "set" ? "Set every student's allocation to " + money(amount.value) : "Add " + money(amount.value) + " to every student's allocation";
+        // groups/budget-bulk changes at most the first 100 groups by name per request.
+        const capped = groups.length > 100 ? " Only the first 100 students by name are changed; adjust the other " + number(groups.length - 100) + " individually." : "";
         setStatus("group-budget-status", "", "");
-        askInline("group-budget-confirm", change + " (" + number(groups.length) + " students in " + row.name + ")" + (total.empty ? "" : " and set the class total to " + money(total.value)) + "?", () => {
+        askInline("group-budget-confirm", change + " (" + number(Math.min(groups.length, 100)) + " students in " + row.name + ")" + (total.empty ? "" : " and set the class total to " + money(total.value)) + "?" + capped, () => {
           if (classState.selected !== classId) return undefined;
           return runClassAction("group-budget-status", async () => {
             const result = await dashboardPost("groups/budget-bulk", request);
@@ -2827,6 +2829,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
             const parts = [(mode === "set" ? "Set " : "Topped up ") + number(updated.length) + " student allocation(s)" + (mode === "set" ? " to " + money(amount.value) : " by " + money(amount.value)) + "."];
             if (result.class_budget_microcents !== undefined) parts.push("Class total is now " + money(result.class_budget_microcents) + ".");
             if ((result.skipped || []).length) parts.push(number(result.skipped.length) + " skipped.");
+            if (result.truncated) parts.push("Only the first 100 students by name were changed; the others keep their previous allocation, so adjust them individually.");
             if (classTotal !== null && sum > BigInt(classTotal)) parts.push("Allocations now add up to " + money(sum) + ", more than the class total of " + money(classTotal) + "; the class total is reached first.");
             return parts.join(" ");
           }, classId);

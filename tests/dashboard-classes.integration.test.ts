@@ -562,6 +562,14 @@ describe("teacher class kit", () => {
     );
     expect(html).toContain('id="group-budget-form"');
     expect(html).toContain('dashboardPost("groups/budget-bulk", request)');
+    // The server changes at most 100 groups per bulk request; the rest must be
+    // reported, never silently left at their old allocation.
+    expect(html).toContain(
+      'number(Math.min(groups.length, 100)) + " students in "',
+    );
+    expect(html).toContain(
+      'if (result.truncated) parts.push("Only the first 100 students by name were changed;',
+    );
     expect(html).toContain('<option value="add">');
     expect(html).toContain('<option value="set">');
     expect(html).toContain('["environments/update", "Edit environment limits"');
