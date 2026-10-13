@@ -603,6 +603,41 @@ describe("teacher class kit", () => {
     );
   });
 
+  it("serializes class and group editor saves against one baseline", async () => {
+    const html = await pageHtml();
+    // A second patch computed while the first is in flight would compare with the old
+    // baseline and drop a value changed back to it (budget 10 -> 20, then back to 10).
+    for (const [form, end, status, op] of <[string, string, string, string][]>[
+      [
+        "class-edit-form",
+        'getElementById("class-pause").addEventListener("click"',
+        "class-edit-status",
+        "classes/update",
+      ],
+      [
+        "group-edit-form",
+        'getElementById("class-secret-copy")',
+        "group-edit-status",
+        "groups/update",
+      ],
+    ]) {
+      const submit = html.slice(
+        html.indexOf(`getElementById("${form}").addEventListener("submit"`),
+        html.indexOf(end),
+      );
+      const guard = submit.indexOf(
+        `if (savingBases.has(base)) { setStatus("${status}", "Wait for the previous save to finish, then save again.", "error"); return; }`,
+      );
+      expect(guard).toBeGreaterThan(-1);
+      expect(guard).toBeLessThan(submit.indexOf("delete payload[key]"));
+      expect(submit.indexOf("savingBases.add(base);")).toBeLessThan(
+        submit.indexOf(`dashboardPost("${op}", payload)`),
+      );
+      // Released after the request settles, success or failure.
+      expect(submit).toMatch(/\} finally \{\s+savingBases\.delete\(base\);/);
+    }
+  });
+
   it("adds per-student pause, key hints, bulk budgets and environment editing", async () => {
     const html = await pageHtml();
 
