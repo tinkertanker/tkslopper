@@ -1667,7 +1667,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         fillScopeSelectors(document.getElementById("class-create-fields"));
         const row = classState.classes.find((item) => item.id === classState.selected);
         if (row) {
-          renderAliasEditor(document.getElementById("class-edit-aliases"), row.environment_id, row.capabilities || []);
+          renderClassEditAliases(row);
           set("class-edit-alias-note", aliasNoteText(row.environment_id));
         }
         const groupRow = classState.detail && (classState.detail.groups || []).find((group) => group.id === classState.groupEditing);
@@ -1797,6 +1797,19 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         if (row.instructors && row.instructors.length) parts.splice(1, 0, "Instructors: " + row.instructors.join(", "));
         return parts.join(" · ");
       }
+      // The class editor sends only what the operator changed. classes/update writes only
+      // supplied fields, so resending a value read when the form was drawn would undo
+      // another writer's newer change, for example re-approving an alias someone removed.
+      // The baseline is read back from the rendered form, so it compares like for like.
+      let classEditBase = {};
+      function renderClassEditFields(row) {
+        renderFieldSet(document.getElementById("class-edit-fields"), CLASS_FIELDS, row);
+        Object.assign(classEditBase, readFieldSet(document.getElementById("class-edit-fields")));
+      }
+      function renderClassEditAliases(row) {
+        renderAliasEditor(document.getElementById("class-edit-aliases"), row.environment_id, row.capabilities || []);
+        classEditBase.capabilities = readAliases(document.getElementById("class-edit-aliases"));
+      }
       async function selectClass(id) {
         const row = classState.classes.find((item) => item.id === id);
         if (!row) return;
@@ -1822,8 +1835,9 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         document.getElementById("class-detail").hidden = false;
         set("class-detail-heading", row.name);
         set("class-detail-meta", classMeta(row));
-        renderFieldSet(document.getElementById("class-edit-fields"), CLASS_FIELDS, row);
-        renderAliasEditor(document.getElementById("class-edit-aliases"), row.environment_id, row.capabilities || []);
+        classEditBase = {};
+        renderClassEditFields(row);
+        renderClassEditAliases(row);
         set("class-edit-alias-note", aliasNoteText(row.environment_id));
         renderEditLimits();
         updatePauseButton(row);
@@ -2628,9 +2642,12 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         payload.capabilities = readAliases(document.getElementById("class-edit-aliases"));
         const problem = validateClassPayload(payload);
         if (problem) { setStatus("class-edit-status", problem, "error"); return; }
+        const edited = { ...payload };
+        for (const key of Object.keys(payload)) if (key in classEditBase && JSON.stringify(payload[key]) === JSON.stringify(classEditBase[key])) delete payload[key];
         payload.id = targetId;
         await runClassAction("class-edit-status", async () => {
           await dashboardPost("classes/update", payload);
+          if (classState.selected === targetId) Object.assign(classEditBase, edited);
           await loadClasses();
           await loadUsage();
           if (classState.selected !== targetId) return null;
@@ -2832,7 +2849,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
               // The class total may have changed: refresh the summary and the edit form so
               // a stale total cannot be saved back over it.
               set("class-detail-meta", classMeta(classRow));
-              renderFieldSet(document.getElementById("class-edit-fields"), CLASS_FIELDS, classRow);
+              renderClassEditFields(classRow);
               renderEditLimits();
             }
             const classTotal = result.class_budget_microcents ?? (classRow ? classRow.budget_microcents : null);

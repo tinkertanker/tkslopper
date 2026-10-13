@@ -135,6 +135,42 @@ describe("course-centred dashboard UI", () => {
     );
   });
 
+  it("sends only changed class settings so a stale form cannot undo newer policy", async () => {
+    const html = await pageHtml();
+    const submit = html.slice(
+      html.indexOf(
+        'getElementById("class-edit-form").addEventListener("submit"',
+      ),
+      html.indexOf('getElementById("class-pause").addEventListener("click"'),
+    );
+    // Fields equal to what the form was drawn with are left out of classes/update.
+    expect(submit).toContain(
+      "if (key in classEditBase && JSON.stringify(payload[key]) === JSON.stringify(classEditBase[key])) delete payload[key];",
+    );
+    expect(submit.indexOf("delete payload[key]")).toBeLessThan(
+      submit.indexOf('dashboardPost("classes/update", payload)'),
+    );
+    expect(submit).toContain(
+      "if (classState.selected === targetId) Object.assign(classEditBase, edited);",
+    );
+    // Every place that draws the class editor records its baseline.
+    expect(
+      html.split('renderFieldSet(document.getElementById("class-edit-fields")')
+        .length,
+    ).toBe(2);
+    expect(
+      html.split(
+        'renderAliasEditor(document.getElementById("class-edit-aliases")',
+      ).length,
+    ).toBe(2);
+    expect(html).toContain(
+      'Object.assign(classEditBase, readFieldSet(document.getElementById("class-edit-fields")));',
+    );
+    expect(html).toContain(
+      'classEditBase.capabilities = readAliases(document.getElementById("class-edit-aliases"));',
+    );
+  });
+
   it("picks approved aliases from the control plane instead of free text", async () => {
     const html = await pageHtml();
 
@@ -399,9 +435,7 @@ describe("teacher class kit", () => {
     expect(html).toContain("Your student list is still in the Students box");
     expect(html).toContain("if (kitState.classId !== id) clearKit();");
     // A bulk budget change refreshes the edit form's class total.
-    expect(html).toContain(
-      'renderFieldSet(document.getElementById("class-edit-fields"), CLASS_FIELDS, classRow);',
-    );
+    expect(html).toContain("renderClassEditFields(classRow);");
     expect(html).toContain('" (class timezone invalid)"');
   });
 
