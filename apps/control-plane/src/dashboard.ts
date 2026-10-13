@@ -1671,7 +1671,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           set("class-edit-alias-note", aliasNoteText(row.environment_id));
         }
         const groupRow = classState.detail && (classState.detail.groups || []).find((group) => group.id === classState.groupEditing);
-        if (groupRow) renderGroupAliases(groupRow);
+        if (groupRow) { renderGroupAliases(groupRow); groupEditBase.capabilities = readGroupAliases(); }
         document.getElementById("class-options-note").textContent = classOptionsTruncated ? "The environment and alias options are truncated; only the first page is shown." : "";
       }
 
@@ -2537,6 +2537,16 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           return "Group revoked.";
         }, classId);
       }
+      // Like the class editor, the group editor sends only what the operator changed.
+      // groups/update writes only supplied fields, so resending the values the editor was
+      // opened with would undo another writer's newer change; and any supplied schedule
+      // field makes the server require a future end, so resending an ended window would
+      // block even a rename or budget change.
+      let groupEditBase = {};
+      function readGroupAliases() {
+        const aliases = readAliases(document.getElementById("group-edit-aliases"));
+        return aliases.length ? aliases : null;
+      }
       function openGroupEditor(row) {
         classState.groupEditing = row.id;
         // A new editor session invalidates any in-flight save for the previous draft,
@@ -2544,6 +2554,8 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         classState.groupEditorRevision += 1;
         renderFieldSet(document.getElementById("group-edit-fields"), GROUP_FIELDS, row);
         renderGroupAliases(row);
+        groupEditBase = readFieldSet(document.getElementById("group-edit-fields"));
+        groupEditBase.capabilities = readGroupAliases();
         document.getElementById("group-edit-panel").hidden = false;
         set("group-edit-heading", "Adjust group: " + row.name);
         setStatus("group-edit-status", "", "");
@@ -2741,21 +2753,19 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         const moneyProblem = dollarProblem(document.getElementById("group-edit-fields"));
         if (moneyProblem) { setStatus("group-edit-status", moneyProblem, "error"); return; }
         const payload = readFieldSet(document.getElementById("group-edit-fields"));
-        payload.capabilities = readAliases(document.getElementById("group-edit-aliases"));
-        if (Array.isArray(payload.capabilities) && !payload.capabilities.length) payload.capabilities = null;
+        payload.capabilities = readGroupAliases();
         if (payload.budget_microcents === null || !Number.isFinite(payload.budget_microcents)) { setStatus("group-edit-status", "A group budget is required.", "error"); return; }
         if (payload.starts_at && payload.expires_at && payload.expires_at <= payload.starts_at) { setStatus("group-edit-status", "The end time must be after the start time.", "error"); return; }
-        // Any supplied schedule field makes the server require a future end, so an
-        // untouched schedule is left out: otherwise a group whose window has ended could
-        // not even be renamed or re-budgeted.
-        const editedGroup = classState.detail && (classState.detail.groups || []).find((group) => group.id === owner.groupId);
-        if (editedGroup) for (const field of ["starts_at", "expires_at"]) if (payload[field] === (editedGroup[field] ?? null)) delete payload[field];
+        const edited = { ...payload };
+        for (const key of Object.keys(payload)) if (key in groupEditBase && JSON.stringify(payload[key]) === JSON.stringify(groupEditBase[key])) delete payload[key];
         payload.id = owner.groupId;
         // Cleanup is owned by the editor session that submitted: another group, a reopened
         // draft, or another class must not be hidden or cleared by an older completion.
         const owns = () => groupEditorOwnedBy(owner);
         await runOwnedAction("group-edit-status", owns, async () => {
           await dashboardPost("groups/update", payload);
+          // A newer draft in the same editor is compared with what was just saved.
+          if (classState.selected === owner.classId && classState.groupEditing === owner.groupId) Object.assign(groupEditBase, edited);
           await Promise.all([loadGroups(), loadUsage()]);
           return "Group updated.";
         }, () => {

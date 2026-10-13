@@ -563,10 +563,11 @@ describe("teacher class kit", () => {
     expect(html).not.toMatch(/\son[a-z]+=["']/);
   });
 
-  it("leaves an untouched group schedule out of a group edit", async () => {
+  it("leaves untouched group settings, including the schedule, out of a group edit", async () => {
     const html = await pageHtml();
     // groups/update re-validates a supplied schedule against "now", so resending
-    // an ended window unchanged would block renaming or re-budgeting the group.
+    // an ended window unchanged would block renaming or re-budgeting the group;
+    // resending other stale values would undo another writer's newer change.
     const submit = html.slice(
       html.indexOf(
         'getElementById("group-edit-form").addEventListener("submit"',
@@ -574,10 +575,13 @@ describe("teacher class kit", () => {
       html.indexOf('getElementById("class-secret-copy")'),
     );
     expect(submit).toContain(
-      'for (const field of ["starts_at", "expires_at"]) if (payload[field] === (editedGroup[field] ?? null)) delete payload[field];',
+      "if (key in groupEditBase && JSON.stringify(payload[key]) === JSON.stringify(groupEditBase[key])) delete payload[key];",
     );
-    expect(submit.indexOf("delete payload[field]")).toBeLessThan(
+    expect(submit.indexOf("delete payload[key]")).toBeLessThan(
       submit.indexOf('dashboardPost("groups/update", payload)'),
+    );
+    expect(html).toContain(
+      'groupEditBase = readFieldSet(document.getElementById("group-edit-fields"));',
     );
   });
 
