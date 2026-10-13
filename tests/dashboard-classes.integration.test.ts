@@ -202,6 +202,23 @@ describe("course-centred dashboard UI", () => {
     }
     // Rotation is described as spend-preserving.
     expect(html).toContain("the group and its spend are unchanged");
+    // A key or code past its own expiry is shown as expired, not active, and an
+    // expired key offers no Rotate (the server refuses it with 409).
+    const keys = html.slice(
+      html.indexOf("function credentialState("),
+      html.indexOf("async function loadUsage("),
+    );
+    expect(keys).toContain('? "Expired" : "Active"');
+    expect(keys).toContain(
+      "value: (row) => credentialState(row.revoked_at, row.expires_at), pill: true",
+    );
+    expect(keys).toContain('return state === "Expired" ? [revoke] :');
+    expect(keys).toContain(
+      'row.disabled ? "Disabled" : credentialState(false, row.expires_at)',
+    );
+    expect(html).toContain(
+      'if (credentialState(key.revoked_at, key.expires_at) === "Active") keyCounts',
+    );
   });
 
   it("routes every class and group call through the same-origin named-admin boundary", async () => {

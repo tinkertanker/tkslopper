@@ -1870,7 +1870,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         for (const code of codes) codeCounts[code.classroom_group_id] = (codeCounts[code.classroom_group_id] || 0) + 1;
         const zone = classTimeZone();
         const inClassTime = (value) => zonedTime(value, zone);
-        for (const key of keys) if (!key.revoked_at) keyCounts[key.group_id] = (keyCounts[key.group_id] || 0) + 1;
+        for (const key of keys) if (credentialState(key.revoked_at, key.expires_at) === "Active") keyCounts[key.group_id] = (keyCounts[key.group_id] || 0) + 1;
         renderTable("class-groups", [
           { label: "Group", value: "name", bounded: true },
           { label: "Status", value: groupStatusLabel, pill: true },
@@ -1897,6 +1897,12 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           } },
         ], groups);
       }
+      // A key or join code past its own expires_at is refused by the gateway and cannot
+      // be rotated, so it is shown as expired even though it was never revoked.
+      function credentialState(revoked, expiresAt) {
+        if (revoked) return "Revoked";
+        return typeof expiresAt === "number" && expiresAt <= Math.floor(Date.now() / 1000) ? "Expired" : "Active";
+      }
       function renderKeys() {
         const detail = classState.detail || { groups: [], keys: [] };
         const groupNames = Object.fromEntries((detail.groups || []).map((group) => [group.id, group.name]));
@@ -1907,11 +1913,13 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           { label: "Key ID", value: "id" },
           { label: "Created (class time)", value: (row) => zonedTime(row.created_at, zone) },
           { label: "Expires (class time)", value: (row) => row.expires_at === null || row.expires_at === undefined ? "Inherits group schedule" : zonedTime(row.expires_at, zone) },
-          { label: "State", value: (row) => row.revoked_at ? "Revoked" : "Active", pill: true },
-          { label: "Actions", buttons: (row) => row.revoked_at ? [] : [
-            { label: "Rotate", disabled: credentialPending, onClick: () => rotateKey(row.id) },
-            { label: "Revoke", danger: true, onClick: () => revokeKey(row.id) },
-          ] },
+          { label: "State", value: (row) => credentialState(row.revoked_at, row.expires_at), pill: true },
+          { label: "Actions", buttons: (row) => {
+            const state = credentialState(row.revoked_at, row.expires_at);
+            if (state === "Revoked") return [];
+            const revoke = { label: "Revoke", danger: true, onClick: () => revokeKey(row.id) };
+            return state === "Expired" ? [revoke] : [{ label: "Rotate", disabled: credentialPending, onClick: () => rotateKey(row.id) }, revoke];
+          } },
         ], Array.isArray(detail.keys) ? detail.keys : []);
       }
       function renderCodes() {
@@ -1921,7 +1929,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           { label: "Code ID", value: "id" },
           { label: "Group", value: (row) => groupNames[row.classroom_group_id] || row.classroom_group_id },
           { label: "Expires (class time)", value: (row) => zonedTime(row.expires_at, classTimeZone()) },
-          { label: "State", value: (row) => row.disabled ? "Disabled" : "Active", pill: true },
+          { label: "State", value: (row) => row.disabled ? "Disabled" : credentialState(false, row.expires_at), pill: true },
           { label: "Activations (devices, not spend)", value: (row) => number(row.activation_count) + " / " + number(row.max_activations) },
           { label: "Actions", buttons: (row) => row.disabled ? [] : [{ label: "Revoke", danger: true, onClick: () => revokeCode(row.id) }] },
         ], Array.isArray(detail.codes) ? detail.codes : []);
