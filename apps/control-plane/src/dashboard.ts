@@ -1301,13 +1301,19 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         event.preventDefault();
         const payload = {};
         const selected = operation.value;
+        // Prefilled settings that are sent become the new baseline once applied, so a
+        // later change back to the originally shown value is still sent.
+        const applied = [];
         // Dollar amounts are converted to integer microcents before anything is sent.
         for (const [name, label, type] of operations.find((item) => item[0] === selected)[2]) {
           const input = fields.querySelector('[name="' + name + '"]');
           if (type === "checkbox") { payload[name] = input.checked; continue; }
           const value = input.value;
           if (value === "") continue;
-          if (selected === "environments/update" && name !== "product_id" && name !== "environment_id" && input.dataset.prefill === value) continue;
+          if (selected === "environments/update" && name !== "product_id" && name !== "environment_id" && input.dataset.prefill !== undefined) {
+            if (input.dataset.prefill === value) continue;
+            applied.push([input, value]);
+          }
           if (type === "dollars") {
             const parsed = parseDollars(value);
             if (parsed.error) { set("admin-result-status", label + " " + parsed.error + "."); return; }
@@ -1325,6 +1331,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           const result = await response.json();
           if (!response.ok) { if (response.status === 401 || response.status === 403) { adminPanel.hidden = true; applyRole(false); status.textContent = "Admin access expired or was revoked. Reload to check your login."; } throw new Error(response.status >= 500 ? "Server error; check activity before retrying because the operation may have completed." : result.error?.message || "Operation rejected."); }
           if (selected === "admins") await loadDashboard();
+          for (const [input, value] of applied) input.dataset.prefill = value;
           if (selected === "environments/update" && dashboardData && Array.isArray(dashboardData.environments)) {
             const row = dashboardData.environments.find((item) => item.id === result.id && item.product_id === result.product_id);
             if (row) {

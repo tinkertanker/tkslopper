@@ -626,8 +626,21 @@ describe("teacher class kit", () => {
     // table row is refreshed from the update result.
     expect(html).toContain("input.dataset.prefill = input.value;");
     expect(html).toContain(
-      'if (selected === "environments/update" && name !== "product_id" && name !== "environment_id" && input.dataset.prefill === value) continue;',
+      'if (selected === "environments/update" && name !== "product_id" && name !== "environment_id" && input.dataset.prefill !== undefined) {',
     );
+    expect(html).toContain("if (input.dataset.prefill === value) continue;");
+    // An applied setting becomes the new baseline, so changing it back to the
+    // originally shown value afterwards is sent instead of silently dropped.
+    const submit = html.slice(
+      html.indexOf('getElementById("admin-form").addEventListener("submit"'),
+      html.indexOf("// ---- Classes: course-centred workflow"),
+    );
+    expect(submit).toContain("applied.push([input, value]);");
+    const rebase = submit.indexOf(
+      "for (const [input, value] of applied) input.dataset.prefill = value;",
+    );
+    expect(rebase).toBeGreaterThan(submit.indexOf("if (!response.ok)"));
+    expect(rebase).toBeLessThan(submit.indexOf("} catch (error) {"));
     expect(html).toContain(
       '"daily_budget_microcents", "max_request_bytes"]) row[key] = result[key];',
     );
