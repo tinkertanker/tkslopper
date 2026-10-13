@@ -2718,6 +2718,11 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         if (Array.isArray(payload.capabilities) && !payload.capabilities.length) payload.capabilities = null;
         if (payload.budget_microcents === null || !Number.isFinite(payload.budget_microcents)) { setStatus("group-edit-status", "A group budget is required.", "error"); return; }
         if (payload.starts_at && payload.expires_at && payload.expires_at <= payload.starts_at) { setStatus("group-edit-status", "The end time must be after the start time.", "error"); return; }
+        // Any supplied schedule field makes the server require a future end, so an
+        // untouched schedule is left out: otherwise a group whose window has ended could
+        // not even be renamed or re-budgeted.
+        const editedGroup = classState.detail && (classState.detail.groups || []).find((group) => group.id === owner.groupId);
+        if (editedGroup) for (const field of ["starts_at", "expires_at"]) if (payload[field] === (editedGroup[field] ?? null)) delete payload[field];
         payload.id = owner.groupId;
         // Cleanup is owned by the editor session that submitted: another group, a reopened
         // draft, or another class must not be hidden or cleared by an older completion.

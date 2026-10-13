@@ -529,6 +529,24 @@ describe("teacher class kit", () => {
     expect(html).not.toMatch(/\son[a-z]+=["']/);
   });
 
+  it("leaves an untouched group schedule out of a group edit", async () => {
+    const html = await pageHtml();
+    // groups/update re-validates a supplied schedule against "now", so resending
+    // an ended window unchanged would block renaming or re-budgeting the group.
+    const submit = html.slice(
+      html.indexOf(
+        'getElementById("group-edit-form").addEventListener("submit"',
+      ),
+      html.indexOf('getElementById("class-secret-copy")'),
+    );
+    expect(submit).toContain(
+      'for (const field of ["starts_at", "expires_at"]) if (payload[field] === (editedGroup[field] ?? null)) delete payload[field];',
+    );
+    expect(submit.indexOf("delete payload[field]")).toBeLessThan(
+      submit.indexOf('dashboardPost("groups/update", payload)'),
+    );
+  });
+
   it("adds per-student pause, key hints, bulk budgets and environment editing", async () => {
     const html = await pageHtml();
 
