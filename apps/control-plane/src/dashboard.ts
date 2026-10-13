@@ -1288,7 +1288,9 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         const current = { product_id: row.product_id, environment_id: row.id, token_ttl_seconds: row.token_ttl_seconds, rpm_limit: row.rpm_limit, tpm_limit: row.tpm_limit, concurrency_limit: row.concurrency_limit, daily_budget_microcents: dollarText(row.daily_budget_microcents), max_request_bytes: row.max_request_bytes };
         for (const [name, value] of Object.entries(current)) {
           const input = fields.querySelector('[name="' + name + '"]');
-          if (input && value !== undefined && value !== null) input.value = String(value);
+          // The prefill is remembered so an untouched setting is not sent: the row may be
+          // stale, and resending it would undo a newer change to that setting.
+          if (input && value !== undefined && value !== null) { input.value = String(value); input.dataset.prefill = input.value; }
         }
         set("admin-result-status", "Editing limits for environment " + row.name + " (" + row.id + "). Change what you need, then review and apply.");
         document.getElementById("admin-form").scrollIntoView({ block: "start" });
@@ -1305,6 +1307,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           if (type === "checkbox") { payload[name] = input.checked; continue; }
           const value = input.value;
           if (value === "") continue;
+          if (selected === "environments/update" && name !== "product_id" && name !== "environment_id" && input.dataset.prefill === value) continue;
           if (type === "dollars") {
             const parsed = parseDollars(value);
             if (parsed.error) { set("admin-result-status", label + " " + parsed.error + "."); return; }
@@ -1322,6 +1325,13 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           const result = await response.json();
           if (!response.ok) { if (response.status === 401 || response.status === 403) { adminPanel.hidden = true; applyRole(false); status.textContent = "Admin access expired or was revoked. Reload to check your login."; } throw new Error(response.status >= 500 ? "Server error; check activity before retrying because the operation may have completed." : result.error?.message || "Operation rejected."); }
           if (selected === "admins") await loadDashboard();
+          if (selected === "environments/update" && dashboardData && Array.isArray(dashboardData.environments)) {
+            const row = dashboardData.environments.find((item) => item.id === result.id && item.product_id === result.product_id);
+            if (row) {
+              for (const key of ["policy_version", "token_ttl_seconds", "rpm_limit", "tpm_limit", "concurrency_limit", "daily_budget_microcents", "max_request_bytes"]) row[key] = result[key];
+              renderEnvironments();
+            }
+          }
           set("admin-result-status", selected === "environments/update" ? "Environment limits updated (policy version " + result.policy_version + "). Refresh to see them in Overview and Classes." : "Operation completed. Copy any credentials before refreshing the dashboard.");
           if (!adminPanel.hidden) { set("admin-result-data", JSON.stringify(result, null, 2)); document.getElementById("admin-result").hidden = false; }
         } catch (error) {

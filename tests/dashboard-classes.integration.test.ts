@@ -584,6 +584,15 @@ describe("teacher class kit", () => {
     expect(html).toContain(
       'if (isAdmin) buttons.push({ label: "Edit limits", onClick: () => editEnvironment(row) });',
     );
+    // A prefilled, untouched setting is not resent (the row may be stale), and the
+    // table row is refreshed from the update result.
+    expect(html).toContain("input.dataset.prefill = input.value;");
+    expect(html).toContain(
+      'if (selected === "environments/update" && name !== "product_id" && name !== "environment_id" && input.dataset.prefill === value) continue;',
+    );
+    expect(html).toContain(
+      '"daily_budget_microcents", "max_request_bytes"]) row[key] = result[key];',
+    );
     for (const flag of [
       "allow_images",
       "allow_reasoning",
