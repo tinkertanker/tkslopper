@@ -256,28 +256,20 @@ export function inspectGatewayRequest(request: ParsedGatewayRequest): {
   reasoningEffort: "low" | "medium" | "high" | undefined;
 } {
   const body = request.body;
+  // Count only message content parts. Free-form JSON schemas may legitimately
+  // contain `url` or `image_url` strings that are not image inputs.
+  const messages: Array<{ content: string | Array<{ type: string }> }> =
+    request.endpoint === "chat"
+      ? request.body.messages
+      : typeof request.body.input === "string"
+        ? []
+        : request.body.input;
   let images = 0;
-  const visit = (value: unknown, key?: string): void => {
-    if (typeof value === "string") {
-      if (
-        key === "image_url" ||
-        (key === "url" &&
-          (value.startsWith("data:image/") || value.startsWith("https://")))
-      ) {
-        images += 1;
-      }
-      return;
-    }
-    if (Array.isArray(value)) {
-      for (const item of value) visit(item);
-      return;
-    }
-    if (typeof value === "object" && value !== null) {
-      for (const [childKey, child] of Object.entries(value))
-        visit(child, childKey);
-    }
-  };
-  visit(body);
+  for (const message of messages) {
+    if (typeof message.content === "string") continue;
+    for (const part of message.content)
+      if (part.type === "image_url" || part.type === "input_image") images += 1;
+  }
   let requestedOutput: number | undefined;
   let hasStructuredJson: boolean;
   let reasoningEffort: "low" | "medium" | "high" | undefined;

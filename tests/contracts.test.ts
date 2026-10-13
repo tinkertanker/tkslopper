@@ -264,6 +264,42 @@ describe("normalized product request schema smoke", () => {
     ).toMatchObject({ hasImages: true, reasoningEffort: undefined });
   });
 
+  it("does not count URL strings inside a structured output schema as images", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        url: { type: "string" },
+        image_url: { type: "string" },
+      },
+      required: ["url", "image_url"],
+      additionalProperties: false,
+      examples: [
+        { url: "https://example.invalid/page", image_url: "cover.png" },
+      ],
+    };
+    const chat = chatRequestSchema.parse({
+      model: "text.chat.v1",
+      messages: [{ role: "user", content: "Extract the link" }],
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "link", strict: true, schema },
+      },
+    });
+    expect(
+      inspectGatewayRequest({ endpoint: "chat", body: chat }),
+    ).toMatchObject({ hasImages: false, hasStructuredJson: true });
+    const response = responsesRequestSchema.parse({
+      model: "text.chat.v1",
+      input: "Extract the link",
+      text: {
+        format: { type: "json_schema", name: "link", strict: true, schema },
+      },
+    });
+    expect(
+      inspectGatewayRequest({ endpoint: "responses", body: response }),
+    ).toMatchObject({ hasImages: false, hasStructuredJson: true });
+  });
+
   it("accepts normalized Playground Pal Chat and Responses shapes", () => {
     expect(chatRequestSchema.safeParse(playgroundPalChat).success).toBe(true);
     expect(
