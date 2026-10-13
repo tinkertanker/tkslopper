@@ -2662,11 +2662,14 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         const problem = validateClassPayload(payload);
         if (problem) { setStatus("class-edit-status", problem, "error"); return; }
         const edited = { ...payload };
-        for (const key of Object.keys(payload)) if (key in classEditBase && JSON.stringify(payload[key]) === JSON.stringify(classEditBase[key])) delete payload[key];
+        // Reopening a class draws a new editor (and baseline) from the row as listed then;
+        // only the baseline this save was compared with may take the saved values.
+        const base = classEditBase;
+        for (const key of Object.keys(payload)) if (key in base && JSON.stringify(payload[key]) === JSON.stringify(base[key])) delete payload[key];
         payload.id = targetId;
         await runClassAction("class-edit-status", async () => {
           await dashboardPost("classes/update", payload);
-          if (classState.selected === targetId) Object.assign(classEditBase, edited);
+          if (classState.selected === targetId && classEditBase === base) Object.assign(base, edited);
           await loadClasses();
           await loadUsage();
           if (classState.selected !== targetId) return null;
@@ -2764,15 +2767,17 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         if (payload.budget_microcents === null || !Number.isFinite(payload.budget_microcents)) { setStatus("group-edit-status", "A group budget is required.", "error"); return; }
         if (payload.starts_at && payload.expires_at && payload.expires_at <= payload.starts_at) { setStatus("group-edit-status", "The end time must be after the start time.", "error"); return; }
         const edited = { ...payload };
-        for (const key of Object.keys(payload)) if (key in groupEditBase && JSON.stringify(payload[key]) === JSON.stringify(groupEditBase[key])) delete payload[key];
+        const base = groupEditBase;
+        for (const key of Object.keys(payload)) if (key in base && JSON.stringify(payload[key]) === JSON.stringify(base[key])) delete payload[key];
         payload.id = owner.groupId;
         // Cleanup is owned by the editor session that submitted: another group, a reopened
         // draft, or another class must not be hidden or cleared by an older completion.
         const owns = () => groupEditorOwnedBy(owner);
         await runOwnedAction("group-edit-status", owns, async () => {
           await dashboardPost("groups/update", payload);
-          // A newer draft in the same editor is compared with what was just saved.
-          if (classState.selected === owner.classId && classState.groupEditing === owner.groupId) Object.assign(groupEditBase, edited);
+          // A newer draft in the same editor is compared with what was just saved. A
+          // reopened editor has its own baseline, drawn from the row it shows.
+          if (classState.selected === owner.classId && classState.groupEditing === owner.groupId && groupEditBase === base) Object.assign(base, edited);
           await Promise.all([loadGroups(), loadUsage()]);
           return "Group updated.";
         }, () => {

@@ -145,13 +145,19 @@ describe("course-centred dashboard UI", () => {
     );
     // Fields equal to what the form was drawn with are left out of classes/update.
     expect(submit).toContain(
-      "if (key in classEditBase && JSON.stringify(payload[key]) === JSON.stringify(classEditBase[key])) delete payload[key];",
+      "if (key in base && JSON.stringify(payload[key]) === JSON.stringify(base[key])) delete payload[key];",
     );
     expect(submit.indexOf("delete payload[key]")).toBeLessThan(
       submit.indexOf('dashboardPost("classes/update", payload)'),
     );
     expect(submit).toContain(
-      "if (classState.selected === targetId) Object.assign(classEditBase, edited);",
+      "if (classState.selected === targetId && classEditBase === base) Object.assign(base, edited);",
+    );
+    // Reopening the class mid-save draws a new baseline from the row it shows; the
+    // completion must not overwrite it, or an untouched save would revert the edit.
+    expect(submit).toContain("const base = classEditBase;");
+    expect(html).toContain(
+      "classEditBase = {};\n        renderClassEditFields(row);",
     );
     // Every place that draws the class editor records its baseline.
     expect(
@@ -575,7 +581,13 @@ describe("teacher class kit", () => {
       html.indexOf('getElementById("class-secret-copy")'),
     );
     expect(submit).toContain(
-      "if (key in groupEditBase && JSON.stringify(payload[key]) === JSON.stringify(groupEditBase[key])) delete payload[key];",
+      "if (key in base && JSON.stringify(payload[key]) === JSON.stringify(base[key])) delete payload[key];",
+    );
+    // Only the baseline this save compared with takes the saved values: a reopened
+    // editor shows the row as listed then, and its own baseline must match it.
+    expect(submit).toContain("const base = groupEditBase;");
+    expect(submit).toContain(
+      "classState.groupEditing === owner.groupId && groupEditBase === base) Object.assign(base, edited);",
     );
     expect(submit.indexOf("delete payload[key]")).toBeLessThan(
       submit.indexOf('dashboardPost("groups/update", payload)'),
