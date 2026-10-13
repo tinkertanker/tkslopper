@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  bearerToken,
   capabilitySchema,
   chatCompletionResponseSchema,
   chatRequestSchema,
@@ -31,6 +32,21 @@ import vibbitChatResponse from "./fixtures/vibbit-chat-response.json";
 import vibbitResponses from "./fixtures/vibbit-responses.json";
 
 describe("credentials and grants", () => {
+  it("reads a bearer credential with a case-insensitive scheme", () => {
+    const withAuthorization = (value: string) =>
+      new Request("https://gateway.example.invalid/v1/models", {
+        headers: { authorization: value },
+      });
+    expect(bearerToken(withAuthorization("Bearer tkgk_abc"))).toBe("tkgk_abc");
+    expect(bearerToken(withAuthorization("bearer tkgk_abc"))).toBe("tkgk_abc");
+    expect(bearerToken(withAuthorization("BEARER tkgk_abc"))).toBe("tkgk_abc");
+    expect(
+      bearerToken(withAuthorization("Basic dXNlcjpwYXNz")),
+    ).toBeUndefined();
+    expect(bearerToken(withAuthorization("Bearer"))).toBeUndefined();
+    expect(bearerToken(new Request("https://x.invalid/"))).toBeUndefined();
+  });
+
   it("stores salted and peppered credential hashes and parses the opaque envelope", async () => {
     const credential = createOpaqueCredential("service");
     expect(parseOpaqueCredential(credential.value, "service")).toEqual({

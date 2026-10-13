@@ -137,9 +137,11 @@ export async function readJsonBody(
   }
 }
 
+/** The auth scheme is case-insensitive (RFC 7235 section 2.1). */
 export function bearerToken(request: Request): string | undefined {
   const authorization = request.headers.get("authorization");
-  if (!authorization?.startsWith("Bearer ")) return undefined;
+  if (authorization?.slice(0, "Bearer ".length).toLowerCase() !== "bearer ")
+    return undefined;
   const value = authorization.slice("Bearer ".length);
   return value.length > 0 ? value : undefined;
 }
