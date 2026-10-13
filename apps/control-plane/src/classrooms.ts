@@ -629,12 +629,16 @@ async function adminUpdateGroup(
   const expiresAt =
     body.expires_at !== undefined ? body.expires_at : group.expires_at;
   const now = nowSeconds();
-  if (body.starts_at !== undefined || body.expires_at !== undefined)
+  // As for classes, an ended group can still be topped up or re-limited:
+  // resending the stored schedule is not a change, and only a changed end
+  // must lie in the future.
+  const endChanged = expiresAt !== group.expires_at;
+  if (startsAt !== group.starts_at || endChanged)
     validateGroupWindow(
       { starts_at: startsAt, expires_at: expiresAt },
       { starts_at: class_.starts_at, expires_at: class_.expires_at },
       now,
-      { requireFutureEnd: true },
+      { requireFutureEnd: endChanged },
     );
 
   // Only supplied fields are written, so a stale read cannot restore policy

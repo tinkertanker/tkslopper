@@ -2510,6 +2510,43 @@ describe("ended class maintenance", () => {
   });
 });
 
+describe("ended group maintenance", () => {
+  it("accepts an unchanged schedule alongside edits to an ended group", async () => {
+    const timestamp = now();
+    const classId = await createClass({ starts_at: timestamp - 7200 });
+    const [group] = await createGroups(classId, ["Ended"]);
+    const startsAt = timestamp - 3600;
+    const ended = timestamp - 60;
+    await env.DB.prepare(
+      "UPDATE classroom_groups SET starts_at = ?, expires_at = ? WHERE id = ?",
+    )
+      .bind(startsAt, ended, group!.id)
+      .run();
+    // Resending the stored schedule with a top-up is not an extension.
+    const topUp = await admin("/admin/v1/groups/update", {
+      id: group!.id,
+      starts_at: startsAt,
+      expires_at: ended,
+      budget_microcents: 5_000,
+    });
+    expect(topUp.status, await topUp.clone().text()).toBe(200);
+    // A changed end must still lie in the future.
+    expect(
+      (
+        await admin("/admin/v1/groups/update", {
+          id: group!.id,
+          expires_at: timestamp - 30,
+        })
+      ).status,
+    ).toBe(400);
+    const extended = await admin("/admin/v1/groups/update", {
+      id: group!.id,
+      expires_at: timestamp + 600,
+    });
+    expect(extended.status, await extended.clone().text()).toBe(200);
+  });
+});
+
 describe("classroom administration surface", () => {
   it("requires admin authentication and mirrors through the browser admin path", async () => {
     const timestamp = now();
