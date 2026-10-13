@@ -409,7 +409,18 @@ export const aliasUpsertSchema = z
     alias: capabilitySchema,
     endpoint: z.enum(["chat", "responses"]),
     route_id: identifierSchema,
-    display_name: z.string().trim().min(1).max(120).nullable().default(null),
+    // The stored CHECK measures length() in SQLite, which stops at a NUL.
+    display_name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .refine(
+        (value) => !value.includes("\u0000"),
+        "display_name must not contain NUL",
+      )
+      .nullable()
+      .default(null),
     provider: z.enum(MODEL_PROVIDERS).nullable().default(null),
     tier: z.enum(MODEL_TIERS).nullable().default(null),
     allow_reasoning: z.boolean().default(false),

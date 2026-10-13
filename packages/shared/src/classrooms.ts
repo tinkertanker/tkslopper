@@ -16,7 +16,14 @@ export const CLASSROOM_USAGE_GROUP_LIMIT = 500;
 export const CLASSROOM_DEFAULT_MAX_ACTIVATIONS = 30;
 export const CLASSROOM_MAX_ACTIVATIONS_MAX = 100_000;
 
-const classroomNameSchema = z.string().trim().min(1).max(200);
+// SQLite length() stops at the first NUL, so a NUL would fail the stored
+// name CHECK as an opaque 500 instead of a validation error.
+const classroomNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(200)
+  .refine((value) => !value.includes("\u0000"), "name must not contain NUL");
 const classroomTimestampSchema = z.number().int().safe().min(0);
 const microcentsSchema = z
   .number()

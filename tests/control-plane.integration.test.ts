@@ -1659,6 +1659,7 @@ describe("public alias presentation", () => {
     for (const invalid of [
       { display_name: " " },
       { display_name: "x".repeat(121) },
+      { display_name: "\u0000Claude" },
       { provider: "https://private-route.invalid" },
       { tier: "unreviewed" },
     ]) {

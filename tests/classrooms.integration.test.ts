@@ -370,6 +370,12 @@ describe("classroom class lifecycle", () => {
       classBody({ starts_at: now() + 3600, expires_at: now() + 60 }),
     );
     expect(unordered.status).toBe(400);
+    // SQLite length() stops at NUL, so such a name would fail the stored
+    // CHECK and surface as a 500 instead of a validation error.
+    expect(
+      (await admin("/admin/v1/classes", classBody({ name: "\u0000Class" })))
+        .status,
+    ).toBe(400);
     expect(
       (await handleControlPlane(request("/admin/v1/classes", {}), controlEnv))
         .status,
@@ -605,6 +611,14 @@ describe("classroom group policy", () => {
     expect(
       (await admin("/admin/v1/groups", { class_id: classId, names: [] }))
         .status,
+    ).toBe(400);
+    expect(
+      (
+        await admin("/admin/v1/groups", {
+          class_id: classId,
+          names: ["\u0000Delta"],
+        })
+      ).status,
     ).toBe(400);
     expect(
       (
