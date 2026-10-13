@@ -319,10 +319,16 @@ describe("course-centred dashboard UI", () => {
       html.indexOf("function clearSecret("),
     );
     expect(showSecret).toContain(
-      "function showSecret(result, context, classRow, group)",
+      "function showSecret(result, context, classRow, group, keyExpiresAt)",
     );
     expect(showSecret).not.toContain("classState");
     expect(html).toContain("showSecret(result, context, classRow, group);");
+    // A rotated key inherits the old key's own expiry, so its card must not claim
+    // it works until the (later) class or group end.
+    expect(showSecret).toContain("expires_at: keyExpiresAt ?? null");
+    expect(html).toContain(
+      "showSecret(result, context, classRow, group, key?.expires_at);",
+    );
     // The bulk kit narrows each card by its group's aliases, so the issuing class's
     // groups are captured before the request and survive a class switch.
     const issueKit = html.slice(

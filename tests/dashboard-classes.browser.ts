@@ -1124,12 +1124,13 @@ async function main(): Promise<void> {
         store.counter += 1;
         const nextId = `key_rot_${store.counter}`;
         const apiKey = `tkgk_rot_${store.counter}_fixture`;
+        // Like the control plane, the replacement inherits the old key's expiry.
         store.keys.push({
           id: nextId,
           group_id: existing?.group_id ?? "grp_1",
           key_hint: apiKey.slice(-4),
           created_at: now(),
-          expires_at: null,
+          expires_at: existing?.expires_at ?? null,
           revoked_at: null,
         });
         sendJson(response, 201, {

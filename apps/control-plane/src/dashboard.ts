@@ -2077,7 +2077,8 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       // classRow and group are captured when the action starts: the operator may open
       // another class while the request is in flight, and the card must still describe
       // the class and group the credential was issued for.
-      function showSecret(result, context, classRow, group) {
+      // keyExpiresAt is the key's own end: a rotated key inherits the old key's expiry.
+      function showSecret(result, context, classRow, group, keyExpiresAt) {
         const value = result.api_key || result.access_code || "";
         document.getElementById("class-secret-value").textContent = value;
         document.getElementById("class-secret").hidden = !value;
@@ -2087,7 +2088,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         cardBox.replaceChildren();
         cardBox.hidden = true;
         if (result.api_key) {
-          cardBox.append(studentCard(cardEntry(classRow, group, { api_key: result.api_key, expires_at: null }, group ? group.name : context)));
+          cardBox.append(studentCard(cardEntry(classRow, group, { api_key: result.api_key, expires_at: keyExpiresAt ?? null }, group ? group.name : context)));
           cardBox.hidden = false;
         }
         setStatus("class-secret-status", value ? ("For " + context + ". " + (result.api_key ? "Shown once. This is a direct gateway API key; it does not activate devices." : "Shown once. This join code activates devices through the existing activation endpoint.")) : "", value ? "ok" : "");
@@ -2511,7 +2512,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           clearSecret();
           await runClassAction("group-status", async () => {
             const result = await dashboardPost("groups/rotate", { id });
-            showSecret(result, context, classRow, group);
+            showSecret(result, context, classRow, group, key?.expires_at);
             await loadGroups();
             return "Rotated the API key for " + context + ". The group and its spend are unchanged.";
           }, classId);
