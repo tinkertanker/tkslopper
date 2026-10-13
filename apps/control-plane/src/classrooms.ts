@@ -899,6 +899,14 @@ async function adminRotateGroupKey(
   if (!key) throw new HttpError(404, "not_found", "group key not found");
   if (key.revoked_at !== null)
     throw new HttpError(409, "conflict", "group key is already revoked");
+  // The replacement inherits the old key's expiry, so rotating an expired key
+  // would revoke it and hand out a key that is already unusable.
+  if (key.expires_at !== null && key.expires_at <= nowSeconds())
+    throw new HttpError(
+      409,
+      "conflict",
+      "group key has expired; issue a new key instead",
+    );
   const { group, class: class_ } = await requireGroupContext(env, key.group_id);
   if (class_.status === "revoked")
     throw new HttpError(409, "conflict", "class is revoked");

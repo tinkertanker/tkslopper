@@ -1075,6 +1075,32 @@ describe("classroom group access", () => {
     expect(secretHashes).toEqual({ count: 2 });
   });
 
+  it("refuses to rotate an expired key into an already-expired replacement", async () => {
+    const classId = await createClass();
+    const [group] = await createGroups(classId, ["Alpha"]);
+    const issued = await json<{ id: string }>(
+      await admin("/admin/v1/groups/access", {
+        group_id: String(group?.id),
+        kind: "api_key",
+        expires_at: now() + 600,
+      }),
+    );
+    await env.DB.prepare(
+      "UPDATE classroom_group_keys SET expires_at = ? WHERE id = ?",
+    )
+      .bind(now() - 1, issued.id)
+      .run();
+    const rotated = await admin("/admin/v1/groups/rotate", { id: issued.id });
+    expect(rotated.status, await rotated.clone().text()).toBe(409);
+    const rows = await env.DB.prepare(
+      `SELECT id, revoked_at FROM classroom_group_keys
+        WHERE group_id = ? ORDER BY created_at`,
+    )
+      .bind(String(group?.id))
+      .all<{ id: string; revoked_at: number | null }>();
+    expect(rows.results).toEqual([{ id: issued.id, revoked_at: null }]);
+  });
+
   it("rotates and revokes group API keys atomically", async () => {
     const classId = await createClass();
     const [group] = await createGroups(classId, ["Alpha"]);
