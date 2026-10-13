@@ -252,6 +252,18 @@ describe("course-centred dashboard UI", () => {
       'document.getElementById("class-secret-value").textContent = value',
     );
     expect(html).toContain('window.addEventListener("pagehide", clearSecret)');
+    // The one-time card describes the class and group the credential was issued
+    // for, captured before the request, never whichever class is open when the
+    // response arrives.
+    const showSecret = html.slice(
+      html.indexOf("function showSecret("),
+      html.indexOf("function clearSecret("),
+    );
+    expect(showSecret).toContain(
+      "function showSecret(result, context, classRow, group)",
+    );
+    expect(showSecret).not.toContain("classState");
+    expect(html).toContain("showSecret(result, context, classRow, group);");
   });
 
   it("states the timezone of every date/time input and displayed timestamp", async () => {

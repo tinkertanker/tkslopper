@@ -2032,7 +2032,10 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         const classroom = classState.classes.find((row) => row.id === classState.selected);
         return (group ? group.name : groupId) + " in " + (classroom ? classroom.name : classState.selected);
       }
-      function showSecret(result, context, groupId) {
+      // classRow and group are captured when the action starts: the operator may open
+      // another class while the request is in flight, and the card must still describe
+      // the class and group the credential was issued for.
+      function showSecret(result, context, classRow, group) {
         const value = result.api_key || result.access_code || "";
         document.getElementById("class-secret-value").textContent = value;
         document.getElementById("class-secret").hidden = !value;
@@ -2042,8 +2045,6 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         cardBox.replaceChildren();
         cardBox.hidden = true;
         if (result.api_key) {
-          const classRow = classState.classes.find((row) => row.id === classState.selected);
-          const group = classState.detail?.groups?.find((row) => row.id === groupId);
           cardBox.append(studentCard(cardEntry(classRow, group, { api_key: result.api_key, expires_at: null }, group ? group.name : context)));
           cardBox.hidden = false;
         }
@@ -2439,12 +2440,14 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         const classId = classState.selected;
         const label = kind === "api_key" ? "API key" : "join code";
         const context = groupContext(groupId);
+        const classRow = classState.classes.find((row) => row.id === classId);
+        const group = classState.detail?.groups?.find((row) => row.id === groupId);
         if (!window.confirm("Issue a new " + label + " for " + context + "? It is shown once and cannot be retrieved later.")) return;
         await runCredentialAction(async () => {
           clearSecret();
           await runClassAction("group-status", async () => {
             const result = await dashboardPost("groups/access", { group_id: groupId, kind });
-            showSecret(result, context, groupId);
+            showSecret(result, context, classRow, group);
             await loadGroups();
             return "Issued " + label + " for " + context + ".";
           }, classId);
@@ -2455,12 +2458,14 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         const classId = classState.selected;
         const key = classState.detail?.keys?.find((row) => row.id === id);
         const context = groupContext(key?.group_id || id);
+        const classRow = classState.classes.find((row) => row.id === classId);
+        const group = classState.detail?.groups?.find((row) => row.id === key?.group_id);
         if (!window.confirm("Rotate the API key for " + context + "? The old key is invalidated immediately; the group and its spend are unchanged.")) return;
         await runCredentialAction(async () => {
           clearSecret();
           await runClassAction("group-status", async () => {
             const result = await dashboardPost("groups/rotate", { id });
-            showSecret(result, context, key?.group_id);
+            showSecret(result, context, classRow, group);
             await loadGroups();
             return "Rotated the API key for " + context + ". The group and its spend are unchanged.";
           }, classId);
