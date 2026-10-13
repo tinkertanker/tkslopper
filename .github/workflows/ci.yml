@@ -27,8 +27,37 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
-          cache: pnpm
+          package-manager-cache: false
+      - name: Identify platform and tool versions
+        id: pnpm-cache
+        run: |
+          . /etc/os-release
+          echo "linux=${ID}-${VERSION_ID}" >> "$GITHUB_OUTPUT"
+          echo "node=$(node --version)" >> "$GITHUB_OUTPUT"
+          echo "pnpm=$(pnpm --version)" >> "$GITHUB_OUTPUT"
+      - name: Restore installed dependencies
+        id: pnpm-installed
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          # Member paths match the workspace roots in pnpm-workspace.yaml.
+          path: |
+            node_modules
+            apps/*/node_modules
+            packages/*/node_modules
+          # Future project install hooks need hashed sources and cached generated outputs.
+          key: pnpm-installed-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.pnpm-cache.outputs.linux }}-node-${{ steps.pnpm-cache.outputs.node }}-pnpm-${{ steps.pnpm-cache.outputs.pnpm }}-${{ github.workspace }}-${{ hashFiles('.github/workflows/ci.yml', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'package.json', 'apps/*/package.json', 'packages/*/package.json', '.npmrc', '.pnpmfile.cjs', 'apps/*/.npmrc', 'apps/*/.pnpmfile.cjs', 'packages/*/.npmrc', 'packages/*/.pnpmfile.cjs', 'patches/**') }}
       - run: pnpm install --frozen-lockfile
+        if: steps.pnpm-installed.outputs.cache-hit != 'true'
+      # Save successful installs before a later check or audit can fail.
+      - name: Save installed dependencies
+        if: steps.pnpm-installed.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            packages/*/node_modules
+          key: ${{ steps.pnpm-installed.outputs.cache-primary-key }}
       - run: pnpm check
       - run: pnpm audit --audit-level=high
 
