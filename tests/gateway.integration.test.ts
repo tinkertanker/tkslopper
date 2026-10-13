@@ -237,7 +237,9 @@ function abortableProviderFetch(onStart?: () => void) {
   });
 }
 
-function providerChatResponse(usage?: Record<string, unknown>): Response {
+function providerChatResponse(
+  usage?: Record<string, unknown> | null,
+): Response {
   return Response.json({
     id: "chatcmpl_accounting_fixture",
     object: "chat.completion",
@@ -867,6 +869,13 @@ describe("Stage 0 failure-path accounting", () => {
     {
       name: "missing usage",
       usage: undefined,
+      expectedInput: undefined,
+      expectedOutput: 100,
+      exposesUsage: false,
+    },
+    {
+      name: "null usage",
+      usage: null,
       expectedInput: undefined,
       expectedOutput: 100,
       exposesUsage: false,
