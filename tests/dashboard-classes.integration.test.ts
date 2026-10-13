@@ -562,6 +562,12 @@ describe("teacher class kit", () => {
     );
     expect(html).toContain('id="group-budget-form"');
     expect(html).toContain('dashboardPost("groups/budget-bulk", request)');
+    // Issuing for all students again re-keys the same first 100 groups, so a
+    // truncated kit must not tell the operator to do that.
+    expect(html).not.toContain("issue again with the remaining groups");
+    expect(html).toContain(
+      "would re-key these same students, so use API key on each remaining student's group.",
+    );
     // The server changes at most 100 groups per bulk request; the rest must be
     // reported, never silently left at their old allocation.
     expect(html).toContain(

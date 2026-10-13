@@ -2348,7 +2348,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         gatewayNote.hidden = !gatewayNote.textContent;
         const summary = ["Issued " + number(kitState.entries.length) + " key" + (kitState.entries.length === 1 ? "" : "s") + " for " + kitState.className + "."];
         if (kitState.skipped.length) summary.push(number(kitState.skipped.length) + " skipped (see below).");
-        if (result.truncated) summary.push("Only the first 100 groups were included; issue again with the remaining groups.");
+        if (result.truncated) summary.push("Only the first 100 students by name got keys. Issuing for all students again would re-key these same students, so use API key on each remaining student's group.");
         setStatus("class-kit-summary", summary.join(" "), kitState.entries.length ? "ok" : "error");
         renderTable("class-kit-keys", [
           { label: "Student", value: "name", bounded: true },
