@@ -278,6 +278,14 @@ describe("course-centred dashboard UI", () => {
     expect(html).toContain('id="group-edit-schedule-note"');
     expect(html).toContain("Intl.DateTimeFormat().resolvedOptions().timeZone");
     expect(html).toContain("entered in your browser's local time");
+    // datetime-local has minute precision: an untouched field resends the exact
+    // stored second, so saving an ended class's budget is not an end change.
+    expect(html).toContain(
+      "input.dataset.shown = input.value; input.dataset.seconds = String(values[name]);",
+    );
+    expect(html).toContain(
+      "input.dataset.shown === input.value ? Number(input.dataset.seconds)",
+    );
     // Class-scoped tables show times in the class's own IANA timezone, with UTC
     // alongside in the class summary.
     expect(html).toContain("Class tables show them in the class timezone");

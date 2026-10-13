@@ -1416,6 +1416,9 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
             input = document.createElement("input");
             input.type = "datetime-local";
             input.value = localDateTime(values[name]);
+            // The input only has minute precision; remember the exact stored second so
+            // an untouched field resends it unchanged instead of a truncated value.
+            if (input.value) { input.dataset.shown = input.value; input.dataset.seconds = String(values[name]); }
           } else if (type === "number") {
             input = document.createElement("input");
             input.type = "number";
@@ -1445,7 +1448,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         for (const input of container.querySelectorAll("input, select")) {
           const name = input.name;
           if (!name) continue;
-          if (input.type === "datetime-local") { payload[name] = input.value ? Math.floor(new Date(input.value).getTime() / 1000) : null; continue; }
+          if (input.type === "datetime-local") { payload[name] = !input.value ? null : input.dataset.shown === input.value ? Number(input.dataset.seconds) : Math.floor(new Date(input.value).getTime() / 1000); continue; }
           if (input.type === "number") { payload[name] = input.value === "" ? null : Number(input.value); continue; }
           if (input.dataset.kind === "dollars") { const parsed = parseDollars(input.value); payload[name] = parsed.value === undefined ? null : parsed.value; continue; }
           if (name === "instructors") { payload[name] = input.value.split(",").map((item) => item.trim()).filter(Boolean); continue; }
