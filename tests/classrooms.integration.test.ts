@@ -2545,6 +2545,52 @@ describe("ended group maintenance", () => {
     });
     expect(extended.status, await extended.clone().text()).toBe(200);
   });
+
+  it("edits one bound of a group whose other bound a class reschedule left outside the class window", async () => {
+    const timestamp = now();
+    const classId = await createClass({
+      starts_at: timestamp - 60,
+      expires_at: timestamp + 3600,
+    });
+    const [group] = await createGroups(classId, ["Rescheduled"]);
+    await env.DB.prepare(
+      "UPDATE classroom_groups SET starts_at = ?, expires_at = ? WHERE id = ?",
+    )
+      .bind(timestamp, timestamp + 300, group!.id)
+      .run();
+    // The class moves later; the group's stored window now ends before it.
+    expect(
+      (
+        await admin("/admin/v1/classes/update", {
+          id: classId,
+          starts_at: timestamp + 600,
+        })
+      ).status,
+    ).toBe(200);
+    const extended = await admin("/admin/v1/groups/update", {
+      id: group!.id,
+      expires_at: timestamp + 900,
+    });
+    expect(extended.status, await extended.clone().text()).toBe(200);
+    // A changed bound is still held to the class window.
+    expect(
+      (
+        await admin("/admin/v1/groups/update", {
+          id: group!.id,
+          starts_at: timestamp + 100,
+        })
+      ).status,
+    ).toBe(400);
+    // An untouched bound still has to leave a non-empty effective window.
+    expect(
+      (
+        await admin("/admin/v1/groups/update", {
+          id: group!.id,
+          expires_at: timestamp + 500,
+        })
+      ).status,
+    ).toBe(400);
+  });
 });
 
 describe("classroom administration surface", () => {

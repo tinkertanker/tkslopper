@@ -632,10 +632,23 @@ async function adminUpdateGroup(
   // As for classes, an ended group can still be topped up or re-limited:
   // resending the stored schedule is not a change, and only a changed end
   // must lie in the future.
+  const startChanged = startsAt !== group.starts_at;
   const endChanged = expiresAt !== group.expires_at;
-  if (startsAt !== group.starts_at || endChanged)
+  // A class reschedule can leave a stored group bound outside the new class
+  // window. Policy already clamps it, so an untouched bound is judged by its
+  // effective value rather than blocking an edit of the other bound.
+  if (startChanged || endChanged)
     validateGroupWindow(
-      { starts_at: startsAt, expires_at: expiresAt },
+      {
+        starts_at:
+          startChanged || startsAt === null
+            ? startsAt
+            : Math.max(startsAt, class_.starts_at),
+        expires_at:
+          endChanged || expiresAt === null
+            ? expiresAt
+            : Math.min(expiresAt, class_.expires_at),
+      },
       { starts_at: class_.starts_at, expires_at: class_.expires_at },
       now,
       { requireFutureEnd: endChanged },
