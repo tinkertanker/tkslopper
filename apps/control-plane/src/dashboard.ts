@@ -2411,6 +2411,10 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           const row = classState.classes.find((item) => item.id === classId);
           return row ? row.name : classId;
         };
+        // The class's groups are captured before the request: if the operator opens another
+        // class meanwhile, the kit must still narrow each card to its own group's aliases.
+        const groupsOf = (fallback) => classState.selected === classId && classState.detail && Array.isArray(classState.detail.groups) ? classState.detail.groups : fallback;
+        const startGroups = groupsOf([]);
         await runCredentialAction(async () => {
           clearSecret();
           clearKit();
@@ -2421,7 +2425,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
             const classRow = classState.classes.find((row) => row.id === classId);
             // Keys exist now whatever the operator did meanwhile, so the kit is always shown,
             // headed with its own class name, and the status names that class too.
-            showKit(result, classRow || { id: classId, name: classId, capabilities: [], timezone: "UTC" }, classState.selected === classId && classState.detail ? classState.detail.groups : []);
+            showKit(result, classRow || { id: classId, name: classId, capabilities: [], timezone: "UTC" }, groupsOf(startGroups));
             issued = true;
             setStatus(statusId, "Issued " + number((result.keys || []).length) + " student key(s) for " + className() + ((result.skipped || []).length ? "; " + number(result.skipped.length) + " skipped." : ".") + " Copy, download or print them now.", "ok");
           } catch (error) {

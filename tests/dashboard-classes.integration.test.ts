@@ -264,6 +264,19 @@ describe("course-centred dashboard UI", () => {
     );
     expect(showSecret).not.toContain("classState");
     expect(html).toContain("showSecret(result, context, classRow, group);");
+    // The bulk kit narrows each card by its group's aliases, so the issuing class's
+    // groups are captured before the request and survive a class switch.
+    const issueKit = html.slice(
+      html.indexOf("async function issueKit("),
+      html.indexOf("async function setGroupPaused("),
+    );
+    expect(
+      issueKit.indexOf("const startGroups = groupsOf([]);"),
+    ).toBeGreaterThan(-1);
+    expect(issueKit.indexOf("const startGroups")).toBeLessThan(
+      issueKit.indexOf('dashboardPost("groups/access-bulk"'),
+    );
+    expect(issueKit).toContain("groupsOf(startGroups));");
   });
 
   it("states the timezone of every date/time input and displayed timestamp", async () => {
