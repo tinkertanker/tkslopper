@@ -1723,6 +1723,19 @@ describe("environment settings", () => {
     });
   });
 
+  it("returns 404 without writing when creating an environment for an unknown product", async () => {
+    const response = await admin("/admin/v1/environments", {
+      product_id: "prod_missing",
+      name: "orphan",
+      audience: "control:orphan",
+    });
+    expect(response.status, await response.clone().text()).toBe(404);
+    const rows = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM environments WHERE name = 'orphan'",
+    ).first<{ count: number }>();
+    expect(rows).toEqual({ count: 0 });
+  });
+
   it("writes only supplied limits, bumps the policy version, and audits", async () => {
     const response = await admin("/admin/v1/environments/update", {
       product_id: "prod_control",
