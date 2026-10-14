@@ -657,7 +657,7 @@ describe("teacher class kit", () => {
     // truncated kit must not tell the operator to do that.
     expect(html).not.toContain("issue again with the remaining groups");
     expect(html).toContain(
-      "would re-key these same students, so use API key on each remaining student's group.",
+      "Only the first 100 students by name were considered for keys. Issuing for all students again would select these same students, so use API key on each remaining student's group.",
     );
     // The server changes at most 100 groups per bulk request; the rest must be
     // reported, never silently left at their old allocation.
