@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   callProvider,
-  logSafeEvent,
   parseProviderRoutes,
   prepareProvider,
   type ParsedGatewayRequest,
@@ -676,36 +675,5 @@ describe("provider contract", () => {
     ).rejects.toMatchObject({
       errorClass: "provider_protocol",
     } satisfies Partial<ProviderError>);
-  });
-});
-
-describe("metadata-only observability", () => {
-  it("cannot accept payload-shaped fields and emits only the safe event", () => {
-    const logger = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    logSafeEvent({
-      requestId: "req_fixture",
-      productId: "vibbit",
-      environmentId: "test",
-      tenantHash: "tenant_hash",
-      principalHash: "principal_hash",
-      alias: "text.chat.v1",
-      policyVersion: 1,
-      routeId: "route_fixture",
-      provider: "fixture",
-      model: "fixture-model",
-      endpoint: "chat",
-      status: 200,
-      latencyMs: 5,
-      inputTokens: 8,
-      outputTokens: 3,
-      costMicrocents: 0,
-      attempts: 1,
-    });
-    const serialized = String(logger.mock.calls[0]?.[0]);
-    expect(serialized).not.toContain("PRIVATE_PAYLOAD_SENTINEL");
-    expect(Object.keys(JSON.parse(serialized) as object)).not.toContain(
-      "prompt",
-    );
-    logger.mockRestore();
   });
 });

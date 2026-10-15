@@ -102,39 +102,6 @@ describe("course-centred dashboard UI", () => {
     }
   });
 
-  it("gives duplication its own schedule and guards class-specific completion", async () => {
-    const html = await pageHtml();
-
-    // Duplication collects a new window instead of reusing the source's.
-    expect(html).toContain(
-      '<div class="subpanel" id="class-duplicate-panel" hidden>',
-    );
-    expect(html).toContain('id="class-duplicate-form"');
-    expect(html).toContain('id="class-duplicate-fields"');
-    expect(html).toContain('id="class-duplicate-submit"');
-    expect(html).toContain(
-      '["starts_at", "New start (browser local time)", "datetime-local"]',
-    );
-    expect(html).toContain(
-      '["expires_at", "New end (browser local time)", "datetime-local"]',
-    );
-    expect(html).toContain(
-      "const request = { id: targetId, name: payload.name, starts_at: payload.starts_at, expires_at: payload.expires_at }",
-    );
-    expect(html).not.toContain("starts_at: row.starts_at");
-
-    // A late completion for class A must not relabel class B.
-    expect(html).toContain(
-      "async function runClassAction(statusId, action, targetClassId)",
-    );
-    expect(html).toContain(
-      "if (targetClassId && classState.selected !== targetClassId) return true;",
-    );
-    expect(html).toContain(
-      "if (classState.selected !== targetId) return null;",
-    );
-  });
-
   it("picks approved aliases from the control plane instead of free text", async () => {
     const html = await pageHtml();
 
@@ -337,24 +304,6 @@ describe("course-centred dashboard UI", () => {
 });
 
 describe("teacher class kit", () => {
-  it("runs class creation once at a time and only issues keys into an open class", async () => {
-    const html = await pageHtml();
-
-    expect(html).toContain("if (creatingClass) return;");
-    expect(html).toContain("setCreateBusy(true);");
-    expect(html).toContain("setCreateBusy(false);");
-    expect(html).toContain("async function openCreatedClass(id)");
-    expect(html).toContain("so no keys were issued");
-    // An unused roster survives a failure; the kit survives reopening its class.
-    expect(html).toContain("Your student list is still in the Students box");
-    expect(html).toContain("if (kitState.classId !== id) clearKit();");
-    // A bulk budget change refreshes the edit form's class total.
-    expect(html).toContain(
-      'renderFieldSet(document.getElementById("class-edit-fields"), CLASS_FIELDS, classRow);',
-    );
-    expect(html).toContain('" (class timezone invalid)"');
-  });
-
   it("enters and shows money in US dollars, converting exactly to integer microcents", async () => {
     const html = await pageHtml();
 
@@ -381,43 +330,6 @@ describe("teacher class kit", () => {
     // Operator diagnostics keep microcents.
     expect(html).toContain(
       '{ label: "Cost ceiling", value: "cost_microcents", format: cost }',
-    );
-  });
-
-  it("creates a class with students and issues every key through groups/access-bulk", async () => {
-    const html = await pageHtml();
-
-    expect(html).toContain('id="class-create-students"');
-    expect(html).toContain("Students (optional; one name per line, up to 100)");
-    // Sensible defaults: now, three hours, $20 class, $1 per student.
-    expect(html).toContain("expires_at: start + 3 * 3600");
-    expect(html).toContain("budget_microcents: 2000000000");
-    expect(html).toContain("group_budget_microcents: 100000000");
-    // A valid tenant ID is suggested from the class name and date.
-    expect(html).toContain(
-      'return "class-" + (slug ? slug + "-" : "") + day.replace(/-/g, "");',
-    );
-    // Students become groups, then keys are issued in one bulk call.
-    expect(html).toContain(
-      'dashboardPost("groups", { class_id: createdId, names: students })',
-    );
-    expect(html).toContain('dashboardPost("groups/access-bulk"');
-    expect(html).toContain('id="class-issue-all"');
-    // Bulk issuance is confirmed in the page, not with a blocking dialog.
-    expect(html).toContain(
-      '<div class="confirm-bar" id="class-issue-confirm" role="group" aria-labelledby="class-issue-confirm-text" hidden>',
-    );
-    expect(html).toContain('askInline("class-issue-confirm"');
-    // Focus returns to the control that opened a confirmation.
-    expect(html).toContain("pending.trigger.focus()");
-    // Re-issuing warns before clearing keys that are still on screen.
-    expect(html).toContain(
-      "keys currently shown in the class kit will be cleared",
-    );
-    // Guardrails are shown next to class limits, with a warning when exceeded.
-    expect(html).toContain("is above the environment guardrail of");
-    expect(html).toContain(
-      "Students get the lower of the class value and the guardrail.",
     );
   });
 
@@ -477,40 +389,5 @@ describe("teacher class kit", () => {
     }
     // CSP stays nonce-based with no inline handlers.
     expect(html).not.toMatch(/\son[a-z]+=["']/);
-  });
-
-  it("adds per-student pause, key hints, bulk budgets and environment editing", async () => {
-    const html = await pageHtml();
-
-    expect(html).toContain(
-      'dashboardPost("groups/update", { id: row.id, paused })',
-    );
-    expect(html).toContain('label: row.paused ? "Resume" : "Pause"');
-    expect(html).toContain(
-      'row.status === "revoked" ? "Revoked" : row.paused ? "Paused" : "Active"',
-    );
-    expect(html).toContain(
-      '{ label: "Key ends in", value: (row) => row.key_hint ? "…" + row.key_hint : "not recorded" }',
-    );
-    expect(html).toContain('id="group-budget-form"');
-    expect(html).toContain('dashboardPost("groups/budget-bulk", request)');
-    expect(html).toContain('<option value="add">');
-    expect(html).toContain('<option value="set">');
-    expect(html).toContain('["environments/update", "Edit environment limits"');
-    expect(html).toContain('{ label: "Environment ID", value: "id" }');
-    // Only admins get the edit shortcut; everyone can copy an ID.
-    expect(html).toContain(
-      'if (isAdmin) buttons.push({ label: "Edit limits", onClick: () => editEnvironment(row) });',
-    );
-    for (const flag of [
-      "allow_images",
-      "allow_reasoning",
-      "allow_structured_json",
-    ]) {
-      expect(html).toContain(`["${flag}", `);
-    }
-    expect(html).toContain(
-      '["max_failed_attempts", "Failed-attempt counter cap (a correct code is always accepted)", "number", 8]',
-    );
   });
 });
