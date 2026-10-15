@@ -1809,8 +1809,9 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       // another writer's newer change, for example re-approving an alias someone removed.
       // The baseline is read back from the rendered form, so it compares like for like.
       let classEditBase = {};
-      // Editor baselines with a save in flight; see the class and group editor submits.
-      const savingBases = new WeakSet();
+      // Classes and groups with a save in flight, keyed by resource rather than editor
+      // baseline so a reopened editor cannot start an overlapping save.
+      const savingResources = new Set();
       function renderClassEditFields(row) {
         renderFieldSet(document.getElementById("class-edit-fields"), CLASS_FIELDS, row);
         Object.assign(classEditBase, readFieldSet(document.getElementById("class-edit-fields")));
@@ -2668,18 +2669,19 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         // Reopening a class draws a new editor (and baseline) from the row as listed then;
         // only the baseline this save was compared with may take the saved values.
         const base = classEditBase;
-        // Saves against one baseline are serialized: a second patch computed before the
-        // first is acknowledged would omit a value changed back to the old baseline.
-        if (savingBases.has(base)) { setStatus("class-edit-status", "Wait for the previous save to finish, then save again.", "error"); return; }
+        // Saves to one class are serialized: a second patch computed before the first is
+        // acknowledged would omit a value changed back to the old baseline.
+        const saving = "class:" + targetId;
+        if (savingResources.has(saving)) { setStatus("class-edit-status", "Wait for the previous save to finish, then save again.", "error"); return; }
         for (const key of Object.keys(payload)) if (key in base && JSON.stringify(payload[key]) === JSON.stringify(base[key])) delete payload[key];
         payload.id = targetId;
-        savingBases.add(base);
+        savingResources.add(saving);
         await runClassAction("class-edit-status", async () => {
           try {
             await dashboardPost("classes/update", payload);
             if (classState.selected === targetId && classEditBase === base) Object.assign(base, edited);
           } finally {
-            savingBases.delete(base);
+            savingResources.delete(saving);
           }
           await loadClasses();
           await loadUsage();
@@ -2779,13 +2781,14 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         if (payload.starts_at && payload.expires_at && payload.expires_at <= payload.starts_at) { setStatus("group-edit-status", "The end time must be after the start time.", "error"); return; }
         const edited = { ...payload };
         const base = groupEditBase;
-        if (savingBases.has(base)) { setStatus("group-edit-status", "Wait for the previous save to finish, then save again.", "error"); return; }
+        const saving = "group:" + owner.groupId;
+        if (savingResources.has(saving)) { setStatus("group-edit-status", "Wait for the previous save to finish, then save again.", "error"); return; }
         for (const key of Object.keys(payload)) if (key in base && JSON.stringify(payload[key]) === JSON.stringify(base[key])) delete payload[key];
         payload.id = owner.groupId;
         // Cleanup is owned by the editor session that submitted: another group, a reopened
         // draft, or another class must not be hidden or cleared by an older completion.
         const owns = () => groupEditorOwnedBy(owner);
-        savingBases.add(base);
+        savingResources.add(saving);
         await runOwnedAction("group-edit-status", owns, async () => {
           try {
             await dashboardPost("groups/update", payload);
@@ -2793,7 +2796,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
             // reopened editor has its own baseline, drawn from the row it shows.
             if (classState.selected === owner.classId && classState.groupEditing === owner.groupId && groupEditBase === base) Object.assign(base, edited);
           } finally {
-            savingBases.delete(base);
+            savingResources.delete(saving);
           }
           await Promise.all([loadGroups(), loadUsage()]);
           return "Group updated.";
