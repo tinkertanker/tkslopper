@@ -856,7 +856,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
                       <label>Amount per student (US$)<input name="budget" type="text" inputmode="decimal" placeholder="1.00" required></label>
                       <label>New class total (US$, optional)<input name="class_budget" type="text" inputmode="decimal" placeholder="Leave blank to keep"></label>
                     </div>
-                    <p class="field-note">Applies to every group that is not revoked, including paused ones. Allocations are lifetime caps; the class total still caps everyone together, so raise it too if students would otherwise share too little.</p>
+                    <p class="field-note">Applies to every group that is not revoked, including paused ones, up to the first 100 by name per change. Allocations are lifetime caps; the class total still caps everyone together, so raise it too if students would otherwise share too little.</p>
                     <button id="group-budget-submit" type="submit">Review budget change</button>
                   </form>
                   <div class="confirm-bar" id="group-budget-confirm" role="group" aria-labelledby="group-budget-confirm-text" hidden>
@@ -1288,7 +1288,9 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         const current = { product_id: row.product_id, environment_id: row.id, token_ttl_seconds: row.token_ttl_seconds, rpm_limit: row.rpm_limit, tpm_limit: row.tpm_limit, concurrency_limit: row.concurrency_limit, daily_budget_microcents: dollarText(row.daily_budget_microcents), max_request_bytes: row.max_request_bytes };
         for (const [name, value] of Object.entries(current)) {
           const input = fields.querySelector('[name="' + name + '"]');
-          if (input && value !== undefined && value !== null) input.value = String(value);
+          // The prefill is remembered so an untouched setting is not sent: the row may be
+          // stale, and resending it would undo a newer change to that setting.
+          if (input && value !== undefined && value !== null) { input.value = String(value); input.dataset.prefill = input.value; }
         }
         set("admin-result-status", "Editing limits for environment " + row.name + " (" + row.id + "). Change what you need, then review and apply.");
         document.getElementById("admin-form").scrollIntoView({ block: "start" });
@@ -1299,12 +1301,19 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         event.preventDefault();
         const payload = {};
         const selected = operation.value;
+        // Prefilled settings that are sent become the new baseline once applied, so a
+        // later change back to the originally shown value is still sent.
+        const applied = [];
         // Dollar amounts are converted to integer microcents before anything is sent.
         for (const [name, label, type] of operations.find((item) => item[0] === selected)[2]) {
           const input = fields.querySelector('[name="' + name + '"]');
           if (type === "checkbox") { payload[name] = input.checked; continue; }
           const value = input.value;
           if (value === "") continue;
+          if (selected === "environments/update" && name !== "product_id" && name !== "environment_id" && input.dataset.prefill !== undefined) {
+            if (input.dataset.prefill === value) continue;
+            applied.push([input, value]);
+          }
           if (type === "dollars") {
             const parsed = parseDollars(value);
             if (parsed.error) { set("admin-result-status", label + " " + parsed.error + "."); return; }
@@ -1322,6 +1331,14 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           const result = await response.json();
           if (!response.ok) { if (response.status === 401 || response.status === 403) { adminPanel.hidden = true; applyRole(false); status.textContent = "Admin access expired or was revoked. Reload to check your login."; } throw new Error(response.status >= 500 ? "Server error; check activity before retrying because the operation may have completed." : result.error?.message || "Operation rejected."); }
           if (selected === "admins") await loadDashboard();
+          for (const [input, value] of applied) input.dataset.prefill = value;
+          if (selected === "environments/update" && dashboardData && Array.isArray(dashboardData.environments)) {
+            const row = dashboardData.environments.find((item) => item.id === result.id && item.product_id === result.product_id);
+            if (row) {
+              for (const key of ["policy_version", "token_ttl_seconds", "rpm_limit", "tpm_limit", "concurrency_limit", "daily_budget_microcents", "max_request_bytes"]) row[key] = result[key];
+              renderEnvironments();
+            }
+          }
           set("admin-result-status", selected === "environments/update" ? "Environment limits updated (policy version " + result.policy_version + "). Refresh to see them in Overview and Classes." : "Operation completed. Copy any credentials before refreshing the dashboard.");
           if (!adminPanel.hidden) { set("admin-result-data", JSON.stringify(result, null, 2)); document.getElementById("admin-result").hidden = false; }
         } catch (error) {
@@ -1416,6 +1433,9 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
             input = document.createElement("input");
             input.type = "datetime-local";
             input.value = localDateTime(values[name]);
+            // The input only has minute precision; remember the exact stored second so
+            // an untouched field resends it unchanged instead of a truncated value.
+            if (input.value) { input.dataset.shown = input.value; input.dataset.seconds = String(values[name]); }
           } else if (type === "number") {
             input = document.createElement("input");
             input.type = "number";
@@ -1445,7 +1465,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         for (const input of container.querySelectorAll("input, select")) {
           const name = input.name;
           if (!name) continue;
-          if (input.type === "datetime-local") { payload[name] = input.value ? Math.floor(new Date(input.value).getTime() / 1000) : null; continue; }
+          if (input.type === "datetime-local") { payload[name] = !input.value ? null : input.dataset.shown === input.value ? Number(input.dataset.seconds) : Math.floor(new Date(input.value).getTime() / 1000); continue; }
           if (input.type === "number") { payload[name] = input.value === "" ? null : Number(input.value); continue; }
           if (input.dataset.kind === "dollars") { const parsed = parseDollars(input.value); payload[name] = parsed.value === undefined ? null : parsed.value; continue; }
           if (name === "instructors") { payload[name] = input.value.split(",").map((item) => item.trim()).filter(Boolean); continue; }
@@ -1654,11 +1674,11 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         fillScopeSelectors(document.getElementById("class-create-fields"));
         const row = classState.classes.find((item) => item.id === classState.selected);
         if (row) {
-          renderAliasEditor(document.getElementById("class-edit-aliases"), row.environment_id, row.capabilities || []);
+          renderClassEditAliases(row);
           set("class-edit-alias-note", aliasNoteText(row.environment_id));
         }
         const groupRow = classState.detail && (classState.detail.groups || []).find((group) => group.id === classState.groupEditing);
-        if (groupRow) renderGroupAliases(groupRow);
+        if (groupRow) { renderGroupAliases(groupRow); groupEditBase.capabilities = readGroupAliases(); }
         document.getElementById("class-options-note").textContent = classOptionsTruncated ? "The environment and alias options are truncated; only the first page is shown." : "";
       }
 
@@ -1784,6 +1804,22 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         if (row.instructors && row.instructors.length) parts.splice(1, 0, "Instructors: " + row.instructors.join(", "));
         return parts.join(" · ");
       }
+      // The class editor sends only what the operator changed. classes/update writes only
+      // supplied fields, so resending a value read when the form was drawn would undo
+      // another writer's newer change, for example re-approving an alias someone removed.
+      // The baseline is read back from the rendered form, so it compares like for like.
+      let classEditBase = {};
+      // Classes and groups with a save in flight, keyed by resource rather than editor
+      // baseline so a reopened editor cannot start an overlapping save.
+      const savingResources = new Set();
+      function renderClassEditFields(row) {
+        renderFieldSet(document.getElementById("class-edit-fields"), CLASS_FIELDS, row);
+        Object.assign(classEditBase, readFieldSet(document.getElementById("class-edit-fields")));
+      }
+      function renderClassEditAliases(row) {
+        renderAliasEditor(document.getElementById("class-edit-aliases"), row.environment_id, row.capabilities || []);
+        classEditBase.capabilities = readAliases(document.getElementById("class-edit-aliases"));
+      }
       async function selectClass(id) {
         const row = classState.classes.find((item) => item.id === id);
         if (!row) return;
@@ -1809,8 +1845,9 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         document.getElementById("class-detail").hidden = false;
         set("class-detail-heading", row.name);
         set("class-detail-meta", classMeta(row));
-        renderFieldSet(document.getElementById("class-edit-fields"), CLASS_FIELDS, row);
-        renderAliasEditor(document.getElementById("class-edit-aliases"), row.environment_id, row.capabilities || []);
+        classEditBase = {};
+        renderClassEditFields(row);
+        renderClassEditAliases(row);
         set("class-edit-alias-note", aliasNoteText(row.environment_id));
         renderEditLimits();
         updatePauseButton(row);
@@ -1867,7 +1904,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         for (const code of codes) codeCounts[code.classroom_group_id] = (codeCounts[code.classroom_group_id] || 0) + 1;
         const zone = classTimeZone();
         const inClassTime = (value) => zonedTime(value, zone);
-        for (const key of keys) if (!key.revoked_at) keyCounts[key.group_id] = (keyCounts[key.group_id] || 0) + 1;
+        for (const key of keys) if (credentialState(key.revoked_at, key.expires_at) === "Active") keyCounts[key.group_id] = (keyCounts[key.group_id] || 0) + 1;
         renderTable("class-groups", [
           { label: "Group", value: "name", bounded: true },
           { label: "Status", value: groupStatusLabel, pill: true },
@@ -1894,6 +1931,12 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           } },
         ], groups);
       }
+      // A key or join code past its own expires_at is refused by the gateway and cannot
+      // be rotated, so it is shown as expired even though it was never revoked.
+      function credentialState(revoked, expiresAt) {
+        if (revoked) return "Revoked";
+        return typeof expiresAt === "number" && expiresAt <= Math.floor(Date.now() / 1000) ? "Expired" : "Active";
+      }
       function renderKeys() {
         const detail = classState.detail || { groups: [], keys: [] };
         const groupNames = Object.fromEntries((detail.groups || []).map((group) => [group.id, group.name]));
@@ -1904,11 +1947,13 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           { label: "Key ID", value: "id" },
           { label: "Created (class time)", value: (row) => zonedTime(row.created_at, zone) },
           { label: "Expires (class time)", value: (row) => row.expires_at === null || row.expires_at === undefined ? "Inherits group schedule" : zonedTime(row.expires_at, zone) },
-          { label: "State", value: (row) => row.revoked_at ? "Revoked" : "Active", pill: true },
-          { label: "Actions", buttons: (row) => row.revoked_at ? [] : [
-            { label: "Rotate", disabled: credentialPending, onClick: () => rotateKey(row.id) },
-            { label: "Revoke", danger: true, onClick: () => revokeKey(row.id) },
-          ] },
+          { label: "State", value: (row) => credentialState(row.revoked_at, row.expires_at), pill: true },
+          { label: "Actions", buttons: (row) => {
+            const state = credentialState(row.revoked_at, row.expires_at);
+            if (state === "Revoked") return [];
+            const revoke = { label: "Revoke", danger: true, onClick: () => revokeKey(row.id) };
+            return state === "Expired" ? [revoke] : [{ label: "Rotate", disabled: credentialPending, onClick: () => rotateKey(row.id) }, revoke];
+          } },
         ], Array.isArray(detail.keys) ? detail.keys : []);
       }
       function renderCodes() {
@@ -1918,7 +1963,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           { label: "Code ID", value: "id" },
           { label: "Group", value: (row) => groupNames[row.classroom_group_id] || row.classroom_group_id },
           { label: "Expires (class time)", value: (row) => zonedTime(row.expires_at, classTimeZone()) },
-          { label: "State", value: (row) => row.disabled ? "Disabled" : "Active", pill: true },
+          { label: "State", value: (row) => row.disabled ? "Disabled" : credentialState(false, row.expires_at), pill: true },
           { label: "Activations (devices, not spend)", value: (row) => number(row.activation_count) + " / " + number(row.max_activations) },
           { label: "Actions", buttons: (row) => row.disabled ? [] : [{ label: "Revoke", danger: true, onClick: () => revokeCode(row.id) }] },
         ], Array.isArray(detail.codes) ? detail.codes : []);
@@ -2032,7 +2077,11 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         const classroom = classState.classes.find((row) => row.id === classState.selected);
         return (group ? group.name : groupId) + " in " + (classroom ? classroom.name : classState.selected);
       }
-      function showSecret(result, context, groupId) {
+      // classRow and group are captured when the action starts: the operator may open
+      // another class while the request is in flight, and the card must still describe
+      // the class and group the credential was issued for.
+      // keyExpiresAt is the key's own end: a rotated key inherits the old key's expiry.
+      function showSecret(result, context, classRow, group, keyExpiresAt) {
         const value = result.api_key || result.access_code || "";
         document.getElementById("class-secret-value").textContent = value;
         document.getElementById("class-secret").hidden = !value;
@@ -2042,9 +2091,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         cardBox.replaceChildren();
         cardBox.hidden = true;
         if (result.api_key) {
-          const classRow = classState.classes.find((row) => row.id === classState.selected);
-          const group = classState.detail?.groups?.find((row) => row.id === groupId);
-          cardBox.append(studentCard(cardEntry(classRow, group, { api_key: result.api_key, expires_at: null }, group ? group.name : context)));
+          cardBox.append(studentCard(cardEntry(classRow, group, { api_key: result.api_key, expires_at: keyExpiresAt ?? null }, group ? group.name : context)));
           cardBox.hidden = false;
         }
         setStatus("class-secret-status", value ? ("For " + context + ". " + (result.api_key ? "Shown once. This is a direct gateway API key; it does not activate devices." : "Shown once. This join code activates devices through the existing activation endpoint.")) : "", value ? "ok" : "");
@@ -2336,7 +2383,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         gatewayNote.hidden = !gatewayNote.textContent;
         const summary = ["Issued " + number(kitState.entries.length) + " key" + (kitState.entries.length === 1 ? "" : "s") + " for " + kitState.className + "."];
         if (kitState.skipped.length) summary.push(number(kitState.skipped.length) + " skipped (see below).");
-        if (result.truncated) summary.push("Only the first 100 groups were included; issue again with the remaining groups.");
+        if (result.truncated) summary.push("Only the first 100 students by name were considered for keys. Issuing for all students again would select these same students, so use API key on each remaining student's group.");
         setStatus("class-kit-summary", summary.join(" "), kitState.entries.length ? "ok" : "error");
         renderTable("class-kit-keys", [
           { label: "Student", value: "name", bounded: true },
@@ -2407,6 +2454,10 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           const row = classState.classes.find((item) => item.id === classId);
           return row ? row.name : classId;
         };
+        // The class's groups are captured before the request: if the operator opens another
+        // class meanwhile, the kit must still narrow each card to its own group's aliases.
+        const groupsOf = (fallback) => classState.selected === classId && classState.detail && Array.isArray(classState.detail.groups) ? classState.detail.groups : fallback;
+        const startGroups = groupsOf([]);
         await runCredentialAction(async () => {
           clearSecret();
           clearKit();
@@ -2417,7 +2468,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
             const classRow = classState.classes.find((row) => row.id === classId);
             // Keys exist now whatever the operator did meanwhile, so the kit is always shown,
             // headed with its own class name, and the status names that class too.
-            showKit(result, classRow || { id: classId, name: classId, capabilities: [], timezone: "UTC" }, classState.selected === classId && classState.detail ? classState.detail.groups : []);
+            showKit(result, classRow || { id: classId, name: classId, capabilities: [], timezone: "UTC" }, groupsOf(startGroups));
             issued = true;
             setStatus(statusId, "Issued " + number((result.keys || []).length) + " student key(s) for " + className() + ((result.skipped || []).length ? "; " + number(result.skipped.length) + " skipped." : ".") + " Copy, download or print them now.", "ok");
           } catch (error) {
@@ -2439,12 +2490,14 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         const classId = classState.selected;
         const label = kind === "api_key" ? "API key" : "join code";
         const context = groupContext(groupId);
+        const classRow = classState.classes.find((row) => row.id === classId);
+        const group = classState.detail?.groups?.find((row) => row.id === groupId);
         if (!window.confirm("Issue a new " + label + " for " + context + "? It is shown once and cannot be retrieved later.")) return;
         await runCredentialAction(async () => {
           clearSecret();
           await runClassAction("group-status", async () => {
             const result = await dashboardPost("groups/access", { group_id: groupId, kind });
-            showSecret(result, context, groupId);
+            showSecret(result, context, classRow, group);
             await loadGroups();
             return "Issued " + label + " for " + context + ".";
           }, classId);
@@ -2455,12 +2508,14 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         const classId = classState.selected;
         const key = classState.detail?.keys?.find((row) => row.id === id);
         const context = groupContext(key?.group_id || id);
+        const classRow = classState.classes.find((row) => row.id === classId);
+        const group = classState.detail?.groups?.find((row) => row.id === key?.group_id);
         if (!window.confirm("Rotate the API key for " + context + "? The old key is invalidated immediately; the group and its spend are unchanged.")) return;
         await runCredentialAction(async () => {
           clearSecret();
           await runClassAction("group-status", async () => {
             const result = await dashboardPost("groups/rotate", { id });
-            showSecret(result, context, key?.group_id);
+            showSecret(result, context, classRow, group, key?.expires_at);
             await loadGroups();
             return "Rotated the API key for " + context + ". The group and its spend are unchanged.";
           }, classId);
@@ -2493,6 +2548,16 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           return "Group revoked.";
         }, classId);
       }
+      // Like the class editor, the group editor sends only what the operator changed.
+      // groups/update writes only supplied fields, so resending the values the editor was
+      // opened with would undo another writer's newer change; and any supplied schedule
+      // field makes the server require a future end, so resending an ended window would
+      // block even a rename or budget change.
+      let groupEditBase = {};
+      function readGroupAliases() {
+        const aliases = readAliases(document.getElementById("group-edit-aliases"));
+        return aliases.length ? aliases : null;
+      }
       function openGroupEditor(row) {
         classState.groupEditing = row.id;
         // A new editor session invalidates any in-flight save for the previous draft,
@@ -2500,6 +2565,8 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         classState.groupEditorRevision += 1;
         renderFieldSet(document.getElementById("group-edit-fields"), GROUP_FIELDS, row);
         renderGroupAliases(row);
+        groupEditBase = readFieldSet(document.getElementById("group-edit-fields"));
+        groupEditBase.capabilities = readGroupAliases();
         document.getElementById("group-edit-panel").hidden = false;
         set("group-edit-heading", "Adjust group: " + row.name);
         setStatus("group-edit-status", "", "");
@@ -2598,9 +2665,24 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         payload.capabilities = readAliases(document.getElementById("class-edit-aliases"));
         const problem = validateClassPayload(payload);
         if (problem) { setStatus("class-edit-status", problem, "error"); return; }
+        const edited = { ...payload };
+        // Reopening a class draws a new editor (and baseline) from the row as listed then;
+        // only the baseline this save was compared with may take the saved values.
+        const base = classEditBase;
+        // Saves to one class are serialized: a second patch computed before the first is
+        // acknowledged would omit a value changed back to the old baseline.
+        const saving = "class:" + targetId;
+        if (savingResources.has(saving)) { setStatus("class-edit-status", "Wait for the previous save to finish, then save again.", "error"); return; }
+        for (const key of Object.keys(payload)) if (key in base && JSON.stringify(payload[key]) === JSON.stringify(base[key])) delete payload[key];
         payload.id = targetId;
+        savingResources.add(saving);
         await runClassAction("class-edit-status", async () => {
-          await dashboardPost("classes/update", payload);
+          try {
+            await dashboardPost("classes/update", payload);
+            if (classState.selected === targetId && classEditBase === base) Object.assign(base, edited);
+          } finally {
+            savingResources.delete(saving);
+          }
           await loadClasses();
           await loadUsage();
           if (classState.selected !== targetId) return null;
@@ -2694,16 +2776,28 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         const moneyProblem = dollarProblem(document.getElementById("group-edit-fields"));
         if (moneyProblem) { setStatus("group-edit-status", moneyProblem, "error"); return; }
         const payload = readFieldSet(document.getElementById("group-edit-fields"));
-        payload.capabilities = readAliases(document.getElementById("group-edit-aliases"));
-        if (Array.isArray(payload.capabilities) && !payload.capabilities.length) payload.capabilities = null;
+        payload.capabilities = readGroupAliases();
         if (payload.budget_microcents === null || !Number.isFinite(payload.budget_microcents)) { setStatus("group-edit-status", "A group budget is required.", "error"); return; }
         if (payload.starts_at && payload.expires_at && payload.expires_at <= payload.starts_at) { setStatus("group-edit-status", "The end time must be after the start time.", "error"); return; }
+        const edited = { ...payload };
+        const base = groupEditBase;
+        const saving = "group:" + owner.groupId;
+        if (savingResources.has(saving)) { setStatus("group-edit-status", "Wait for the previous save to finish, then save again.", "error"); return; }
+        for (const key of Object.keys(payload)) if (key in base && JSON.stringify(payload[key]) === JSON.stringify(base[key])) delete payload[key];
         payload.id = owner.groupId;
         // Cleanup is owned by the editor session that submitted: another group, a reopened
         // draft, or another class must not be hidden or cleared by an older completion.
         const owns = () => groupEditorOwnedBy(owner);
+        savingResources.add(saving);
         await runOwnedAction("group-edit-status", owns, async () => {
-          await dashboardPost("groups/update", payload);
+          try {
+            await dashboardPost("groups/update", payload);
+            // A newer draft in the same editor is compared with what was just saved. A
+            // reopened editor has its own baseline, drawn from the row it shows.
+            if (classState.selected === owner.classId && classState.groupEditing === owner.groupId && groupEditBase === base) Object.assign(base, edited);
+          } finally {
+            savingResources.delete(saving);
+          }
           await Promise.all([loadGroups(), loadUsage()]);
           return "Group updated.";
         }, () => {
@@ -2781,8 +2875,10 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         const request = { class_id: classId, mode, budget_microcents: amount.value };
         if (!total.empty) request.class_budget_microcents = total.value;
         const change = mode === "set" ? "Set every student's allocation to " + money(amount.value) : "Add " + money(amount.value) + " to every student's allocation";
+        // groups/budget-bulk changes at most the first 100 groups by name per request.
+        const capped = groups.length > 100 ? " Only the first 100 students by name are changed; adjust the other " + number(groups.length - 100) + " individually." : "";
         setStatus("group-budget-status", "", "");
-        askInline("group-budget-confirm", change + " (" + number(groups.length) + " students in " + row.name + ")" + (total.empty ? "" : " and set the class total to " + money(total.value)) + "?", () => {
+        askInline("group-budget-confirm", change + " (" + number(Math.min(groups.length, 100)) + " students in " + row.name + ")" + (total.empty ? "" : " and set the class total to " + money(total.value)) + "?" + capped, () => {
           if (classState.selected !== classId) return undefined;
           return runClassAction("group-budget-status", async () => {
             const result = await dashboardPost("groups/budget-bulk", request);
@@ -2795,13 +2891,14 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
               // The class total may have changed: refresh the summary and the edit form so
               // a stale total cannot be saved back over it.
               set("class-detail-meta", classMeta(classRow));
-              renderFieldSet(document.getElementById("class-edit-fields"), CLASS_FIELDS, classRow);
+              renderClassEditFields(classRow);
               renderEditLimits();
             }
             const classTotal = result.class_budget_microcents ?? (classRow ? classRow.budget_microcents : null);
             const parts = [(mode === "set" ? "Set " : "Topped up ") + number(updated.length) + " student allocation(s)" + (mode === "set" ? " to " + money(amount.value) : " by " + money(amount.value)) + "."];
             if (result.class_budget_microcents !== undefined) parts.push("Class total is now " + money(result.class_budget_microcents) + ".");
             if ((result.skipped || []).length) parts.push(number(result.skipped.length) + " skipped.");
+            if (result.truncated) parts.push("Only the first 100 students by name were changed; the others keep their previous allocation, so adjust them individually.");
             if (classTotal !== null && sum > BigInt(classTotal)) parts.push("Allocations now add up to " + money(sum) + ", more than the class total of " + money(classTotal) + "; the class total is reached first.");
             return parts.join(" ");
           }, classId);

@@ -45,7 +45,8 @@ const providerChatResponseSchema = z
           .passthrough(),
       )
       .min(1),
-    usage: z.object({}).passthrough().optional(),
+    // Null usage is omitted usage: settle conservatively, never fail closed.
+    usage: z.object({}).passthrough().nullable().optional(),
   })
   .passthrough();
 
@@ -97,7 +98,7 @@ const providerResponsesResponseSchema = z
       .nullable()
       .optional(),
     output: z.array(responseOutputSchema),
-    usage: z.object({}).passthrough().optional(),
+    usage: z.object({}).passthrough().nullable().optional(),
   })
   .passthrough();
 

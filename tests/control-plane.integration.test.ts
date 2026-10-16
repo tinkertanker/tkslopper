@@ -1659,6 +1659,7 @@ describe("public alias presentation", () => {
     for (const invalid of [
       { display_name: " " },
       { display_name: "x".repeat(121) },
+      { display_name: "\u0000Claude" },
       { provider: "https://private-route.invalid" },
       { tier: "unreviewed" },
     ]) {
@@ -1721,6 +1722,19 @@ describe("environment settings", () => {
       daily_budget_microcents: 2_000_000_000,
       max_request_bytes: 1_048_576,
     });
+  });
+
+  it("returns 404 without writing when creating an environment for an unknown product", async () => {
+    const response = await admin("/admin/v1/environments", {
+      product_id: "prod_missing",
+      name: "orphan",
+      audience: "control:orphan",
+    });
+    expect(response.status, await response.clone().text()).toBe(404);
+    const rows = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM environments WHERE name = 'orphan'",
+    ).first<{ count: number }>();
+    expect(rows).toEqual({ count: 0 });
   });
 
   it("writes only supplied limits, bumps the policy version, and audits", async () => {

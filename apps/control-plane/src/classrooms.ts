@@ -629,12 +629,29 @@ async function adminUpdateGroup(
   const expiresAt =
     body.expires_at !== undefined ? body.expires_at : group.expires_at;
   const now = nowSeconds();
-  if (body.starts_at !== undefined || body.expires_at !== undefined)
+  // As for classes, an ended group can still be topped up or re-limited:
+  // resending the stored schedule is not a change, and only a changed end
+  // must lie in the future.
+  const startChanged = startsAt !== group.starts_at;
+  const endChanged = expiresAt !== group.expires_at;
+  // A class reschedule can leave a stored group bound outside the new class
+  // window. Policy already clamps it, so an untouched bound is judged by its
+  // effective value rather than blocking an edit of the other bound.
+  if (startChanged || endChanged)
     validateGroupWindow(
-      { starts_at: startsAt, expires_at: expiresAt },
+      {
+        starts_at:
+          startChanged || startsAt === null
+            ? startsAt
+            : Math.max(startsAt, class_.starts_at),
+        expires_at:
+          endChanged || expiresAt === null
+            ? expiresAt
+            : Math.min(expiresAt, class_.expires_at),
+      },
       { starts_at: class_.starts_at, expires_at: class_.expires_at },
       now,
-      { requireFutureEnd: true },
+      { requireFutureEnd: endChanged },
     );
 
   // Only supplied fields are written, so a stale read cannot restore policy
@@ -899,6 +916,14 @@ async function adminRotateGroupKey(
   if (!key) throw new HttpError(404, "not_found", "group key not found");
   if (key.revoked_at !== null)
     throw new HttpError(409, "conflict", "group key is already revoked");
+  // The replacement inherits the old key's expiry, so rotating an expired key
+  // would revoke it and hand out a key that is already unusable.
+  if (key.expires_at !== null && key.expires_at <= nowSeconds())
+    throw new HttpError(
+      409,
+      "conflict",
+      "group key has expired; issue a new key instead",
+    );
   const { group, class: class_ } = await requireGroupContext(env, key.group_id);
   if (class_.status === "revoked")
     throw new HttpError(409, "conflict", "class is revoked");

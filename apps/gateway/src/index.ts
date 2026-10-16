@@ -939,12 +939,11 @@ async function handleInference(
       pseudonymize(policy.principal_id, env.TOKEN_SIGNING_SECRET),
     ]);
     const globalMaxBody = Number(env.MAX_BODY_BYTES);
-    const maxBody = Math.min(
+    const gatewayMaxBody =
       Number.isSafeInteger(globalMaxBody) && globalMaxBody > 0
         ? globalMaxBody
-        : 1_048_576,
-      policy.max_request_bytes,
-    );
+        : 1_048_576;
+    const maxBody = Math.min(gatewayMaxBody, policy.max_request_bytes);
     const parsedRequest = parseGatewayRequest(
       endpoint,
       await readJsonBody(request, maxBody),
@@ -1176,7 +1175,9 @@ async function handleInference(
           route.profile,
         ),
         prepared: preparedProvider,
-        maxResponseBytes: Math.min(maxBody, 8_388_608),
+        // The environment's request limit bounds prompts, not answers: a
+        // small prompt cap must not turn a long paid answer into a 502.
+        maxResponseBytes: Math.min(gatewayMaxBody, 8_388_608),
         signal: controller.signal,
         // Cloudflare retains at most five entries. D1 supplies policy/route
         // provenance through the shared request ID.

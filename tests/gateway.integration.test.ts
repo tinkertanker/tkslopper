@@ -237,7 +237,9 @@ function abortableProviderFetch(onStart?: () => void) {
   });
 }
 
-function providerChatResponse(usage?: Record<string, unknown>): Response {
+function providerChatResponse(
+  usage?: Record<string, unknown> | null,
+): Response {
   return Response.json({
     id: "chatcmpl_accounting_fixture",
     object: "chat.completion",
@@ -867,6 +869,13 @@ describe("Stage 0 failure-path accounting", () => {
     {
       name: "missing usage",
       usage: undefined,
+      expectedInput: undefined,
+      expectedOutput: 100,
+      exposesUsage: false,
+    },
+    {
+      name: "null usage",
+      usage: null,
       expectedInput: undefined,
       expectedOutput: 100,
       exposesUsage: false,
@@ -2121,6 +2130,44 @@ describe("student-facing gateway behaviour", () => {
       );
       expect(response.status).toBe(200);
       expect(sentBody(fetcher).max_tokens).toBe(4096);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not bound a provider answer by the environment's request size limit", async () => {
+    await env.DB.prepare(
+      "UPDATE environments SET max_request_bytes = 2048 WHERE id = 'env_vibbit'",
+    ).run();
+    const token = await grant();
+    const answer = "a".repeat(6000);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        Response.json({
+          id: "chatcmpl_long_answer",
+          object: "chat.completion",
+          model: "physical-fixture-v1",
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: answer },
+              finish_reason: "stop",
+            },
+          ],
+          usage: { prompt_tokens: 5, completion_tokens: 90 },
+        }),
+      ),
+    );
+    try {
+      const response = await handleGateway(
+        chatRequest(token),
+        upstreamEnv(5000),
+      );
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        choices: [{ message: { content: answer }, finish_reason: "stop" }],
+      });
     } finally {
       vi.unstubAllGlobals();
     }

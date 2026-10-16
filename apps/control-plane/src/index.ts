@@ -702,6 +702,12 @@ async function adminCreateEnvironment(
   actorHash: string,
 ): Promise<Response> {
   const body = await parseBody(request, environmentCreateSchema);
+  const product = await env.DB.prepare(
+    "SELECT 1 AS found FROM products WHERE id = ?",
+  )
+    .bind(body.product_id)
+    .first<{ found: number }>();
+  if (!product) throw new HttpError(404, "not_found", "product not found");
   const id = randomId("env");
   const now = nowSeconds();
   try {

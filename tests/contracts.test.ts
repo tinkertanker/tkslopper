@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  bearerToken,
   capabilitySchema,
   chatCompletionResponseSchema,
   chatRequestSchema,
@@ -31,6 +32,21 @@ import vibbitChatResponse from "./fixtures/vibbit-chat-response.json";
 import vibbitResponses from "./fixtures/vibbit-responses.json";
 
 describe("credentials and grants", () => {
+  it("reads a bearer credential with a case-insensitive scheme", () => {
+    const withAuthorization = (value: string) =>
+      new Request("https://gateway.example.invalid/v1/models", {
+        headers: { authorization: value },
+      });
+    expect(bearerToken(withAuthorization("Bearer tkgk_abc"))).toBe("tkgk_abc");
+    expect(bearerToken(withAuthorization("bearer tkgk_abc"))).toBe("tkgk_abc");
+    expect(bearerToken(withAuthorization("BEARER tkgk_abc"))).toBe("tkgk_abc");
+    expect(
+      bearerToken(withAuthorization("Basic dXNlcjpwYXNz")),
+    ).toBeUndefined();
+    expect(bearerToken(withAuthorization("Bearer"))).toBeUndefined();
+    expect(bearerToken(new Request("https://x.invalid/"))).toBeUndefined();
+  });
+
   it("stores salted and peppered credential hashes and parses the opaque envelope", async () => {
     const credential = createOpaqueCredential("service");
     expect(parseOpaqueCredential(credential.value, "service")).toEqual({
@@ -246,6 +262,42 @@ describe("normalized product request schema smoke", () => {
     expect(
       inspectGatewayRequest({ endpoint: "responses", body: image }),
     ).toMatchObject({ hasImages: true, reasoningEffort: undefined });
+  });
+
+  it("does not count URL strings inside a structured output schema as images", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        url: { type: "string" },
+        image_url: { type: "string" },
+      },
+      required: ["url", "image_url"],
+      additionalProperties: false,
+      examples: [
+        { url: "https://example.invalid/page", image_url: "cover.png" },
+      ],
+    };
+    const chat = chatRequestSchema.parse({
+      model: "text.chat.v1",
+      messages: [{ role: "user", content: "Extract the link" }],
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "link", strict: true, schema },
+      },
+    });
+    expect(
+      inspectGatewayRequest({ endpoint: "chat", body: chat }),
+    ).toMatchObject({ hasImages: false, hasStructuredJson: true });
+    const response = responsesRequestSchema.parse({
+      model: "text.chat.v1",
+      input: "Extract the link",
+      text: {
+        format: { type: "json_schema", name: "link", strict: true, schema },
+      },
+    });
+    expect(
+      inspectGatewayRequest({ endpoint: "responses", body: response }),
+    ).toMatchObject({ hasImages: false, hasStructuredJson: true });
   });
 
   it("accepts normalized Playground Pal Chat and Responses shapes", () => {

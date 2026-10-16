@@ -370,6 +370,12 @@ describe("classroom class lifecycle", () => {
       classBody({ starts_at: now() + 3600, expires_at: now() + 60 }),
     );
     expect(unordered.status).toBe(400);
+    // SQLite length() stops at NUL, so such a name would fail the stored
+    // CHECK and surface as a 500 instead of a validation error.
+    expect(
+      (await admin("/admin/v1/classes", classBody({ name: "\u0000Class" })))
+        .status,
+    ).toBe(400);
     expect(
       (await handleControlPlane(request("/admin/v1/classes", {}), controlEnv))
         .status,
@@ -605,6 +611,14 @@ describe("classroom group policy", () => {
     expect(
       (await admin("/admin/v1/groups", { class_id: classId, names: [] }))
         .status,
+    ).toBe(400);
+    expect(
+      (
+        await admin("/admin/v1/groups", {
+          class_id: classId,
+          names: ["\u0000Delta"],
+        })
+      ).status,
     ).toBe(400);
     expect(
       (
@@ -1073,6 +1087,32 @@ describe("classroom group access", () => {
       "SELECT COUNT(DISTINCT secret_hash) AS count FROM classroom_group_keys",
     ).first<{ count: number }>();
     expect(secretHashes).toEqual({ count: 2 });
+  });
+
+  it("refuses to rotate an expired key into an already-expired replacement", async () => {
+    const classId = await createClass();
+    const [group] = await createGroups(classId, ["Alpha"]);
+    const issued = await json<{ id: string }>(
+      await admin("/admin/v1/groups/access", {
+        group_id: String(group?.id),
+        kind: "api_key",
+        expires_at: now() + 600,
+      }),
+    );
+    await env.DB.prepare(
+      "UPDATE classroom_group_keys SET expires_at = ? WHERE id = ?",
+    )
+      .bind(now() - 1, issued.id)
+      .run();
+    const rotated = await admin("/admin/v1/groups/rotate", { id: issued.id });
+    expect(rotated.status, await rotated.clone().text()).toBe(409);
+    const rows = await env.DB.prepare(
+      `SELECT id, revoked_at FROM classroom_group_keys
+        WHERE group_id = ? ORDER BY created_at`,
+    )
+      .bind(String(group?.id))
+      .all<{ id: string; revoked_at: number | null }>();
+    expect(rows.results).toEqual([{ id: issued.id, revoked_at: null }]);
   });
 
   it("rotates and revokes group API keys atomically", async () => {
@@ -2467,6 +2507,89 @@ describe("ended class maintenance", () => {
       group_budget_microcents: 7,
       rpm_limit: 90,
     });
+  });
+});
+
+describe("ended group maintenance", () => {
+  it("accepts an unchanged schedule alongside edits to an ended group", async () => {
+    const timestamp = now();
+    const classId = await createClass({ starts_at: timestamp - 7200 });
+    const [group] = await createGroups(classId, ["Ended"]);
+    const startsAt = timestamp - 3600;
+    const ended = timestamp - 60;
+    await env.DB.prepare(
+      "UPDATE classroom_groups SET starts_at = ?, expires_at = ? WHERE id = ?",
+    )
+      .bind(startsAt, ended, group!.id)
+      .run();
+    // Resending the stored schedule with a top-up is not an extension.
+    const topUp = await admin("/admin/v1/groups/update", {
+      id: group!.id,
+      starts_at: startsAt,
+      expires_at: ended,
+      budget_microcents: 5_000,
+    });
+    expect(topUp.status, await topUp.clone().text()).toBe(200);
+    // A changed end must still lie in the future.
+    expect(
+      (
+        await admin("/admin/v1/groups/update", {
+          id: group!.id,
+          expires_at: timestamp - 30,
+        })
+      ).status,
+    ).toBe(400);
+    const extended = await admin("/admin/v1/groups/update", {
+      id: group!.id,
+      expires_at: timestamp + 600,
+    });
+    expect(extended.status, await extended.clone().text()).toBe(200);
+  });
+
+  it("edits one bound of a group whose other bound a class reschedule left outside the class window", async () => {
+    const timestamp = now();
+    const classId = await createClass({
+      starts_at: timestamp - 60,
+      expires_at: timestamp + 3600,
+    });
+    const [group] = await createGroups(classId, ["Rescheduled"]);
+    await env.DB.prepare(
+      "UPDATE classroom_groups SET starts_at = ?, expires_at = ? WHERE id = ?",
+    )
+      .bind(timestamp, timestamp + 300, group!.id)
+      .run();
+    // The class moves later; the group's stored window now ends before it.
+    expect(
+      (
+        await admin("/admin/v1/classes/update", {
+          id: classId,
+          starts_at: timestamp + 600,
+        })
+      ).status,
+    ).toBe(200);
+    const extended = await admin("/admin/v1/groups/update", {
+      id: group!.id,
+      expires_at: timestamp + 900,
+    });
+    expect(extended.status, await extended.clone().text()).toBe(200);
+    // A changed bound is still held to the class window.
+    expect(
+      (
+        await admin("/admin/v1/groups/update", {
+          id: group!.id,
+          starts_at: timestamp + 100,
+        })
+      ).status,
+    ).toBe(400);
+    // An untouched bound still has to leave a non-empty effective window.
+    expect(
+      (
+        await admin("/admin/v1/groups/update", {
+          id: group!.id,
+          expires_at: timestamp + 500,
+        })
+      ).status,
+    ).toBe(400);
   });
 });
 
