@@ -10,6 +10,14 @@ updates:
         update-types:
           - minor
           - patch
+      # Each @ai-sdk package pins an exact @ai-sdk/provider, which the shared
+      # package also imports directly, so these move together.
+      ai-sdk:
+        patterns:
+          - "@ai-sdk/*"
+        update-types:
+          - minor
+          - patch
     ignore:
       - dependency-name: typescript
         versions:

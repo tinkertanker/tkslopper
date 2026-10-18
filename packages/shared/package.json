@@ -6,8 +6,8 @@
   "exports": "./src/index.ts",
   "dependencies": {
     "@ai-sdk/anthropic": "4.0.78",
-    "@ai-sdk/openai": "4.0.60",
-    "@ai-sdk/provider": "4.0.10",
+    "@ai-sdk/openai": "4.0.91",
+    "@ai-sdk/provider": "4.0.26",
     "zod": "^3.25.76"
   }
 }
