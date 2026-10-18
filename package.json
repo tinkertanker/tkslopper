@@ -7,7 +7,7 @@
   "license": "MIT",
   "packageManager": "pnpm@10.15.1",
   "engines": {
-    "node": ">=22"
+    "node": "^22.13 || >=24"
   },
   "scripts": {
     "build": "pnpm build:control-plane && pnpm build:gateway",
@@ -33,10 +33,10 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.23.0",
     "@cloudflare/workers-types": "^5.20261010.1",
-    "@eslint/js": "^9.34.0",
+    "@eslint/js": "^10.0.1",
     "@redocly/cli": "^2.62.1",
-    "eslint": "^9.34.0",
-    "globals": "^16.3.0",
+    "eslint": "^10.11.0",
+    "globals": "^17.11.0",
     "prettier": "^3.9.10",
     "tsx": "^4.23.15",
     "typescript": "^5.9.2",

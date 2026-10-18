@@ -109,7 +109,7 @@ function nowSeconds(): number {
 }
 
 function ensureConfiguration(env: ControlPlaneEnv): void {
-  let issuerIsValid = false;
+  let issuerIsValid: boolean;
   try {
     issuerIsValid = new URL(env.TOKEN_ISSUER).protocol === "https:";
   } catch {

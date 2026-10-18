@@ -585,7 +585,7 @@ export class QuotaCoordinator implements DurableObject {
     await this.state.storage.transaction(async (transaction) => {
       const state =
         (await transaction.get<QuotaState>("quota")) ?? freshState(now);
-      let changed = normalizeState(state, now);
+      const changed = normalizeState(state, now);
       const receipt = state.completionReceipts[request.requestId];
       if (receipt) {
         mismatch =
@@ -618,7 +618,6 @@ export class QuotaCoordinator implements DurableObject {
       }
       delete state.reservations[request.requestId];
       storeCompletionReceipt(state, request, now);
-      changed = true;
       await transaction.put("quota", state);
     });
     if (mismatch)
@@ -742,7 +741,7 @@ export class QuotaCoordinator implements DurableObject {
         CLASSROOM_STORAGE_KEY,
       );
       if (!state) return;
-      let changed = normalizeClassroomState(state, now);
+      const changed = normalizeClassroomState(state, now);
       const receipt = state.completionReceipts[request.requestId];
       if (receipt) {
         if (receipt.groupId !== request.groupId) {
@@ -800,7 +799,6 @@ export class QuotaCoordinator implements DurableObject {
       }
       delete state.reservations[request.requestId];
       storeClassroomReceipt(state, request, reservation.groupId, now);
-      changed = true;
       await transaction.put(CLASSROOM_STORAGE_KEY, state);
     });
     if (scopeMismatch)
