@@ -1353,9 +1353,8 @@ async function handleInference(
           actualCostMicrocents: completionCost,
         }),
       ).catch(() => undefined);
-      if (await quotaCompletionSucceeded(completion))
-        quotaMayBeAcquired = false;
-      else quotaReservationUnresolved = true;
+      if (!(await quotaCompletionSucceeded(completion)))
+        quotaReservationUnresolved = true;
     }
     if (!context.providerAttempted && !quotaReservationUnresolved) {
       await discardAttemptIntent(env, context).catch(() => undefined);
