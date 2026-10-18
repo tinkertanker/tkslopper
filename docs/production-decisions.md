@@ -21,7 +21,7 @@ These block any provider or product connection.
 
 1. [Identity-tuple integrity (#4)](https://github.com/tinkertanker/tkslopper/issues/4): enforce product/environment consistency in D1 and every writer/reader. Keep the published initial migration immutable; fresh databases apply both migrations, while a database that already recorded `0001` requires a clean read-only preflight before the guarded forward migration.
 2. [Deadline, cancellation, and accounting recovery (#5)](https://github.com/tinkertanker/tkslopper/issues/5): execute abort, client-cancellation, finalization-failure, quota-completion-failure, and stale-attempt recovery tests.
-3. [Dependency update isolation (#6)](https://github.com/tinkertanker/tkslopper/issues/6): keep major upgrades independently reviewable. Do not merge the current TypeScript 7/ESLint 10 or Zod 4 bot PRs without intentional migrations.
+3. [Dependency update isolation (#6)](https://github.com/tinkertanker/tkslopper/issues/6): keep major upgrades independently reviewable. Do not merge the current TypeScript 7 or Zod 4 bot PRs without intentional migrations. ESLint 10 landed with `@eslint/js` 10 and fixes for its new recommended rule.
 4. [Repository and CI governance (#7)](https://github.com/tinkertanker/tkslopper/issues/7): enable a verified private vulnerability channel, protect `main`, require checks/review, and pin external CI inputs. These GitHub settings require repository-admin action.
 
 **Exit:** full local/CI gates pass at one reviewed SHA, identity preflight is clean, all Stage 0 failure paths are deterministic, and no Critical/Required review finding remains.

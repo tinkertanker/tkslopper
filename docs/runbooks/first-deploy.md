@@ -6,7 +6,7 @@ The general [deployment runbook](deployment.md) still applies for later producti
 
 ## 0. Before you start
 
-- Node.js 22+, pnpm 10+, `pnpm install` in a clone of this repository, and `pnpm wrangler whoami` showing the right account.
+- Node.js 22.13+, pnpm 10+, `pnpm install` in a clone of this repository, and `pnpm wrangler whoami` showing the right account.
 - One upstream provider API key (for example Anthropic, OpenAI or OpenRouter) created for tkslopper only.
 - Decide the two hostnames. The simplest option is the account's `workers.dev` subdomain:
   - control plane: `https://tkslopper-control-plane.<subdomain>.workers.dev`

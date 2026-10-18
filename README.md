@@ -57,7 +57,7 @@ Example capability aliases (policy data, not hard-coded product behavior):
 
 ## Local development
 
-Prerequisites: Node.js 22+, pnpm 10+, and a Cloudflare account only if you later choose to deploy.
+Prerequisites: Node.js 22.13+, pnpm 10+, and a Cloudflare account only if you later choose to deploy.
 
 ```bash
 pnpm install
