@@ -851,6 +851,220 @@ describe("Stage 0 failure-path accounting", () => {
     }
   });
 
+  it.each(["chat", "responses"] as const)(
+    "rejects unbounded real-provider images before admission on %s",
+    async (endpoint) => {
+      await env.DB.prepare(
+        "UPDATE aliases SET allow_images = 1, endpoint = ? WHERE id = 'alias_chat'",
+      )
+        .bind(endpoint)
+        .run();
+      const token = await grant();
+      const upstream = upstreamEnv(5000);
+      const routes = JSON.parse(upstream.PROVIDER_ROUTES_JSON) as Record<
+        "fixture-text-v1",
+        { supportsImages: boolean; endpoints: string[] }
+      >;
+      routes["fixture-text-v1"].supportsImages = true;
+      routes["fixture-text-v1"].endpoints = [endpoint];
+      upstream.PROVIDER_ROUTES_JSON = JSON.stringify(routes);
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(providerChatResponse());
+      vi.stubGlobal("fetch", fetcher);
+      try {
+        for (const url of [
+          "https://images.example.invalid/large.png",
+          "data:image/png;base64,aA==",
+        ]) {
+          const content =
+            endpoint === "chat"
+              ? [{ type: "image_url", image_url: { url, detail: "low" } }]
+              : [{ type: "input_image", image_url: url, detail: "high" }];
+          const body = {
+            model: "text.chat.v1",
+            ...(endpoint === "chat"
+              ? { messages: [{ role: "user", content }], max_tokens: 100 }
+              : { input: [{ role: "user", content }], max_output_tokens: 100 }),
+          };
+          const response = await handleGateway(
+            new Request(
+              `https://gateway.example.invalid/v1/${endpoint === "chat" ? "chat/completions" : "responses"}`,
+              {
+                method: "POST",
+                headers: {
+                  authorization: `Bearer ${token}`,
+                  "content-type": "application/json",
+                },
+                body: JSON.stringify(body),
+              },
+            ),
+            upstream,
+          );
+          expect(response.status).toBe(503);
+          await expect(response.json()).resolves.toMatchObject({
+            error: { code: "provider_unavailable" },
+          });
+        }
+        expect(fetcher).not.toHaveBeenCalled();
+        expect(
+          await env.DB.prepare(
+            "SELECT count(*) AS count FROM provider_attempts",
+          ).first("count"),
+        ).toBe(0);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
+  it.each([
+    {
+      usage: { prompt_tokens: 500001, completion_tokens: 7 },
+      input: 500001,
+      output: 7,
+      cost: 502,
+    },
+    {
+      usage: { prompt_tokens: 5, completion_tokens: 1001 },
+      input: 5,
+      output: 1001,
+      cost: 4,
+    },
+    { usage: { prompt_tokens: 500001 }, input: 500001, output: 100, cost: 502 },
+    {
+      usage: { prompt_tokens: 5, completion_tokens: 200000 },
+      input: 5,
+      output: 200000,
+      cost: 401,
+    },
+    {
+      usage: { prompt_tokens: 5, completion_tokens: 200001 },
+      input: 5,
+      output: 200001,
+      cost: 402,
+    },
+    {
+      usage: { prompt_tokens: 10000001, completion_tokens: 7 },
+      input: 10000001,
+      output: 7,
+      cost: 10002,
+    },
+  ])(
+    "retains measured overrun accounting for $usage",
+    async ({ usage, input, output, cost }) => {
+      const token = await grant();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>().mockResolvedValue(providerChatResponse(usage)),
+      );
+      try {
+        const response = await handleGateway(
+          chatRequest(token),
+          upstreamEnv(5000),
+        );
+        expect(response.status).toBe(502);
+        expect(
+          await env.DB.prepare(
+            "SELECT input_tokens, output_tokens, cost_microcents, error_class FROM provider_attempts",
+          ).first(),
+        ).toMatchObject({
+          input_tokens: input,
+          output_tokens: output,
+          cost_microcents: cost,
+          error_class: "provider_protocol",
+        });
+        expect(await quotaState()).toMatchObject({
+          spentTodayMicrocents: cost,
+          reservations: {},
+        });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
+  it.each(
+    [false, true].flatMap((unavailable) => [
+      { unavailable, input: 500001, output: 7, cost: 502 },
+      { unavailable, input: 10000001, output: 7, cost: 10002 },
+      { unavailable, input: 5, output: 200001, cost: 402 },
+    ]),
+  )(
+    "preserves $input/$output overrun evidence with unavailable quota: $unavailable",
+    async ({ unavailable, input, output, cost }) => {
+      const token = await grant();
+      const realQuota = env.QUOTA.get(
+        env.QUOTA.idFromName(
+          identityScope(
+            "prod_vibbit",
+            "env_vibbit",
+            "tenant_fixture",
+            "principal_fixture",
+          ),
+        ),
+      );
+      let completions = 0;
+      const quotaStub = {
+        async fetch(url: string, init?: RequestInit): Promise<Response> {
+          if (typeof init?.body !== "string")
+            throw new Error("quota body must be JSON");
+          const body = JSON.parse(init.body) as { operation: string };
+          if (body.operation !== "complete") return realQuota.fetch(url, init);
+          completions += 1;
+          if (unavailable) return new Response(null, { status: 503 });
+          const result = await realQuota.fetch(url, init);
+          // The first settlement committed but its acknowledgement was lost.
+          return completions === 1
+            ? new Response(null, { status: 503 })
+            : result;
+        },
+      };
+      const upstream = {
+        ...upstreamEnv(5000),
+        QUOTA: {
+          idFromName: () => ({ synthetic: true }),
+          get: () => quotaStub,
+        } as unknown as DurableObjectNamespace,
+      };
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+        providerChatResponse({
+          prompt_tokens: input,
+          completion_tokens: output,
+        }),
+      );
+      vi.stubGlobal("fetch", fetcher);
+      try {
+        const headers = { "idempotency-key": "overrun-retry-fixture-0001" };
+        expect(
+          (await handleGateway(chatRequest(token, headers), upstream)).status,
+        ).toBe(unavailable ? 503 : 502);
+        expect(completions).toBe(2);
+        expect(
+          (await handleGateway(chatRequest(token, headers), upstream)).status,
+        ).toBe(409);
+        expect(fetcher).toHaveBeenCalledTimes(1);
+        expect(
+          await env.DB.prepare(
+            "SELECT input_tokens, output_tokens, cost_microcents, error_class FROM provider_attempts",
+          ).first(),
+        ).toMatchObject({
+          input_tokens: input,
+          output_tokens: output,
+          cost_microcents: cost,
+          error_class: unavailable ? "attempt_started" : "provider_protocol",
+        });
+        if (!unavailable)
+          expect(await quotaState()).toMatchObject({
+            spentTodayMicrocents: cost,
+            reservations: {},
+          });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
   it.each([
     {
       name: "complete zero usage",

@@ -4,11 +4,13 @@ All monetary database fields use integer **microcents** to avoid floating-point 
 
 `reserved cost = ceil(estimated input tokens × input rate / 1,000,000) + ceil(max output tokens × output rate / 1,000,000)`
 
-The tokenizer-independent input estimate uses serialized UTF-8 bytes as a conservative upper bound, capped at the alias input ceiling. Requests containing images reserve the configured alias input ceiling because remote image contents are not available at admission time. Max output tokens is the client's limit clamped to the alias ceiling, or 4,096 (clamped) when omitted; the same limit is sent to the provider.
+The tokenizer-independent text input estimate uses serialized UTF-8 bytes, capped at the alias input ceiling. Billable image requests are rejected before admission until the selected adapter/model has a reviewed image-token bound; an alias ceiling is not an upstream input limit. Non-billable fixtures still reserve the alias input ceiling for images. Max output tokens is the client's limit clamped to the alias ceiling, or 4,096 (clamped) when omitted; the same limit is sent to the provider.
 
-Classroom settlement is capped at the reservation so the shared class cap cannot be exceeded by concurrent requests. Because the byte estimate bounds tokenizer counts for text, the cap only matters for exceptional provider usage reports.
+Settlement records reported usage even when it exceeds the reservation, including classroom spend. Admission limits future work; it cannot undo a provider overrun. Capping settlement would hide incurred cost and permit additional spending. Overruns require reconciliation with the provider and review of the route's reservation contract.
 
-`actual cost` substitutes normalized actual token counts when the provider supplies them. Ambiguous failures retain the conservative reservation estimate; definitive provider rejections are not charged.
+`actual cost` substitutes normalized actual token counts when the provider supplies them, including protocol errors for input/output-limit violations. Missing usage fields retain their individual estimates. Ambiguous failures without measured usage retain the reservation estimate; definitive provider rejections are not charged. Before settling measured cost above the reservation, the gateway updates the unresolved D1 intent with that evidence. Failed quota completion leaves that intent unresolved for manual reconciliation, not finalized as a successful settlement. Simultaneous storage failures or termination before that write can still lose measured evidence; this is not invoice-grade exactly-once reconciliation.
+
+Migration `0007_measured_usage_bounds.sql` permits normalized measured token counts above the old 10,000,000-input/200,000-output request envelopes and removes the corresponding cost ceiling from attempt evidence. Quota completion still requires safe integer totals; extreme provider reports whose token sum or computed cost cannot be represented safely remain unresolved for manual reconciliation rather than being clamped. The migration must precede deployment; see [ADR 0007](adr/0007-provider-policy.md).
 
 Before canary, record privately for every route:
 

@@ -1031,6 +1031,16 @@ async function handleInference(
         "capability route does not support images",
       );
     }
+    // No billable adapter currently provides a reviewed image-token bound.
+    // A local alias ceiling is not an upstream input limit: reject before
+    // admission rather than spending first and discovering an overrun later.
+    if (inspection.hasImages && route.adapter !== "fixture") {
+      throw new HttpError(
+        503,
+        "provider_unavailable",
+        "capability route cannot bound image input usage",
+      );
+    }
     if (inspection.hasStructuredJson && !route.supportsStructuredJson) {
       throw new HttpError(
         503,
@@ -1067,11 +1077,8 @@ async function handleInference(
     }
     await acquireIdempotency(request, env, context);
 
-    // Text input reserves the serialised-byte estimate, which bounds the
-    // tokenizer count. Images reserve the alias input ceiling because their
-    // token cost is unrelated to URL or data length. Classroom settlement is
-    // capped at this reservation below, so concurrent requests can never
-    // settle above the shared class cap.
+    // Text input reserves the serialised-byte estimate. Only non-billable
+    // fixtures may admit images until a provider-specific bound is implemented.
     const reservedInputTokens = inspection.hasImages
       ? aliasPolicy.max_input_tokens
       : Math.min(inspection.estimatedInputTokens, aliasPolicy.max_input_tokens);
@@ -1165,6 +1172,8 @@ async function handleInference(
       () => controller.abort("deadline"),
       route.timeoutMs,
     );
+    let inputTokens = reservedInputTokens;
+    let outputTokens = maxOutputTokens;
     try {
       const result = await callProvider({
         // Always send the reserved output envelope upstream; without it a
@@ -1194,17 +1203,9 @@ async function handleInference(
           completionCost = reservedCost;
         },
       });
-      if (
-        (result.usage.inputTokens !== undefined &&
-          result.usage.inputTokens > aliasPolicy.max_input_tokens) ||
-        (result.usage.outputTokens !== undefined &&
-          result.usage.outputTokens > maxOutputTokens)
-      ) {
-        throw new ProviderError("provider_protocol", 502, result.latencyMs);
-      }
-      const inputTokens = result.usage.inputTokens ?? reservedInputTokens;
-      const outputTokens = result.usage.outputTokens ?? maxOutputTokens;
-      const measuredCost =
+      inputTokens = result.usage.inputTokens ?? reservedInputTokens;
+      outputTokens = result.usage.outputTokens ?? maxOutputTokens;
+      const actualCost =
         costMicrocents(
           inputTokens,
           aliasPolicy.input_cost_microcents_per_million,
@@ -1213,14 +1214,30 @@ async function handleInference(
           outputTokens,
           aliasPolicy.output_cost_microcents_per_million,
         );
-      // A classroom never settles above its reservation (see above); the
-      // byte-based input estimate makes a higher measured cost exceptional.
-      const actualCost =
-        context.classroom === undefined
-          ? measuredCost
-          : Math.min(measuredCost, reservedCost);
+      // Retain reported spend even when the provider violates the envelope.
+      // Capping the ledger would hide incurred spend and admit more work.
       completionTokens = inputTokens + outputTokens;
       completionCost = actualCost;
+      if (actualCost > reservedCost) {
+        // Preserve overrun evidence if quota completion later fails. This is
+        // still an unresolved intent, not a claim that settlement succeeded.
+        await recordAttempt(env, context, {
+          statusCode: 0,
+          errorClass: "attempt_started",
+          latencyMs: result.latencyMs,
+          inputTokens,
+          outputTokens,
+          costMicrocents: actualCost,
+        }).catch(() => {
+          attemptProjectionFailed = true;
+        });
+      }
+      if (
+        inputTokens > aliasPolicy.max_input_tokens ||
+        outputTokens > maxOutputTokens
+      ) {
+        throw new ProviderError("provider_protocol", 502, result.latencyMs);
+      }
       const completion = await quotaCallWithRetry(
         env,
         quotaScope,
@@ -1285,8 +1302,12 @@ async function handleInference(
         definitiveProviderRejections.has(error.status);
       context.providerRejected = rejected;
       const charged = providerAttempted && !rejected;
-      completionTokens = charged ? reservedTokens : 0;
-      completionCost = charged ? reservedCost : 0;
+      if (!charged) {
+        inputTokens = 0;
+        outputTokens = 0;
+        completionTokens = 0;
+        completionCost = 0;
+      }
       const completion = await quotaCallWithRetry(
         env,
         quotaScope,
@@ -1310,8 +1331,8 @@ async function handleInference(
           statusCode: error.status,
           errorClass: error.errorClass,
           latencyMs: error.latencyMs,
-          inputTokens: charged ? reservedInputTokens : 0,
-          outputTokens: charged ? maxOutputTokens : 0,
+          inputTokens,
+          outputTokens,
           costMicrocents: completionCost,
         });
       } else {
@@ -1325,9 +1346,9 @@ async function handleInference(
           errorClass: error.errorClass,
           ...(charged
             ? {
-                inputTokens: reservedInputTokens,
-                outputTokens: maxOutputTokens,
-                costMicrocents: reservedCost,
+                inputTokens,
+                outputTokens,
+                costMicrocents: completionCost,
               }
             : {}),
           attempts: providerAttempted ? 1 : 0,

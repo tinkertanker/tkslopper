@@ -233,6 +233,18 @@ describe("normalized product request schema smoke", () => {
     );
   });
 
+  it("rejects oversized invalid message arrays without per-element issue amplification", () => {
+    const result = chatRequestSchema.safeParse({
+      model: "text.chat.v1",
+      messages: Array.from({ length: 1001 }, () => null),
+    });
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error("oversized messages were accepted");
+    expect(result.error.issues).toEqual([
+      expect.objectContaining({ code: "too_big", path: ["messages"] }),
+    ]);
+  });
+
   it("accepts Vibbit Chat, Responses, and ordered semantic-repair transcripts", () => {
     expect(chatRequestSchema.safeParse(vibbitChat).success).toBe(true);
     expect(responsesRequestSchema.safeParse(vibbitResponses).success).toBe(
