@@ -726,7 +726,7 @@ describe("classroom authorization", () => {
     expect((await SELF.fetch(chatRequest(groupKeyAlpha))).status).toBe(200);
   });
 
-  it("reserves the text byte estimate and caps an asymmetric settle at the reservation", async () => {
+  it("reserves the text byte estimate but records incurred overrun spend", async () => {
     const inputCeilingReservation =
       costMicrocents(500_000, 1000) + costMicrocents(100, 2000);
     const inspection = inspectGatewayRequest({
@@ -780,18 +780,14 @@ describe("classroom authorization", () => {
     }
 
     const measuredCost = costMicrocents(3000, 1000) + costMicrocents(100, 2000);
-    // The provider reported more input than the estimate; settlement is capped
-    // at the reservation, so the class cap still holds.
+    // Do not hide incurred spend behind the reservation; subsequent admission
+    // must see the exhausted budget, even if the provider broke its envelope.
     expect(measuredCost).toBeGreaterThan(estimateReservation);
     const state = await classroomState(CLASS);
     expect(state.lifetimeReservedMicrocents).toBe(0);
-    expect(state.lifetimeSpentMicrocents).toBe(estimateReservation);
-    expect(state.groups[GROUP]?.lifetimeSpentMicrocents).toBe(
-      estimateReservation,
-    );
-    expect(state.lifetimeSpentMicrocents).toBeLessThanOrEqual(
-      estimateReservation,
-    );
+    expect(state.lifetimeSpentMicrocents).toBe(measuredCost);
+    expect(state.groups[GROUP]?.lifetimeSpentMicrocents).toBe(measuredCost);
+    expect((await SELF.fetch(chatRequest(groupKeyAlpha))).status).toBe(402);
   });
 
   it("rejects client attribution overrides on the classroom path", async () => {

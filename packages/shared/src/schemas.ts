@@ -287,8 +287,8 @@ export function inspectGatewayRequest(request: ParsedGatewayRequest): {
   }
   return {
     alias: body.model,
-    // A tokenizer-independent byte count is deliberately conservative for
-    // text and inline images. Remote images reserve the alias ceiling later.
+    // A tokenizer-independent byte estimate for text. Image processing costs
+    // are unrelated to URL/data length and require separate admission policy.
     estimatedInputTokens: Math.max(
       1,
       new TextEncoder().encode(JSON.stringify(body)).byteLength,

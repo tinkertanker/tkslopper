@@ -27,3 +27,30 @@ Successful upstream bodies are schema-validated and projected onto the supported
 Operators must canary route changes and use kill switches. A future fallback policy requires explicit accounting/provenance semantics and cannot silently change provider or model.
 
 Launch scope is text, structured JSON, and one operation-specific image-input Responses route over the compatible adapter family; streaming, tools, image generation, audio, files, product prompts/workflows, and semantic retry/fallback remain out of scope. Tapplet production models, broader reasoning vocabulary (`none`, `minimal`, `max`, `xhigh`), and Responses `json_object` compatibility require explicit route/product decisions before those capabilities are enabled.
+
+## Amendment: fail closed on unbounded image work (2026-10-27)
+
+CSV 5 row 1, finding `362b002a-1dee-4351-8be4-0eba53a9d98b`, is confirmed against
+`5b741db13a703dfe289132aa1fa756345042f17b`: alias input ceilings were reserved but
+not enforced upstream, and protocol-error settlement discarded reported usage.
+The [OpenAI vision contract](https://developers.openai.com/api/docs/guides/images-vision)
+describes per-image, model- and detail-dependent tile/patch charges, not URL-byte
+charges. An arbitrary configured compatible model has no universal safe bound.
+
+Until a reviewed adapter/model-specific bound includes every image and the text
+envelope, image-containing requests return `503 provider_unavailable` before
+idempotency acquisition, quota admission or dispatch. This deliberately narrows
+the earlier launch scope for OpenAI, OpenRouter, OpenCode Go/Zen, DeepSeek, custom
+compatible routes and native Anthropic, even with `supportsImages: true`. Text-only
+requests and the development-only fixture image route remain supported. Existing
+public catalogue image flags reflect alias policy, not proof of route readiness.
+No production route inventory or live provider billing was accessed during this
+fix; deployments using real vision must account for this compatibility change.
+
+Measured usage is retained in settlement even for input/output-limit violations;
+classroom accounting no longer hides overrun cost by capping it at reservation.
+Missing usage still uses the corresponding reserved estimate. Failed completion
+retains unresolved provenance and failed idempotency state, rather than retrying
+the provider. See [cost model](../cost-model.md) for persistence limitations.
+Re-enabling real vision requires a separate reviewed contract and live canary;
+this change authorizes neither deployment nor a canary.
