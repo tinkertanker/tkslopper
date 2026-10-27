@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { MODEL_PROVIDERS, MODEL_TIERS } from "./model-catalogue";
 
-export const DATABASE_SCHEMA_VERSION = "2026-09-03.pre-release.3";
+export const DATABASE_SCHEMA_VERSION = "2026-10-27.measured-usage.1";
 
 export const identifierSchema = z
   .string()
@@ -64,7 +64,7 @@ const jsonSchemaFormat = z
         name: identifierSchema,
         description: z.string().max(1000).optional(),
         strict: z.boolean().optional(),
-        schema: z.record(z.unknown()),
+        schema: z.record(z.string(), z.unknown()),
       })
       .strict(),
   })
@@ -217,7 +217,7 @@ export const responsesRequestSchema = z
               name: identifierSchema,
               description: z.string().max(1000).optional(),
               strict: z.boolean().optional(),
-              schema: z.record(z.unknown()),
+              schema: z.record(z.string(), z.unknown()),
             })
             .strict(),
         ]),

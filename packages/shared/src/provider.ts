@@ -277,7 +277,9 @@ export function validateProviderRequest(
 export function parseProviderRoutes(
   value: string,
 ): ReadonlyMap<string, ProviderRoute> {
-  const raw = z.record(routeSchema).parse(JSON.parse(value) as unknown);
+  const raw = z
+    .record(z.string(), routeSchema)
+    .parse(JSON.parse(value) as unknown);
   const routes = new Map<string, ProviderRoute>();
   for (const [key, route] of Object.entries(raw)) {
     if (key !== route.id)

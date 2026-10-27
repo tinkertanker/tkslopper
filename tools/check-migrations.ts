@@ -1,4 +1,11 @@
-import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
@@ -373,6 +380,39 @@ async function checkLegacyUpgrade(rootDirectory: string): Promise<void> {
   await stageForwardMigration(legacy.migrationsDirectory);
   await runWrangler(["d1", "migrations", "apply", ...legacy.args]);
 
+  // A failed table rebuild must roll back all rows, indexes, the stale view,
+  // and schema marker; retrying the corrected migration must preserve them.
+  const snapshotArgs = [
+    "d1",
+    "execute",
+    ...legacy.args,
+    "--command",
+    `SELECT * FROM provider_attempts ORDER BY id;
+     SELECT type, name, sql FROM sqlite_schema WHERE name LIKE 'provider_attempts%'
+       OR name = 'stale_provider_attempts' ORDER BY name;
+     SELECT value FROM schema_metadata WHERE key = 'schema_version';`,
+  ];
+  const before = statementRows(await runWranglerJson(snapshotArgs));
+  const migrationName = "0007_measured_usage_bounds.sql";
+  const source = resolve("db/migrations", migrationName);
+  const staged = join(legacy.migrationsDirectory, migrationName);
+  await writeFile(
+    staged,
+    `${await readFile(source, "utf8")}\nSELECT * FROM synthetic_missing_table;`,
+  );
+  await runWranglerExpectFailure(["d1", "migrations", "apply", ...legacy.args]);
+  if (
+    JSON.stringify(statementRows(await runWranglerJson(snapshotArgs))) !==
+    JSON.stringify(before)
+  )
+    throw new Error("failed measured-usage migration did not roll back");
+  await copyFile(source, staged);
+  await runWrangler(["d1", "migrations", "apply", ...legacy.args]);
+  await runWrangler(["d1", "migrations", "apply", ...legacy.args]);
+  const after = statementRows(await runWranglerJson(snapshotArgs));
+  if (JSON.stringify(after.slice(0, 2)) !== JSON.stringify(before.slice(0, 2)))
+    throw new Error("measured-usage migration changed existing attempt rows");
+
   const result = await runWranglerJson([
     "d1",
     "execute",
@@ -420,6 +460,8 @@ async function checkLegacyUpgrade(rootDirectory: string): Promise<void> {
            'provider_attempts_stale_idx',
            'provider_attempts_finalized_time_idx',
            'provider_attempts_recent_idx',
+           'provider_attempts_product_time_idx',
+           'provider_attempts_classroom_group_idx',
            'admin_audit_recent_idx'
          )) AS new_indexes,
        (SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger') AS triggers,
@@ -437,7 +479,7 @@ async function checkLegacyUpgrade(rootDirectory: string): Promise<void> {
        (SELECT "notnull" FROM pragma_table_info('admin_audit') WHERE name = 'id') AS admin_audit_id_not_null;`,
   ]);
   assertSingleRow(result, {
-    schema_version: "2026-09-03.pre-release.3",
+    schema_version: "2026-10-27.measured-usage.1",
     products: 1,
     environments: 1,
     aliases: 1,
@@ -462,7 +504,7 @@ async function checkLegacyUpgrade(rootDirectory: string): Promise<void> {
     stale_after_offset: 0,
     stale_rows: 1,
     temporary_objects: 0,
-    new_indexes: 8,
+    new_indexes: 10,
     triggers: 15,
     stale_view: 1,
     products_id_not_null: 1,

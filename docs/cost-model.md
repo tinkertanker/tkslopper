@@ -10,6 +10,8 @@ Settlement records reported usage even when it exceeds the reservation, includin
 
 `actual cost` substitutes normalized actual token counts when the provider supplies them, including protocol errors for input/output-limit violations. Missing usage fields retain their individual estimates. Ambiguous failures without measured usage retain the reservation estimate; definitive provider rejections are not charged. Before settling measured cost above the reservation, the gateway updates the unresolved D1 intent with that evidence. Failed quota completion leaves that intent unresolved for manual reconciliation, not finalized as a successful settlement. Simultaneous storage failures or termination before that write can still lose measured evidence; this is not invoice-grade exactly-once reconciliation.
 
+Migration `0007_measured_usage_bounds.sql` permits normalized measured token counts above the old 10,000,000-input/200,000-output request envelopes and removes the corresponding cost ceiling from attempt evidence. Quota completion still requires safe integer totals; extreme provider reports whose token sum or computed cost cannot be represented safely remain unresolved for manual reconciliation rather than being clamped. The migration must precede deployment; see [ADR 0007](adr/0007-provider-policy.md).
+
 Before canary, record privately for every route:
 
 - provider/project and contract rate card date;

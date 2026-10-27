@@ -54,3 +54,14 @@ retains unresolved provenance and failed idempotency state, rather than retrying
 the provider. See [cost model](../cost-model.md) for persistence limitations.
 Re-enabling real vision requires a separate reviewed contract and live canary;
 this change authorizes neither deployment nor a canary.
+
+Apply `0007_measured_usage_bounds.sql` before deploying this version, under
+separate database/deployment authorization. It transactionally rebuilds only
+`provider_attempts`, preserving rows, classroom attribution, uniqueness, indexes
+and the stale view while removing request-envelope limits from measured evidence.
+Both Workers require the new schema marker. Coordinate a maintenance window:
+the old Workers' readiness check rejects the new marker, and the new Workers
+reject the old marker. Do not reverse the migration to restore the old bounds
+or erase overrun evidence; rollback requires a compatible Worker version.
+Repository CI applies migrations only to disposable local D1 and builds with
+`--dry-run`; normal merge does not apply this migration or deploy Workers.

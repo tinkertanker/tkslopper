@@ -932,6 +932,24 @@ describe("Stage 0 failure-path accounting", () => {
       cost: 4,
     },
     { usage: { prompt_tokens: 500001 }, input: 500001, output: 100, cost: 502 },
+    {
+      usage: { prompt_tokens: 5, completion_tokens: 200000 },
+      input: 5,
+      output: 200000,
+      cost: 401,
+    },
+    {
+      usage: { prompt_tokens: 5, completion_tokens: 200001 },
+      input: 5,
+      output: 200001,
+      cost: 402,
+    },
+    {
+      usage: { prompt_tokens: 10000001, completion_tokens: 7 },
+      input: 10000001,
+      output: 7,
+      cost: 10002,
+    },
   ])(
     "retains measured overrun accounting for $usage",
     async ({ usage, input, output, cost }) => {
@@ -966,9 +984,15 @@ describe("Stage 0 failure-path accounting", () => {
     },
   );
 
-  it.each([false, true])(
-    "preserves overrun evidence and duplicate suppression with unavailable quota: %s",
-    async (unavailable) => {
+  it.each(
+    [false, true].flatMap((unavailable) => [
+      { unavailable, input: 500001, output: 7, cost: 502 },
+      { unavailable, input: 10000001, output: 7, cost: 10002 },
+      { unavailable, input: 5, output: 200001, cost: 402 },
+    ]),
+  )(
+    "preserves $input/$output overrun evidence with unavailable quota: $unavailable",
+    async ({ unavailable, input, output, cost }) => {
       const token = await grant();
       const realQuota = env.QUOTA.get(
         env.QUOTA.idFromName(
@@ -1003,11 +1027,12 @@ describe("Stage 0 failure-path accounting", () => {
           get: () => quotaStub,
         } as unknown as DurableObjectNamespace,
       };
-      const fetcher = vi
-        .fn<typeof fetch>()
-        .mockResolvedValue(
-          providerChatResponse({ prompt_tokens: 500001, completion_tokens: 7 }),
-        );
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+        providerChatResponse({
+          prompt_tokens: input,
+          completion_tokens: output,
+        }),
+      );
       vi.stubGlobal("fetch", fetcher);
       try {
         const headers = { "idempotency-key": "overrun-retry-fixture-0001" };
@@ -1024,14 +1049,14 @@ describe("Stage 0 failure-path accounting", () => {
             "SELECT input_tokens, output_tokens, cost_microcents, error_class FROM provider_attempts",
           ).first(),
         ).toMatchObject({
-          input_tokens: 500001,
-          output_tokens: 7,
-          cost_microcents: 502,
+          input_tokens: input,
+          output_tokens: output,
+          cost_microcents: cost,
           error_class: unavailable ? "attempt_started" : "provider_protocol",
         });
         if (!unavailable)
           expect(await quotaState()).toMatchObject({
-            spentTodayMicrocents: 502,
+            spentTodayMicrocents: cost,
             reservations: {},
           });
       } finally {
