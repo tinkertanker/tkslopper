@@ -88,17 +88,30 @@ The public model is still an authorized `.vN` alias from `/v1/models`, not `clau
 
 Existing aliases must not be remapped if their sampling, JSON mode or message-shape contract is incompatible. Provision a separately approved alias/version and product grant instead. No D1 migration or credential reissue is needed merely to install the adapter. Native Gemini remains deferred ([#17](https://github.com/tinkertanker/tkslopper/issues/17)); personal BYOK and Apple local/PCC calls remain outside tkslopper.
 
-### Model refresh, checked 2026-10-09
+### Model refresh, checked 2026-11-01
 
 These are physical model recommendations for new private routes and defaults in the public direct-provider catalogue, not automatically enabled managed aliases. The development Wrangler routes remain synthetic fixtures.
 
-| Use              | OpenAI        | Anthropic           |
-| ---------------- | ------------- | ------------------- |
-| Low-cost default | `gpt-6-luna`  | `claude-haiku-5-5`  |
-| Balanced         | `gpt-6.1-sol` | `claude-sonnet-5-5` |
-| High capability  | `gpt-6-astra` | `claude-opus-5-5`   |
+| Use              | OpenAI                         | Anthropic                             |
+| ---------------- | ------------------------------ | ------------------------------------- |
+| Low-cost default | `gpt-6-luna`                   | `claude-haiku-5-5`                    |
+| Balanced         | `gpt-6.1-terra`, `gpt-6.1-sol` | `claude-sonnet-5-5`                   |
+| High capability  | `gpt-6-astra`                  | `claude-opus-5-5`, `claude-fable-5-1` |
 
-Official sources: [OpenAI catalog](https://developers.openai.com/api/docs/models), [GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna), [Claude catalog](https://platform.claude.com/docs/en/models/overview), [Haiku 5.5 migration](https://platform.claude.com/docs/en/models/haiku-5-5/migration-guide), [native structured outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs). Anthropic also lists `claude-fable-5-1` for demanding long-horizon tasks; it is not the education default. Haiku 5.5 was released October 7, 2026. Both low-cost models list base input/output pricing from US$0.10/US$0.50 per million tokens; verify current service-tier, long-context, cache and regional prices before setting budgets. Existing working routes are not automatically migrated, and documentation availability does not prove access for a particular API account.
+Official sources: [OpenAI catalog](https://developers.openai.com/api/docs/models), [GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna), [Claude catalog](https://platform.claude.com/docs/en/models/overview), [Haiku 5.5 migration](https://platform.claude.com/docs/en/models/haiku-5-5/migration-guide), [native structured outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs). Haiku 5.5 was released October 7, 2026. Both low-cost defaults remain current and list base input/output pricing from US$0.10/US$0.50 per million tokens; verify current service-tier, long-context, cache and regional prices before setting budgets. Existing working routes are not automatically migrated, and documentation availability does not prove access for a particular API account.
+
+November additions (official documentation checked, no paid provider calls):
+
+- [GPT-6.1 Terra](https://developers.openai.com/api/docs/models/gpt-6.1-terra): text/image input, text output, 1,050,000-token context (922,000 maximum input), 128,000 maximum output; base input/output US$1/US$5 per million tokens. Supports Chat Completions, Responses, structured outputs and reasoning (`none`, `low`, `medium` default, `high`, `xhigh`, `max`). Tool calling requires Responses. Its price/performance positioning fits `balanced`; it does not replace Luna as the default.
+- [Claude Fable 5.1](https://platform.claude.com/docs/en/models/fable-5-1/overview): text/image input, text output, 1M-token context, 128K maximum output; base input/output US$10/US$50 per million tokens. Supports native structured outputs and always-on adaptive thinking (default effort `high`). Forced tool use is rejected. Its demanding-reasoning/long-horizon positioning fits `premium`, not the education default. Anthropic lists it as active with retirement no sooner than September 1, 2027.
+
+Provider capabilities are broader than the gateway contract: only portable `low|medium|high` reasoning is exposed; tools and streaming remain unsupported. Native Anthropic still uses API version `2023-06-01` and rejects sampling controls. No API-version upgrade is included. The catalogue keeps schema version 1 because only suggestions changed, and preserves all existing entries, defaults, custom/saved-ID handling and unverified reseller IDs. Opt-in [route examples](runbooks/first-deploy.md#optional-november-2026-routes) do not enable these models or change product ceilings/rate cards.
+
+Relevant lifecycle notices checked against [Anthropic deprecations](https://platform.claude.com/docs/en/about-claude/model-deprecations) and [OpenAI deprecations](https://developers.openai.com/api/docs/deprecations):
+
+- No current direct-provider suggestion above is listed as deprecated. Claude Sonnet 4.5 (`claude-sonnet-4-5-20250929`) retires November 30, 2026; the recommended replacement is Sonnet 5.5. Haiku 4.5 is still listed as active: a passed “not sooner than” date is not a retirement announcement.
+- GPT-4o snapshots `2024-08-06`/`2024-11-20`, GPT-4o mini `2024-07-18`, GPT-4.1 and GPT-4.1 mini `2025-04-14` shut down January 14, 2027, with Luna recommended. Older GPT-5/mini/nano/pro and o3/pro shut down December 11, 2026; GPT-5.1, GPT-5.3-Codex and GPT-5.4-Nano shut down April 1, 2027. These notices do not authorize rewriting saved IDs or reseller offerings.
+- Anthropic API version `2026-10-21` removes `temperature`, `top_p` and `top_k`; earlier versions reject non-default values on Claude 4.7 and later. Fable also requires adaptive thinking rather than the legacy manual `budget_tokens` mode. Keep migrations explicit and validate the product's request contract before changing any route.
 
 ## Configuration validation and release workflow
 

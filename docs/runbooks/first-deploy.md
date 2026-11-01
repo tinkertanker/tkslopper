@@ -91,7 +91,46 @@ For low-cost Claude, use this alternative route (not both under the same ID):
 }
 ```
 
-The model IDs were checked against official docs on 2026-10-09. See [current options and the native Anthropic request subset](../configuration.md#native-anthropic). Choose a deadline below the product's outer timeout. Do not silently remap an existing alias that accepts sampling controls or `json_object` to Claude; provision an approved compatible alias/version. New routes still need provider-account access and a synthetic canary.
+The model IDs were checked against official docs on 2026-11-01. See [current options and the native Anthropic request subset](../configuration.md#native-anthropic). Choose a deadline below the product's outer timeout. Do not silently remap an existing alias that accepts sampling controls or `json_object` to Claude; provision an approved compatible alias/version. New routes still need provider-account access and a synthetic canary.
+
+### Optional November 2026 routes
+
+These additional examples are opt-in private configuration, not replacements for the low-cost routes above. The checked-in `apps/gateway/wrangler.jsonc` intentionally stays fixture-only. With separate rollout approval, add the desired entry to the private `PROVIDER_ROUTES_JSON` object (serialize it as a JSON string in Wrangler); do not overwrite an existing route ID or remap an alias implicitly.
+
+```json
+{
+  "openai-terra-6-1": {
+    "id": "openai-terra-6-1",
+    "adapter": "openai-compatible",
+    "provider": "openai",
+    "profile": "openai",
+    "model": "gpt-6.1-terra",
+    "baseUrl": "https://api.openai.com",
+    "credentialBinding": "UPSTREAM_API_KEY",
+    "endpoints": ["chat", "responses"],
+    "supportsImages": true,
+    "supportsReasoning": true,
+    "supportsStructuredJson": true,
+    "timeoutMs": 60000
+  },
+  "anthropic-fable-5-1": {
+    "id": "anthropic-fable-5-1",
+    "adapter": "anthropic",
+    "provider": "anthropic",
+    "profile": "anthropic",
+    "model": "claude-fable-5-1",
+    "baseUrl": "https://api.anthropic.com",
+    "credentialBinding": "ANTHROPIC_API_KEY",
+    "endpoints": ["chat", "responses"],
+    "supportsImages": true,
+    "supportsReasoning": true,
+    "supportsStructuredJson": true,
+    "timeoutMs": 60000
+  }
+}
+```
+
+Flags describe the gateway's supported subset, not every upstream feature. Terra tool calling requires Responses upstream, but the gateway exposes no tools on either endpoint. Fable always thinks adaptively; output ceilings include thinking, and the example 60-second deadline is not a long-horizon latency guarantee. Approve product-specific deadlines, conservative prices and ceilings before enablement. Verify account access and canary results separately; this refresh used no paid provider calls. Publish consistent display metadata only on explicitly approved aliases (`GPT-6.1 Terra` / `openai` / `balanced`, or `Claude Fable 5.1` / `anthropic` / `premium`).
 
 ## 3. Apply migrations
 

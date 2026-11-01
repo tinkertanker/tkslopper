@@ -10,7 +10,7 @@ export const MODEL_PROVIDERS = [
 ] as const;
 export const MODEL_TIERS = ["economy", "balanced", "premium"] as const;
 
-// GPT/Claude refreshed from official docs on 2026-10-09; other IDs consolidate
+// GPT/Claude refreshed from official docs on 2026-11-01; other IDs consolidate
 // existing app suggestions. See docs/configuration.md for sources and governance.
 // Tiers are qualitative picker hints, not prices, entitlements or guarantees.
 const entries: Array<
@@ -23,11 +23,13 @@ const entries: Array<
   ]
 > = [
   ["openai", "gpt-6-luna", "GPT-6 Luna", "economy", true],
+  ["openai", "gpt-6.1-terra", "GPT-6.1 Terra", "balanced", false],
   ["openai", "gpt-6.1-sol", "GPT-6.1 Sol", "balanced", false],
   ["openai", "gpt-6-astra", "GPT-6 Astra", "premium", false],
   ["anthropic", "claude-haiku-5-5", "Claude Haiku 5.5", "economy", true],
   ["anthropic", "claude-sonnet-5-5", "Claude Sonnet 5.5", "balanced", false],
   ["anthropic", "claude-opus-5-5", "Claude Opus 5.5", "premium", false],
+  ["anthropic", "claude-fable-5-1", "Claude Fable 5.1", "premium", false],
   [
     "gemini",
     "gemini-3-flash-preview",

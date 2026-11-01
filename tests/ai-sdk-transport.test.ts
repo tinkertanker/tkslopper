@@ -145,6 +145,7 @@ describe("real AI SDK transport wire compatibility", () => {
     { strict: false, model: "custom-physical-model" },
     { strict: true, model: "gpt-5" },
     { strict: true, model: "gpt-6.1-sol" },
+    { strict: true, model: "gpt-6.1-terra" },
     { strict: true, model: "gpt-6-astra" },
   ])(
     "preserves Responses fields with $model, strict=$strict",

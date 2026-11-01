@@ -2686,6 +2686,20 @@ describe("student-facing gateway behaviour", () => {
       tier: "economy",
       is_default: true,
     });
+    expect(body.data).toContainEqual({
+      id: "gpt-6.1-terra",
+      provider: "openai",
+      display_name: "GPT-6.1 Terra",
+      tier: "balanced",
+      is_default: false,
+    });
+    expect(body.data).toContainEqual({
+      id: "claude-fable-5-1",
+      provider: "anthropic",
+      display_name: "Claude Fable 5.1",
+      tier: "premium",
+      is_default: false,
+    });
     const ids = new Set<string>();
     for (const entry of body.data) {
       expect(Object.keys(entry).sort()).toEqual([
