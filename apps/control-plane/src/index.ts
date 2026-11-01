@@ -39,6 +39,7 @@ import {
 } from "./dashboard";
 import { adminSession, requireBrowserAdmin } from "./admin-access";
 import { dispatchClassroomAdmin } from "./classrooms";
+import { administerModelCatalogue } from "./model-catalogue";
 
 export type ControlPlaneEnv = {
   DB: D1Database;
@@ -1256,6 +1257,7 @@ export async function handleControlPlane(
       const schema = await env.DB.prepare(
         `SELECT value,
                 EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'dashboard_admins') AS admin_schema,
+                EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'model_catalogue_revisions') AS catalogue_schema,
                 EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'classroom_classes') AS classroom_classes_schema,
                 EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'classroom_groups') AS classroom_groups_schema,
                 EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'classroom_group_keys') AS classroom_group_keys_schema,
@@ -1268,6 +1270,7 @@ export async function handleControlPlane(
       ).first<{
         value: string;
         admin_schema: number;
+        catalogue_schema: number;
         classroom_classes_schema: number;
         classroom_groups_schema: number;
         classroom_group_keys_schema: number;
@@ -1280,6 +1283,7 @@ export async function handleControlPlane(
       if (
         schema?.value !== DATABASE_SCHEMA_VERSION ||
         schema.admin_schema !== 1 ||
+        schema.catalogue_schema !== 1 ||
         schema.classroom_classes_schema !== 1 ||
         schema.classroom_groups_schema !== 1 ||
         schema.classroom_group_keys_schema !== 1 ||
@@ -1307,6 +1311,9 @@ export async function handleControlPlane(
     }
     if (request.method === "GET" && url.pathname === "/dashboard/api/session") {
       return await adminSession(env, ctx?.access);
+    }
+    if (url.pathname === "/dashboard/api/model-catalogue") {
+      return await administerModelCatalogue(request, env, ctx?.access);
     }
     if (request.method === "POST" && url.pathname === "/v1/token") {
       return await exchangeServiceCredential(request, env);

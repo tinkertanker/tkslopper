@@ -547,6 +547,19 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       .admin-fields label { display: grid; grid-template-rows: 1fr auto; gap: 6px; align-items: end; min-width: 0; color: var(--soft); font-size: 12px; font-weight: 650; }
 
       .admin-body h3 { margin: 28px 0 0; font-size: 13px; font-weight: 650; }
+      #catalogue-controls { min-width: 0; margin: 0; padding: 0; border: 0; }
+      .catalogue-entry { display: grid; grid-template-columns: minmax(170px, 2fr) minmax(170px, 2fr) minmax(110px, 1fr) auto auto; gap: 12px; align-items: end; padding: 16px 0; border-bottom: 1px solid var(--rule); }
+      .catalogue-entry label { display: grid; gap: 6px; min-width: 0; font-size: 12px; color: var(--soft); }
+      .catalogue-entry .catalogue-default { display: flex; align-items: center; min-height: 40px; }
+      .catalogue-default input { width: 18px; min-height: 18px; accent-color: var(--green-deep); }
+      .catalogue-entry button { margin: 0; min-height: 40px; }
+      #catalogue-form .action-row { margin-top: 18px; }
+      @media (max-width: 1100px) {
+        .catalogue-entry { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+      }
+      @media (max-width: 480px) {
+        .catalogue-entry { grid-template-columns: minmax(0, 1fr); }
+      }
       #admin-result-status { margin: 12px 0 0; color: var(--soft); font-size: 13px; }
       #admin-result-status.error { color: var(--alarm); font-weight: 600; }
       #admin-result { margin-top: 16px; }
@@ -714,6 +727,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           <li><button type="button" class="nav-item" data-view="attempts">Diagnostics</button></li>
           <li><button type="button" class="nav-item" data-view="stale">Stale intents</button></li>
           <li id="nav-activity"><button type="button" class="nav-item" data-view="activity">Activity</button></li>
+          <li id="nav-catalogue" hidden><button type="button" class="nav-item" data-view="catalogue">Model catalogue</button></li>
           <li id="nav-admin" hidden><button type="button" class="nav-item" data-view="admin">Settings</button></li>
         </ul>
         <div class="side-foot">
@@ -948,6 +962,37 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
             <section>
               <div class="section-head"><h2 id="audit-heading">Admin activity</h2><p class="section-note">Latest 25 audited mutations</p></div>
               <div class="table-wrap" role="region" tabindex="0" aria-labelledby="audit-heading"><table id="audit"></table></div>
+            </section>
+          </div>
+
+          <div class="view" data-view="catalogue" hidden>
+            <section>
+              <div class="section-head"><h2>Public model catalogue</h2><p class="section-note" id="catalogue-revision">Not loaded</p></div>
+              <div class="admin-body">
+                <p>Edit direct-provider suggestions for BYOK and teacher-key pickers. This does not change managed aliases, permissions, provider connections, secrets or inference routes. Saved/custom choices remain unchanged.</p>
+                <p class="field-note">Keep one default per provider. IDs are provider-native; verify reseller availability and preserve data-use warnings. All labels and IDs published here are public. Clients may cache suggestions for up to one hour.</p>
+                <button type="button" id="catalogue-reload">Reload published catalogue</button>
+                <form id="catalogue-form" autocomplete="off">
+                  <fieldset id="catalogue-controls" disabled>
+                    <div class="admin-fields"><label>Provider suggestions<select id="catalogue-provider"></select></label></div>
+                    <div id="catalogue-entries"></div>
+                    <div class="action-row"><button type="button" id="catalogue-add">Add model</button><button type="submit" id="catalogue-publish">Review and publish</button></div>
+                  </fieldset>
+                </form>
+                <div class="confirm-bar" id="catalogue-confirm" role="group" aria-labelledby="catalogue-confirm-text" hidden>
+                  <p id="catalogue-confirm-text"></p>
+                  <div class="action-row"><button type="button" data-confirm="yes">Publish suggestions</button><button type="button" class="quiet" data-confirm="no">Cancel</button></div>
+                </div>
+                <p id="catalogue-status" class="status-line" role="status" aria-live="polite"></p>
+              </div>
+            </section>
+            <section>
+              <div class="section-head"><h2 id="catalogue-history-heading">Publication history</h2><p class="section-note">Latest 25 revisions; snapshots are read-only</p></div>
+              <div class="table-wrap" role="region" tabindex="0" aria-labelledby="catalogue-history-heading"><table id="catalogue-history"></table></div>
+              <div id="catalogue-snapshot" hidden>
+                <h3 id="catalogue-snapshot-heading"></h3>
+                <div class="table-wrap" role="region" tabindex="0" aria-labelledby="catalogue-snapshot-heading"><table id="catalogue-snapshot-entries"></table></div>
+              </div>
             </section>
           </div>
 
@@ -1229,6 +1274,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
       for (const item of navItems) item.addEventListener("click", () => {
         showView(item.dataset.view);
         if (item.dataset.view === "classes") loadClasses();
+        if (item.dataset.view === "catalogue" && catalogueDraft === null) loadCatalogue();
       });
 
       // Admins get the richer "Who changed what" table inside Settings, so the
@@ -1238,6 +1284,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         isAdmin = admin;
         document.getElementById("nav-admin").hidden = !admin;
         document.getElementById("nav-classes").hidden = !admin;
+        document.getElementById("nav-catalogue").hidden = !admin;
         document.getElementById("nav-activity").hidden = admin;
         renderEnvironments();
         const current = navItems.find((item) => item.hasAttribute("aria-current"));
@@ -1401,6 +1448,127 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
         }
         return result;
       }
+      // Public suggestions are a separate document, never managed policy or routes.
+      let catalogueDraft = null;
+      let catalogueRevision = 0;
+      let catalogueDirty = false;
+      let catalogueBusy = false;
+      const catalogueProvider = document.getElementById("catalogue-provider");
+      for (const provider of ${JSON.stringify(MODEL_PROVIDERS)}) {
+        const option = document.createElement("option");
+        option.value = provider; option.textContent = provider;
+        catalogueProvider.append(option);
+      }
+      function catalogueChanged() {
+        catalogueDirty = true;
+        dismissInline("catalogue-confirm", false);
+        setStatus("catalogue-status", "Unpublished changes. Review and publish to update public suggestions.");
+      }
+      function cataloguePending(pending) {
+        catalogueBusy = pending;
+        document.getElementById("catalogue-controls").disabled = pending || catalogueDraft === null;
+        document.getElementById("catalogue-reload").disabled = pending;
+      }
+      function renderCatalogue() {
+        const container = document.getElementById("catalogue-entries");
+        container.replaceChildren();
+        const entries = catalogueDraft.filter(entry => entry.provider === catalogueProvider.value);
+        for (const [index, entry] of entries.entries()) {
+          const row = document.createElement("div"); row.className = "catalogue-entry";
+          for (const [key, label] of [["id", "Model ID"], ["display_name", "Display label"], ["tier", "Tier"], ["is_default", "Default"]]) {
+            const wrapper = document.createElement("label"); wrapper.textContent = label;
+            const input = document.createElement(key === "tier" ? "select" : "input");
+            input.setAttribute("aria-label", label + " for model " + (index + 1));
+            if (key === "tier") {
+              for (const tier of ${JSON.stringify(MODEL_TIERS)}) {
+                const option = document.createElement("option"); option.value = tier; option.textContent = tier; input.append(option);
+              }
+            }
+            if (key === "is_default") {
+              wrapper.className = "catalogue-default"; input.type = "radio"; input.name = "catalogue-default"; input.checked = entry.is_default;
+              input.addEventListener("change", () => { for (const other of entries) other.is_default = other === entry; catalogueChanged(); });
+            } else {
+              input.value = entry[key]; input.required = true;
+              if (key !== "tier") input.maxLength = key === "id" ? 200 : 120;
+              input.addEventListener(key === "tier" ? "change" : "input", () => { entry[key] = input.value; catalogueChanged(); });
+            }
+            wrapper.append(input); row.append(wrapper);
+          }
+          const remove = document.createElement("button"); remove.type = "button"; remove.className = "row-action danger"; remove.textContent = "Remove";
+          remove.setAttribute("aria-label", "Remove model " + (index + 1));
+          remove.addEventListener("click", () => { catalogueDraft = catalogueDraft.filter(other => other !== entry); catalogueChanged(); renderCatalogue(); document.getElementById("catalogue-add").focus(); });
+          row.append(remove); container.append(row);
+        }
+        if (!entries.length) container.textContent = "No suggestions. Add a model and choose a default before publishing.";
+        set("catalogue-revision", "Editing revision " + catalogueRevision + " · " + catalogueDraft.length + " suggestions");
+      }
+      async function catalogueGet(query = "") {
+        const response = await fetch("/dashboard/api/model-catalogue" + query, { credentials: "same-origin", redirect: "error", cache: "no-store" });
+        if (!response.ok) {
+          if (response.status === 401 || response.status === 403) applyRole(false);
+          throw new Error("Catalogue unavailable. Check your admin access and database migration, then reload.");
+        }
+        return response.json();
+      }
+      async function loadCatalogue() {
+        if (catalogueBusy) return;
+        cataloguePending(true);
+        setStatus("catalogue-status", "Loading published suggestions…");
+        try {
+          const result = await catalogueGet();
+          catalogueDraft = result.data; catalogueRevision = result.revision; catalogueDirty = false;
+          renderCatalogue();
+          renderTable("catalogue-history", [
+            { label: "Revision", value: "revision" }, { label: "Published", value: "created_at", format: time },
+            { label: "Admin", value: "actor_email" }, { label: "Models", value: "entry_count" },
+            { label: "Snapshot", buttons: row => [{ label: "View revision " + row.revision, onClick: () => viewCatalogueRevision(row.revision) }] },
+          ], result.history);
+          setStatus("catalogue-status", result.revision ? "Published revision loaded. No unpublished changes." : "Bundled suggestions loaded. The first publication creates revision 1.");
+        } catch (error) { setStatus("catalogue-status", error.message, "error"); }
+        finally { cataloguePending(false); }
+      }
+      let catalogueHistoryRequest = 0;
+      async function viewCatalogueRevision(revision) {
+        const request = ++catalogueHistoryRequest;
+        try {
+          const result = await catalogueGet("?revision=" + revision);
+          if (request !== catalogueHistoryRequest) return;
+          set("catalogue-snapshot-heading", "Revision " + revision + " — read-only");
+          renderTable("catalogue-snapshot-entries", [{ label: "Provider", value: "provider" }, { label: "Model ID", value: "id" }, { label: "Label", value: "display_name" }, { label: "Tier", value: "tier" }, { label: "Default", value: row => row.is_default ? "Yes" : "No" }], result.data);
+          document.getElementById("catalogue-snapshot").hidden = false;
+          document.getElementById("catalogue-snapshot").scrollIntoView({ block: "start" });
+        } catch (error) { if (request === catalogueHistoryRequest) setStatus("catalogue-status", error.message, "error"); }
+      }
+      catalogueProvider.addEventListener("change", () => { dismissInline("catalogue-confirm", false); renderCatalogue(); });
+      document.getElementById("catalogue-add").addEventListener("click", () => {
+        catalogueDraft.push({ provider: catalogueProvider.value, id: "", display_name: "", tier: "balanced", is_default: false });
+        catalogueChanged(); renderCatalogue();
+        document.querySelector("#catalogue-entries .catalogue-entry:last-child input").focus();
+      });
+      document.getElementById("catalogue-reload").addEventListener("click", () => {
+        document.querySelector('#catalogue-confirm [data-confirm="yes"]').textContent = "Discard and reload";
+        if (catalogueDirty) askInline("catalogue-confirm", "Discard all unpublished changes and reload the latest catalogue?", loadCatalogue, document.getElementById("catalogue-reload"));
+        else loadCatalogue();
+      });
+      document.getElementById("catalogue-form").addEventListener("submit", event => {
+        event.preventDefault();
+        if (catalogueBusy || !catalogueDraft) return;
+        document.querySelector('#catalogue-confirm [data-confirm="yes"]').textContent = "Publish suggestions";
+        askInline("catalogue-confirm", "Publish all provider suggestions in this draft? This changes public picker options, not saved choices or managed routing.", async () => {
+          cataloguePending(true);
+          setStatus("catalogue-status", "Publishing suggestions…");
+          try {
+            const result = await dashboardPost("model-catalogue", { revision: catalogueRevision, data: catalogueDraft });
+            catalogueDraft = result.data; catalogueRevision = result.revision; catalogueDirty = false;
+            cataloguePending(false); await loadCatalogue();
+            setStatus("catalogue-status", "Published revision " + result.revision + ". Clients may cache the previous catalogue for up to one hour.", "ok");
+          } catch (error) {
+            setStatus("catalogue-status", error instanceof TypeError || error instanceof SyntaxError ? "Connection failed; publication may have completed. Your draft is preserved. Reload and check history before retrying." : error.message, "error");
+          } finally { cataloguePending(false); }
+        }, document.getElementById("catalogue-publish"));
+      });
+      window.addEventListener("beforeunload", event => { if (catalogueDirty) { event.preventDefault(); event.returnValue = ""; } });
+
       const pad = (value) => String(value).padStart(2, "0");
       function localDateTime(seconds) {
         if (!seconds) return "";

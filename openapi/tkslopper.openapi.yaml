@@ -158,15 +158,17 @@ paths:
         or inference. OPTIONS returns 204 and allows GET, OPTIONS, without credential
         or Authorization-header permission. The catalogue remains available without
         working inference configuration or D1; it is not a readiness probe.
+        Named-admin publications replace suggestions atomically. If persistence
+        is unavailable or invalid, bundled suggestions are returned with no-store.
       security: []
       responses:
         "200":
-          description: Public suggestions; cacheable for one hour
+          description: Public suggestions; cacheable for one hour except outage fallbacks
           headers:
             Access-Control-Allow-Origin:
               schema: { const: "*" }
             Cache-Control:
-              schema: { const: "public, max-age=3600" }
+              schema: { enum: ["public, max-age=3600", "no-store"] }
           content:
             application/json:
               schema:

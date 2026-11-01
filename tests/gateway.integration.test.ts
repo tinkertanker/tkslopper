@@ -2657,7 +2657,7 @@ describe("student-facing gateway behaviour", () => {
       new Request("https://gateway.example.invalid/v1/model-catalogue", {
         headers: { origin: "https://app.example.invalid" },
       }),
-      {} as GatewayEnv,
+      { DB: env.DB } as GatewayEnv,
     );
     expect(response.status).toBe(200);
     expect(response.headers.get("access-control-allow-origin")).toBe("*");

@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 /** Public suggestions only: never derive this catalogue from private routes. */
 export const MODEL_PROVIDERS = [
   "openai",
@@ -9,6 +11,71 @@ export const MODEL_PROVIDERS = [
   "opencode-zen",
 ] as const;
 export const MODEL_TIERS = ["economy", "balanced", "premium"] as const;
+
+export const modelCatalogueDataSchema = z
+  .array(
+    z
+      .object({
+        provider: z.enum(MODEL_PROVIDERS),
+        id: z
+          .string()
+          .trim()
+          .min(1)
+          .max(200)
+          .regex(/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/u),
+        display_name: z
+          .string()
+          .trim()
+          .min(1)
+          .max(120)
+          .refine(
+            (value) => !/\p{Cc}/u.test(value),
+            "Label must not contain control characters",
+          ),
+        tier: z.enum(MODEL_TIERS),
+        is_default: z.boolean(),
+      })
+      .strict(),
+  )
+  .max(200)
+  .superRefine((entries, context) => {
+    const ids = new Set<string>();
+    for (const entry of entries) {
+      const key = `${entry.provider}:${entry.id}`;
+      if (ids.has(key))
+        context.addIssue({
+          code: "custom",
+          message: `Duplicate model: ${key}`,
+        });
+      ids.add(key);
+    }
+    for (const provider of MODEL_PROVIDERS) {
+      if (
+        entries.filter(
+          (entry) => entry.provider === provider && entry.is_default,
+        ).length !== 1
+      )
+        context.addIssue({
+          code: "custom",
+          message: `Exactly one default is required for ${provider}`,
+        });
+    }
+  });
+
+/** No fallback here: administrative reads must fail closed, never edit stale data. */
+export async function readModelCatalogue(db: D1Database) {
+  const row = await db
+    .prepare(
+      "SELECT revision, data_json FROM model_catalogue_revisions ORDER BY revision DESC LIMIT 1",
+    )
+    .first<{ revision: number; data_json: string }>();
+  return row
+    ? {
+        revision: row.revision,
+        data: modelCatalogueDataSchema.parse(JSON.parse(row.data_json)),
+      }
+    : { revision: 0, data: MODEL_CATALOGUE.data };
+}
 
 // GPT/Claude refreshed from official docs on 2026-11-01; other IDs consolidate
 // existing app suggestions. See docs/configuration.md for sources and governance.
