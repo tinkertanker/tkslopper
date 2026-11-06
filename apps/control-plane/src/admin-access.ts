@@ -70,7 +70,7 @@ export async function requireBrowserAdmin(
   env: AccessEnv,
   access?: CloudflareAccessContext,
 ): Promise<string> {
-  const email = await requireAccessEmail(env, access);
+  const actorHash = await requireNamedAdmin(env, access);
   // Cookie-authenticated writes must not be forgeable through cross-site forms/fetch.
   if (
     request.headers.get("origin") !== new URL(request.url).origin ||
@@ -82,6 +82,14 @@ export async function requireBrowserAdmin(
       "authorization_failed",
       "same-origin JSON request required",
     );
+  return actorHash;
+}
+
+export async function requireNamedAdmin(
+  env: AccessEnv,
+  access?: CloudflareAccessContext,
+): Promise<string> {
+  const email = await requireAccessEmail(env, access);
   const admin = await env.DB.prepare(
     "SELECT actor_hash FROM dashboard_admins WHERE email = ? AND enabled = 1",
   )

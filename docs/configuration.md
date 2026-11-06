@@ -16,7 +16,7 @@ The checked-in Wrangler files are development fixtures only. Placeholder resourc
 
 ## Client model catalogues
 
-`GET /v1/model-catalogue` on the gateway is the single source of direct-provider suggestions for app BYOK and teacher/provider-key pickers. Its checked-in source is [`packages/shared/src/model-catalogue.ts`](../packages/shared/src/model-catalogue.ts), never `PROVIDER_ROUTES_JSON` or D1 route policy. It is public, works without inference credentials or D1, allows credential-free cross-origin GET (`Access-Control-Allow-Origin: *`), and caches for one hour. Do not use it as a readiness probe. No other endpoint gains CORS access.
+`GET /v1/model-catalogue` on the gateway is the single source of direct-provider suggestions for app BYOK and teacher/provider-key pickers. It reads the latest validated catalogue publication in D1, with [`packages/shared/src/model-catalogue.ts`](../packages/shared/src/model-catalogue.ts) as the initial and outage fallback; neither source uses `PROVIDER_ROUTES_JSON` or managed alias policy. It is public, works without inference credentials, allows credential-free cross-origin GET (`Access-Control-Allow-Origin: *`), and caches successful reads for one hour. If D1 is absent, unavailable or contains invalid catalogue data, the bundled fallback is returned with `Cache-Control: no-store`. Do not use it as a readiness probe. No other endpoint gains CORS access.
 
 ```json
 {
@@ -39,6 +39,20 @@ This abbreviated example is a suggestion, not authorization or a managed alias. 
 Apps fetch from their configured tkslopper gateway origin without keys, Authorization, or cookies, validate the version/entries, bound the request and response, and retain a small bundled fallback for missing configuration, offline operation, or invalid/failed fetches. Catalogue updates replace suggestions, not saved/custom choices. `is_default` applies only to a new selection. Apps keep transport URLs, credential handling and protocol selection locally; catalogue data cannot redirect requests or expand managed permissions. BYOK inference still goes directly to its provider.
 
 The initial catalogue consolidates all three apps' existing non-OpenAI/Claude suggestions and refreshes direct GPT/Claude IDs from the official sources below. Reseller IDs are preserved rather than guessed from vendor releases; verify each reseller's availability before refreshing them. New catalogue edits need duplicate/default checks, review of provider-native IDs and data-use labels, and the normal release approval. The Muse Contributor label retains its data-training warning. Do not publish private deployments, route IDs, base URLs, credential bindings or account details.
+
+### Editing public suggestions
+
+Named admins can open **Model catalogue** in the dashboard, select an existing provider, add/remove suggestions, edit provider-native IDs, labels and tiers, and select the provider's default. Changes are a local draft until **Review and publish** is confirmed. Switching provider or refreshing dashboard metadata preserves the draft; **Reload published catalogue** explicitly confirms discarding unsaved changes. This is separate from Settings → Set model alias. It cannot configure providers, keys, URLs, live routes, grants or billing.
+
+The browser-only `GET /dashboard/api/model-catalogue` returns `{ revision, data, history }`. `POST` takes `{ revision, data }`, where `data` is the **complete** suggestion list for all providers, and returns the new revision and normalized data. Both require a verified Access identity with enabled named-admin membership; POST additionally requires a same-origin JSON request. Bearer admin tokens have no catalogue-edit endpoint. Unknown fields (including route/credential fields), unknown providers/tiers, duplicate provider/ID pairs, invalid IDs/labels and missing/multiple defaults are rejected. Each of the seven existing providers must retain exactly one default. Limits: 200 entries, 200-character IDs (`A–Z`, `a–z`, digits, `.`, `_`, `:`, `/`, `-`, starting with an alphanumeric), 120-character nonempty labels without control characters, and a 128 KiB request body. IDs and labels are trimmed. Labels remain plain text.
+
+Publications append a full snapshot to `model_catalogue_revisions` and a named-actor `publish` record to `admin_audit` in one D1 transaction. A failed audit rolls back the publication. A revision mismatch returns 409 without changing either table; the editor preserves the draft and asks the admin to reload. Concurrent writers cannot silently overwrite each other. There is no automatic retry after an ambiguous network failure: check history before retrying. History lists the latest 25 revisions with actor, time and entry count; `GET ...?revision=N` reads an exact historical snapshot without changing the draft. Snapshots are retained, not updated or deleted by the editor.
+
+Apply additive migration `0008_model_catalogue.sql` before deploying either updated Worker, **only with separate deployment approval**. Both readiness checks require the table. The table starts empty, so revision 0 uses the bundled catalogue. After the first publication, the full persisted snapshot takes precedence over future bundled refreshes: admins must deliberately publish new suggestions. The public envelope remains `{ object: "list", version: 1, data }`; revision numbers, actor identities and history are private. Existing app fallbacks and saved/custom choices are unaffected. During a database outage, bundled suggestions may temporarily reappear, but do not grant managed access.
+
+Rollback retains the additive table and all history. An older gateway ignores publications and serves its bundled catalogue; returning to the updated gateway resumes the last publication. Restoring previous suggestions on the updated Worker requires a reviewed new publication based on the current revision, not deletion of history. No production migration or deployment is authorized merely by editing this catalogue.
+
+### Managed alias presentation
 
 Authenticated `GET /v1/models` and `/v1/models/{alias}` remain the source of **managed** options. Existing objects retain their shape unless an admin supplies optional `display_name`, `provider`, or `tier` through `POST /admin/v1/aliases`, dashboard **Set model alias**, or `pnpm admin -- alias upsert`. A label can explicitly identify the model (for example “Claude Haiku 5.5”); it is not inferred from a private route. Only these three presentation fields are added. Clients display them but continue submitting the alias `id`.
 
@@ -88,17 +102,30 @@ The public model is still an authorized `.vN` alias from `/v1/models`, not `clau
 
 Existing aliases must not be remapped if their sampling, JSON mode or message-shape contract is incompatible. Provision a separately approved alias/version and product grant instead. No D1 migration or credential reissue is needed merely to install the adapter. Native Gemini remains deferred ([#17](https://github.com/tinkertanker/tkslopper/issues/17)); personal BYOK and Apple local/PCC calls remain outside tkslopper.
 
-### Model refresh, checked 2026-10-09
+### Model refresh, checked 2026-11-01
 
 These are physical model recommendations for new private routes and defaults in the public direct-provider catalogue, not automatically enabled managed aliases. The development Wrangler routes remain synthetic fixtures.
 
-| Use              | OpenAI        | Anthropic           |
-| ---------------- | ------------- | ------------------- |
-| Low-cost default | `gpt-6-luna`  | `claude-haiku-5-5`  |
-| Balanced         | `gpt-6.1-sol` | `claude-sonnet-5-5` |
-| High capability  | `gpt-6-astra` | `claude-opus-5-5`   |
+| Use              | OpenAI                         | Anthropic                             |
+| ---------------- | ------------------------------ | ------------------------------------- |
+| Low-cost default | `gpt-6-luna`                   | `claude-haiku-5-5`                    |
+| Balanced         | `gpt-6.1-terra`, `gpt-6.1-sol` | `claude-sonnet-5-5`                   |
+| High capability  | `gpt-6-astra`                  | `claude-opus-5-5`, `claude-fable-5-1` |
 
-Official sources: [OpenAI catalog](https://developers.openai.com/api/docs/models), [GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna), [Claude catalog](https://platform.claude.com/docs/en/models/overview), [Haiku 5.5 migration](https://platform.claude.com/docs/en/models/haiku-5-5/migration-guide), [native structured outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs). Anthropic also lists `claude-fable-5-1` for demanding long-horizon tasks; it is not the education default. Haiku 5.5 was released October 7, 2026. Both low-cost models list base input/output pricing from US$0.10/US$0.50 per million tokens; verify current service-tier, long-context, cache and regional prices before setting budgets. Existing working routes are not automatically migrated, and documentation availability does not prove access for a particular API account.
+Official sources: [OpenAI catalog](https://developers.openai.com/api/docs/models), [GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna), [Claude catalog](https://platform.claude.com/docs/en/models/overview), [Haiku 5.5 migration](https://platform.claude.com/docs/en/models/haiku-5-5/migration-guide), [native structured outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs). Haiku 5.5 was released October 7, 2026. Both low-cost defaults remain current and list base input/output pricing from US$0.10/US$0.50 per million tokens; verify current service-tier, long-context, cache and regional prices before setting budgets. Existing working routes are not automatically migrated, and documentation availability does not prove access for a particular API account.
+
+November additions (official documentation checked, no paid provider calls):
+
+- [GPT-6.1 Terra](https://developers.openai.com/api/docs/models/gpt-6.1-terra): text/image input, text output, 1,050,000-token context (922,000 maximum input), 128,000 maximum output; base input/output US$1/US$5 per million tokens. Supports Chat Completions, Responses, structured outputs and reasoning (`none`, `low`, `medium` default, `high`, `xhigh`, `max`). Tool calling requires Responses. Its price/performance positioning fits `balanced`; it does not replace Luna as the default.
+- [Claude Fable 5.1](https://platform.claude.com/docs/en/models/fable-5-1/overview): text/image input, text output, 1M-token context, 128K maximum output; base input/output US$10/US$50 per million tokens. Supports native structured outputs and always-on adaptive thinking (default effort `high`). Forced tool use is rejected. Its demanding-reasoning/long-horizon positioning fits `premium`, not the education default. Anthropic lists it as active with retirement no sooner than September 1, 2027.
+
+Provider capabilities are broader than the gateway contract: only portable `low|medium|high` reasoning is exposed; tools and streaming remain unsupported. Native Anthropic still uses API version `2023-06-01` and rejects sampling controls. No API-version upgrade is included. The catalogue keeps schema version 1 because only suggestions changed, and preserves all existing entries, defaults, custom/saved-ID handling and unverified reseller IDs. Opt-in [route examples](runbooks/first-deploy.md#optional-november-2026-routes) do not enable these models or change product ceilings/rate cards.
+
+Relevant lifecycle notices checked against [Anthropic deprecations](https://platform.claude.com/docs/en/about-claude/model-deprecations) and [OpenAI deprecations](https://developers.openai.com/api/docs/deprecations):
+
+- No current direct-provider suggestion above is listed as deprecated. Claude Sonnet 4.5 (`claude-sonnet-4-5-20250929`) retires November 30, 2026; the recommended replacement is Sonnet 5.5. Haiku 4.5 is still listed as active: a passed “not sooner than” date is not a retirement announcement.
+- GPT-4o snapshots `2024-08-06`/`2024-11-20`, GPT-4o mini `2024-07-18`, GPT-4.1 and GPT-4.1 mini `2025-04-14` shut down January 14, 2027, with Luna recommended. Older GPT-5/mini/nano/pro and o3/pro shut down December 11, 2026; GPT-5.1, GPT-5.3-Codex and GPT-5.4-Nano shut down April 1, 2027. These notices do not authorize rewriting saved IDs or reseller offerings.
+- Anthropic API version `2026-10-21` removes `temperature`, `top_p` and `top_k`; earlier versions reject non-default values on Claude 4.7 and later. Fable also requires adaptive thinking rather than the legacy manual `budget_tokens` mode. Keep migrations explicit and validate the product's request contract before changing any route.
 
 ## Configuration validation and release workflow
 

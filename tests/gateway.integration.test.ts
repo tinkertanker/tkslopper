@@ -2657,7 +2657,7 @@ describe("student-facing gateway behaviour", () => {
       new Request("https://gateway.example.invalid/v1/model-catalogue", {
         headers: { origin: "https://app.example.invalid" },
       }),
-      {} as GatewayEnv,
+      { DB: env.DB } as GatewayEnv,
     );
     expect(response.status).toBe(200);
     expect(response.headers.get("access-control-allow-origin")).toBe("*");
@@ -2685,6 +2685,20 @@ describe("student-facing gateway behaviour", () => {
       display_name: "GPT-6 Luna",
       tier: "economy",
       is_default: true,
+    });
+    expect(body.data).toContainEqual({
+      id: "gpt-6.1-terra",
+      provider: "openai",
+      display_name: "GPT-6.1 Terra",
+      tier: "balanced",
+      is_default: false,
+    });
+    expect(body.data).toContainEqual({
+      id: "claude-fable-5-1",
+      provider: "anthropic",
+      display_name: "Claude Fable 5.1",
+      tier: "premium",
+      is_default: false,
     });
     const ids = new Set<string>();
     for (const entry of body.data) {

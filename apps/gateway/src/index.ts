@@ -15,6 +15,7 @@ import {
   pseudonymize,
   randomId,
   readJsonBody,
+  readModelCatalogue,
   responsesRequestSchema,
   sha256,
   validateProviderRequest,
@@ -1540,15 +1541,30 @@ export async function handleGateway(
   env: GatewayEnv,
 ): Promise<Response> {
   const url = new URL(request.url);
-  // Static public suggestions do not depend on D1, route config or credentials.
+  // Public suggestions never depend on route config or credentials. Bundled
+  // suggestions remain available if catalogue persistence cannot be read.
   // CORS is intentionally confined to this endpoint, never managed inference.
   if (url.pathname === "/v1/model-catalogue") {
     const headers = {
       "access-control-allow-origin": "*",
       "cache-control": "public, max-age=3600",
     };
-    if (request.method === "GET")
-      return jsonResponse(MODEL_CATALOGUE, 200, headers);
+    if (request.method === "GET") {
+      try {
+        const catalogue = await readModelCatalogue(env.DB);
+        return jsonResponse(
+          { object: "list", version: 1, data: catalogue.data },
+          200,
+          headers,
+        );
+      } catch {
+        // Do not cache an outage fallback over a newer published revision.
+        return jsonResponse(MODEL_CATALOGUE, 200, {
+          ...headers,
+          "cache-control": "no-store",
+        });
+      }
+    }
     if (request.method === "OPTIONS")
       return new Response(null, {
         status: 204,
@@ -1572,6 +1588,7 @@ export async function handleGateway(
       const [schema, quotaResponse] = await Promise.all([
         env.DB.prepare(
           `SELECT value,
+                  EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'model_catalogue_revisions') AS catalogue_schema,
                   (SELECT COUNT(*) FROM sqlite_schema
                     WHERE type = 'table'
                       AND name IN ('classroom_classes', 'classroom_groups', 'classroom_group_keys')) AS classroom_tables,
@@ -1586,6 +1603,7 @@ export async function handleGateway(
              FROM schema_metadata WHERE key = 'schema_version'`,
         ).first<{
           value: string;
+          catalogue_schema: number;
           classroom_tables: number;
           access_code_classroom_group: number;
           attempt_classroom_group: number;
@@ -1604,6 +1622,7 @@ export async function handleGateway(
         : undefined;
       if (
         schema?.value !== DATABASE_SCHEMA_VERSION ||
+        schema.catalogue_schema !== 1 ||
         schema.classroom_tables !== 3 ||
         schema.access_code_classroom_group !== 1 ||
         schema.attempt_classroom_group !== 1 ||

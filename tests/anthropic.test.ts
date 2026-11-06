@@ -286,7 +286,7 @@ describe("Anthropic provider contract", () => {
     },
   );
 
-  it.each([model, "claude-sonnet-5-5", "claude-opus-5-5"])(
+  it.each([model, "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"])(
     "maps Responses instructions and native JSON schema without tools (%s)",
     async (physicalModel) => {
       const schema = {
