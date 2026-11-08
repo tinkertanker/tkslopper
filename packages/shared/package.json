@@ -5,9 +5,9 @@
   "type": "module",
   "exports": "./src/index.ts",
   "dependencies": {
-    "@ai-sdk/anthropic": "4.0.87",
-    "@ai-sdk/openai": "4.0.101",
-    "@ai-sdk/provider": "4.0.33",
+    "@ai-sdk/anthropic": "4.0.99",
+    "@ai-sdk/openai": "4.0.111",
+    "@ai-sdk/provider": "4.0.37",
     "zod": "^4.6.6"
   }
 }
