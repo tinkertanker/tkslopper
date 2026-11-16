@@ -25,16 +25,15 @@ if ((node_major < 22)); then
   exit 1
 fi
 
-if ! command -v corepack >/dev/null 2>&1; then
-  echo '[setup] Corepack is missing from the Node.js installation.' >&2
-  exit 1
+# Node.js 25+ no longer bundles Corepack, so install pnpm with npm instead.
+pnpm_version='10.15.1'
+if [[ "$(pnpm --version 2>/dev/null || true)" != "$pnpm_version" ]]; then
+  run_step "install pnpm $pnpm_version" npm install --global "pnpm@$pnpm_version"
+  hash -r
 fi
 
-run_step 'enable Corepack shims' corepack enable
-run_step 'activate pnpm 10.15.1' corepack prepare pnpm@10.15.1 --activate
-
-if [[ "$(pnpm --version)" != '10.15.1' ]]; then
-  echo "[setup] Expected pnpm 10.15.1; found $(pnpm --version)." >&2
+if [[ "$(pnpm --version)" != "$pnpm_version" ]]; then
+  echo "[setup] Expected pnpm $pnpm_version; found $(pnpm --version)." >&2
   exit 1
 fi
 
